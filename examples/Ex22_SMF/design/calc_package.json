@@ -1,0 +1,1327 @@
+{
+ "building": "Ex22_SMF",
+ "code": "AISC 360-22 LRFD",
+ "note": "Framework provides DEMANDS only. The agent must derive every capacity and D/C from the AISC 360/341 RAG and add 'limit_state', 'cited', 'capacity', and 'DC' to each member and connection.",
+ "members": [
+  {
+   "id": "roof-W24X76",
+   "inputs": {
+    "kind": "beam",
+    "role": "roof",
+    "section": "W24X76",
+    "length_in": 360.0,
+    "Lb_in": 105.8,
+    "A": 22.4,
+    "Ix": 2100.0,
+    "Iy": 82.5,
+    "J": 2.68,
+    "Zx": 200.0,
+    "Zy": 28.6,
+    "Sx": 176.0,
+    "Sy": 18.4,
+    "rx": 9.69,
+    "ry": 1.92,
+    "Aw": 10.52,
+    "ho": 23.2,
+    "rts": 2.33,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 5913.0,
+    "My_kipin": 0.0,
+    "V_kip": 65.7,
+    "governing_combo": "1.2D+1.6Lr+0.5L"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00",
+   "capacity": {
+    "phiMn_kipin": 8125.0,
+    "phiVn_kip": 315.5,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.728
+  },
+  {
+   "id": "floor-W27X94",
+   "inputs": {
+    "kind": "beam",
+    "role": "floor",
+    "section": "W27X94",
+    "length_in": 360.0,
+    "Lb_in": 116.8,
+    "A": 27.6,
+    "Ix": 3270.0,
+    "Iy": 124.0,
+    "J": 4.03,
+    "Zx": 278.0,
+    "Zy": 38.8,
+    "Sx": 243.0,
+    "Sy": 24.8,
+    "rx": 10.9,
+    "ry": 2.12,
+    "Aw": 13.18,
+    "ho": 26.2,
+    "rts": 2.59,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 10449.0,
+    "My_kipin": 0.0,
+    "V_kip": 116.1,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00",
+   "capacity": {
+    "phiMn_kipin": 11645.0,
+    "phiVn_kip": 395.4,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.897
+  },
+  {
+   "id": "roof-W33X141",
+   "inputs": {
+    "kind": "beam",
+    "role": "roof",
+    "section": "W33X141",
+    "length_in": 360.0,
+    "Lb_in": 133.9,
+    "A": 41.5,
+    "Ix": 7450.0,
+    "Iy": 246.0,
+    "J": 9.7,
+    "Zx": 514.0,
+    "Zy": 66.9,
+    "Sx": 448.0,
+    "Sy": 42.7,
+    "rx": 13.4,
+    "ry": 2.43,
+    "Aw": 20.15,
+    "ho": 32.3,
+    "rts": 2.98,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 5913.0,
+    "My_kipin": 0.0,
+    "V_kip": 65.7,
+    "governing_combo": "1.2D+1.6Lr+0.5L"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00; SMF bracing Lb <= 0.086ryE/Fy = 121 in (D1.2b); RBS protected zone (D1.3)",
+   "capacity": {
+    "phiMn_kipin": 22351.0,
+    "phiVn_kip": 604.4,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.265
+  },
+  {
+   "id": "floor-W36X194",
+   "inputs": {
+    "kind": "beam",
+    "role": "floor",
+    "section": "W36X194",
+    "length_in": 360.0,
+    "Lb_in": 141.1,
+    "A": 57.0,
+    "Ix": 12100.0,
+    "Iy": 375.0,
+    "J": 22.2,
+    "Zx": 767.0,
+    "Zy": 97.7,
+    "Sx": 664.0,
+    "Sy": 61.9,
+    "rx": 14.6,
+    "ry": 2.56,
+    "Aw": 27.92,
+    "ho": 35.2,
+    "rts": 3.15,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 10449.0,
+    "My_kipin": 0.0,
+    "V_kip": 116.1,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00; SMF bracing Lb <= 0.086ryE/Fy = 128 in (D1.2b); RBS protected zone (D1.3)",
+   "capacity": {
+    "phiMn_kipin": 33813.0,
+    "phiVn_kip": 837.7,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.309
+  },
+  {
+   "id": "floor-W36X232",
+   "inputs": {
+    "kind": "beam",
+    "role": "floor",
+    "section": "W36X232",
+    "length_in": 360.0,
+    "Lb_in": 144.4,
+    "A": 68.0,
+    "Ix": 15000.0,
+    "Iy": 468.0,
+    "J": 39.6,
+    "Zx": 936.0,
+    "Zy": 122.0,
+    "Sx": 809.0,
+    "Sy": 77.2,
+    "rx": 14.8,
+    "ry": 2.62,
+    "Aw": 32.28,
+    "ho": 35.5,
+    "rts": 3.21,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 11822.8,
+    "My_kipin": 0.0,
+    "V_kip": 116.1,
+    "governing_combo": "(1.2+0.2SDS)D+rhoEX+t++0.5L"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00; SMF bracing Lb <= 0.086ryE/Fy = 131 in (D1.2b); RBS protected zone (D1.3)",
+   "capacity": {
+    "phiMn_kipin": 41521.0,
+    "phiVn_kip": 968.3,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.285
+  },
+  {
+   "id": "roof-W36X232",
+   "inputs": {
+    "kind": "beam",
+    "role": "roof",
+    "section": "W36X232",
+    "length_in": 360.0,
+    "Lb_in": 144.4,
+    "A": 68.0,
+    "Ix": 15000.0,
+    "Iy": 468.0,
+    "J": 39.6,
+    "Zx": 936.0,
+    "Zy": 122.0,
+    "Sx": 809.0,
+    "Sy": 77.2,
+    "rx": 14.8,
+    "ry": 2.62,
+    "Aw": 32.28,
+    "ho": 35.5,
+    "rts": 3.21,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 5913.0,
+    "My_kipin": 0.0,
+    "V_kip": 65.7,
+    "governing_combo": "1.2D+1.6Lr+0.5L"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00; SMF bracing Lb <= 0.086ryE/Fy = 131 in (D1.2b); RBS protected zone (D1.3)",
+   "capacity": {
+    "phiMn_kipin": 41521.0,
+    "phiVn_kip": 968.3,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.142
+  },
+  {
+   "id": "floor-W36X256",
+   "inputs": {
+    "kind": "beam",
+    "role": "floor",
+    "section": "W36X256",
+    "length_in": 360.0,
+    "Lb_in": 146.0,
+    "A": 75.3,
+    "Ix": 16800.0,
+    "Iy": 528.0,
+    "J": 52.9,
+    "Zx": 1040.0,
+    "Zy": 137.0,
+    "Sx": 895.0,
+    "Sy": 86.5,
+    "rx": 14.9,
+    "ry": 2.65,
+    "Aw": 35.9,
+    "ho": 35.7,
+    "rts": 3.24,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 12394.0,
+    "My_kipin": 0.0,
+    "V_kip": 116.1,
+    "governing_combo": "(1.2+0.2SDS)D+rhoEY-t-+0.5L"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00; SMF bracing Lb <= 0.086ryE/Fy = 132 in (D1.2b); RBS protected zone (D1.3)",
+   "capacity": {
+    "phiMn_kipin": 46262.0,
+    "phiVn_kip": 1077.1,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.268
+  },
+  {
+   "id": "floor-W40X277",
+   "inputs": {
+    "kind": "beam",
+    "role": "floor",
+    "section": "W40X277",
+    "length_in": 360.0,
+    "Lb_in": 197.3,
+    "A": 81.5,
+    "Ix": 21900.0,
+    "Iy": 1040.0,
+    "J": 51.5,
+    "Zx": 1250.0,
+    "Zy": 204.0,
+    "Sx": 1100.0,
+    "Sy": 132.0,
+    "rx": 16.4,
+    "ry": 3.58,
+    "Aw": 32.95,
+    "ho": 38.1,
+    "rts": 4.25,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 17081.1,
+    "My_kipin": 0.0,
+    "V_kip": 116.1,
+    "governing_combo": "(1.2+0.2SDS)D+rhoEY+t++0.5L"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-1 (Lb<=Lp: LTB does not apply)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00; SMF bracing Lb <= 0.086ryE/Fy = 179 in (D1.2b); RBS protected zone (D1.3)",
+   "capacity": {
+    "phiMn_kipin": 56250.0,
+    "phiVn_kip": 988.5,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.304
+  },
+  {
+   "id": "gravity_col-W14X145",
+   "inputs": {
+    "kind": "col",
+    "role": "gravity_col",
+    "section": "W14X145",
+    "length_in": 168.0,
+    "Lb_in": 168.0,
+    "A": 42.7,
+    "Ix": 1710.0,
+    "Iy": 677.0,
+    "J": 15.2,
+    "Zx": 260.0,
+    "Zy": 133.0,
+    "Sx": 232.0,
+    "Sy": 87.3,
+    "rx": 6.33,
+    "ry": 3.98,
+    "Aw": 10.06,
+    "ho": 13.7,
+    "rts": 4.47,
+    "P_comp_kip": 819.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 68.7,
+    "My_kipin": 35.3,
+    "V_kip": 0.54,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-1 (Lb<=Lp: LTB does not apply)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a",
+   "capacity": {
+    "phiPn_kip": 1687.0,
+    "phiMnx_kipin": 11700.0,
+    "phiMny_kipin": 5985.0,
+    "Lc_in": 168.0
+   },
+   "DC": 0.496
+  },
+  {
+   "id": "gravity_col-W14X193",
+   "inputs": {
+    "kind": "col",
+    "role": "gravity_col",
+    "section": "W14X193",
+    "length_in": 192.0,
+    "Lb_in": 192.0,
+    "A": 56.8,
+    "Ix": 2400.0,
+    "Iy": 931.0,
+    "J": 34.8,
+    "Zx": 355.0,
+    "Zy": 180.0,
+    "Sx": 310.0,
+    "Sy": 119.0,
+    "rx": 6.5,
+    "ry": 4.05,
+    "Aw": 13.79,
+    "ho": 14.1,
+    "rts": 4.59,
+    "P_comp_kip": 1283.4,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 277.7,
+    "My_kipin": 129.7,
+    "V_kip": 1.73,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a",
+   "capacity": {
+    "phiPn_kip": 2169.0,
+    "phiMnx_kipin": 15813.0,
+    "phiMny_kipin": 8100.0,
+    "Lc_in": 192.0
+   },
+   "DC": 0.622
+  },
+  {
+   "id": "lateral_col-W14X500",
+   "inputs": {
+    "kind": "col",
+    "role": "lateral_col",
+    "section": "W14X500",
+    "length_in": 168.0,
+    "Lb_in": 168.0,
+    "A": 147.0,
+    "Ix": 8210.0,
+    "Iy": 2880.0,
+    "J": 514.0,
+    "Zx": 1050.0,
+    "Zy": 522.0,
+    "Sx": 838.0,
+    "Sy": 339.0,
+    "rx": 7.48,
+    "ry": 4.43,
+    "Aw": 42.92,
+    "ho": 16.1,
+    "rts": 5.26,
+    "P_comp_kip": 195.46,
+    "P_tens_kip": 16.98,
+    "Mz_kipin": 9546.6,
+    "My_kipin": 4493.1,
+    "V_kip": 107.23,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "H1 (basic) + axial-only w/ Om0 (D1.4a)",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 H1.1 Eq. H1-1b; AISC 341-22 D1.4a",
+   "capacity": {
+    "phiPn_kip": 5955.0
+   },
+   "DC": 0.142
+  },
+  {
+   "id": "lateral_col-W14X605",
+   "inputs": {
+    "kind": "col",
+    "role": "lateral_col",
+    "section": "W14X605",
+    "length_in": 168.0,
+    "Lb_in": 168.0,
+    "A": 178.0,
+    "Ix": 10800.0,
+    "Iy": 3680.0,
+    "J": 869.0,
+    "Zx": 1320.0,
+    "Zy": 652.0,
+    "Sx": 1040.0,
+    "Sy": 423.0,
+    "rx": 7.8,
+    "ry": 4.55,
+    "Aw": 54.34,
+    "ho": 16.7,
+    "rts": 5.44,
+    "P_comp_kip": 451.25,
+    "P_tens_kip": 110.65,
+    "Mz_kipin": 14308.1,
+    "My_kipin": 6967.4,
+    "V_kip": 166.94,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "H1 (basic) + axial-only w/ Om0 (D1.4a)",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 H1.1 Eq. H1-1b; AISC 341-22 D1.4a",
+   "capacity": {
+    "phiPn_kip": 7250.0
+   },
+   "DC": 0.18
+  },
+  {
+   "id": "lateral_col-W14X730",
+   "inputs": {
+    "kind": "col",
+    "role": "lateral_col",
+    "section": "W14X730",
+    "length_in": 192.0,
+    "Lb_in": 192.0,
+    "A": 215.0,
+    "Ix": 14300.0,
+    "Iy": 4720.0,
+    "J": 1450.0,
+    "Zx": 1660.0,
+    "Zy": 816.0,
+    "Sx": 1280.0,
+    "Sy": 527.0,
+    "rx": 8.17,
+    "ry": 4.69,
+    "Aw": 68.77,
+    "ho": 17.5,
+    "rts": 5.68,
+    "P_comp_kip": 711.17,
+    "P_tens_kip": 236.57,
+    "Mz_kipin": 19114.6,
+    "My_kipin": 7723.0,
+    "V_kip": 197.55,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "H1 (basic) + axial-only w/ Om0 (D1.4a)",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 H1.1 Eq. H1-1b; AISC 341-22 D1.4a",
+   "capacity": {
+    "phiPn_kip": 8559.0
+   },
+   "DC": 0.183
+  },
+  {
+   "id": "gravity_col-W14X90",
+   "inputs": {
+    "kind": "col",
+    "role": "gravity_col",
+    "section": "W14X90",
+    "length_in": 168.0,
+    "Lb_in": 168.0,
+    "A": 26.5,
+    "Ix": 999.0,
+    "Iy": 362.0,
+    "J": 4.06,
+    "Zx": 157.0,
+    "Zy": 75.6,
+    "Sx": 143.0,
+    "Sy": 49.9,
+    "rx": 6.14,
+    "ry": 3.7,
+    "Aw": 6.16,
+    "ho": 13.3,
+    "rts": 4.1,
+    "P_comp_kip": 354.6,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 123.7,
+    "My_kipin": 71.6,
+    "V_kip": 0.86,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F3 (noncompact flange, Table B4.1b): LTB per F2.2 + FLB Eq. F3-1; governing F3-1 FLB; phi_b=0.90 (F1); AISC 360-22 H1.1 Eq. H1-1a",
+   "capacity": {
+    "phiPn_kip": 1026.0,
+    "phiMnx_kipin": 6883.0,
+    "phiMny_kipin": 3402.0,
+    "Lc_in": 168.0
+   },
+   "DC": 0.38
+  }
+ ],
+ "connections": [
+  {
+   "id": "conn-gravity-beam-col",
+   "type": "beam-to-column single-plate shear connection",
+   "demand": {
+    "V_kip": 110.0
+   },
+   "components": "PL 3/8 x 18 in. A572-50, (5) 7/8-in. A325-N bolts @3 in., 4/16 fillet both sides",
+   "cited": "AISC 360-22 J2.4/J3.7/J3.11/J4",
+   "checks": [
+    {
+     "limit_state": "bolt shear J3.7",
+     "demand_kip": 110.0,
+     "capacity_kip": 121.77,
+     "DC": 0.903,
+     "cited": "AISC 360-22 J3.7 + Table J3.2 (Fnv=54 ksi, A325-N), phi=0.75"
+    },
+    {
+     "limit_state": "bolt bearing/tearout J3.11",
+     "demand_kip": 110.0,
+     "capacity_kip": 191.95,
+     "DC": 0.573,
+     "cited": "AISC 360-22 J3.11 Eq. J3-6a, phi=0.75"
+    },
+    {
+     "limit_state": "plate shear yield/rupture J4.2",
+     "demand_kip": 110.0,
+     "capacity_kip": 142.59,
+     "DC": 0.771,
+     "cited": "AISC 360-22 J4.2 (Eqs. J4-3, J4-4)"
+    },
+    {
+     "limit_state": "plate-to-column fillet weld J2.4",
+     "demand_kip": 110.0,
+     "capacity_kip": 200.43,
+     "DC": 0.549,
+     "cited": "AISC 360-22 J2.4 (Eqs. J2-4, J2-5), phi=0.75, E70XX"
+    }
+   ],
+   "limit_state": "bolt shear J3.7",
+   "capacity": {
+    "phiRn_kip": 121.8
+   },
+   "DC": 0.9
+  },
+  {
+   "id": "conn-SMF-RBS",
+   "type": "RBS moment connection (A358) + panel zone + continuity plates",
+   "demand": {
+    "Mpr_kipin": 48967.0,
+    "Vh_kip": 394.0
+   },
+   "capacity_design": true,
+   "components": "RBS a=9.9 b=29.8 c=4.0 in; CJP demand-critical welds; doubler 0.00 in; continuity 1 in",
+   "cited": "AISC 358-22 Ch.5 + AISC 341-22 E3.6e/A3.4b + AISC 360-22 J10.6 (J10-11)",
+   "checks": [
+    {
+     "limit_state": "panel zone J10.6 (J10-11)",
+     "demand_kip": 2409.69,
+     "capacity_kip": 3041.33,
+     "DC": 0.792,
+     "cited": "AISC 360-22 J10.6 Eq. J10-11; phi_v=1.00 per AISC 341-22 E3.6e"
+    }
+   ],
+   "limit_state": "panel-zone shear",
+   "capacity": {
+    "phiRn_kip": 3041.0
+   },
+   "DC": 0.792
+  },
+  {
+   "id": "conn-col-splice",
+   "type": "column splice (CJP, 4 ft above floor)",
+   "demand": {
+    "P_tens_kip": 900.0,
+    "V_kip": 0.0
+   },
+   "components": "CJP groove welds both flanges + web per AISC 341-22 D2.5 (demand-critical), located 4 ft above floor",
+   "capacity_design": true,
+   "cited": "AISC 341-22 D2.5 + AISC 360-22 J2.6 (CJP develops base metal, Table J2.5)",
+   "checks": [
+    {
+     "limit_state": "CJP develops member (tension)",
+     "demand_kip": 900.0,
+     "capacity_kip": 8010.0,
+     "DC": 0.112,
+     "cited": "AISC 360-22 J2.6"
+    }
+   ],
+   "limit_state": "CJP develops member",
+   "capacity": {
+    "phiRn_kip": 8010.0
+   },
+   "DC": 0.112
+  },
+  {
+   "id": "conn-SMF-col-base",
+   "type": "column base plate (fixed)",
+   "demand": {
+    "P_kip": 3900.0,
+    "V_kip": 420.0
+   },
+   "components": "PL 4.25 x 34 x 30 in. A36, (4) 1-1/4 in. F1554 Gr36 rods, 5/16 fillets, 6x11.825x1.25 in. shear lug; grout on conc. fc'=6 ksi",
+   "cited": "AISC 360-22 J8/J9 + Manual Pt 14; anchorage to ACI 318 Ch.17 (delegated)",
+   "checks": [
+    {
+     "limit_state": "concrete bearing J8",
+     "demand_kip": 3900.0,
+     "capacity_kip": 6819.35,
+     "DC": 0.572,
+     "cited": "AISC 360-22 J8 (Eqs. J8-1, J8-2), phi_c=0.65"
+    },
+    {
+     "limit_state": "plate flexure (cantilever m; Manual Pt 14 / J8)",
+     "demand_in": 3.77,
+     "capacity_in": 4.25,
+     "DC": 0.887,
+     "cited": "AISC 360-22 J8 + Manual Part 14 method, phi_b=0.90"
+    },
+    {
+     "limit_state": "shear lug bearing (J8 basis)",
+     "demand_kip": 420.0,
+     "capacity_kip": 470.4,
+     "DC": 0.893,
+     "cited": "AISC 360-22 J8 (bearing) + ACI 318-19 anchorage (delegated)"
+    }
+   ],
+   "limit_state": "shear lug bearing (J8 basis)",
+   "capacity": {
+    "phiRn": "see checks"
+   },
+   "DC": 0.89
+  }
+ ],
+ "framework_screen": {
+  "note": "FRAMEWORK-COMPUTED irregularity screen -- the agent RESPONDS to these (classify consequences, apply rho/Ax/25% collector increases as required); do not re-derive.",
+  "plan": {
+   "reentrant": false,
+   "setback": false,
+   "nonparallel": false,
+   "nonrect": false
+  },
+  "soft_story": {
+   "K1_over_K2": {
+    "X": 1.42,
+    "Y": 1.35
+   },
+   "K1_over_avg3": {
+    "X": 1.58,
+    "Y": 1.51
+   },
+   "classification": "none",
+   "cite": "ASCE 7-22 Table 12.3-2 (computed)"
+  },
+  "torsion": {
+   "ratio_max": 1.0,
+   "classification": "none",
+   "Ax": 1.0,
+   "cite": "ASCE 7-22 Table 12.3-1 / 12.8.4.3 (computed)"
+  },
+  "Fpx_kip_by_level": {
+   "1": 673.0,
+   "2": 666.0,
+   "3": 666.0,
+   "4": 666.0,
+   "5": 666.0,
+   "6": 706.0
+  }
+ },
+ "capacity_design": {
+  "system": "SMF (AISC 341-22 E3 + AISC 358 RBS), R=8, Cd=5.5, Om0=3, RISK CATEGORY IV",
+  "risk_cat_IV": {
+   "Ie": 1.5,
+   "drift_limit": "0.010 h_sx (Table 12.12-1, RC IV) - NOT 0.020",
+   "computed": "amplified story drift X=0.0068, Y=0.0090, allowable 0.010 - OK (drift governed member sizes as expected); importance factor 1.5 carried through base shear 1360 kip and diaphragm forces; component importance 1.5 noted (delegated)",
+   "cite": "ASCE 7-22 Table 1.5-2, 12.12-1"
+  },
+  "redundancy": "rho = 1.0 DEMONSTRATED per 12.3.4.2(b): >= 2 moment bays on each side of CM in each direction at every story (6-bay and 4-bay perimeter frames); loss of one beam-to-column connection < 33% story strength, no extreme torsional irregularity",
+  "SCWB": {
+   "joint": "W14X730 / W40X277 RBS (Y faces)",
+   "ratio": 1.13,
+   "check": "ratio 1.13 > 1.0 OK (biaxial at corners by cos-resolution)",
+   "cite": "AISC 341-22 E3.4a"
+  },
+  "panel_zone": {
+   "Ru_kip": 2410.0,
+   "phiRn_kip": 3041.0,
+   "doubler_in": 0.0,
+   "cite": "AISC 341-22 E3.6e + J10.6 J10-11"
+  },
+  "wind": "V=120 mph RC-IV map; seismic governs strength and (tight) drift",
+  "vertical_irregularity": {
+   "computed": "story stiffness ratios K1/K2: X=1.42, Y=1.35; K1/avg(K2..K4): X=1.58, Y=1.51",
+   "classification": "NO Type 1a/1b soft story: ratios exceed the 0.70/0.80 thresholds (Table 12.3-2)",
+   "cite": "ASCE 7-22 Table 12.3-2 (computed from model story stiffnesses)"
+  }
+ },
+ "ddm_analysis": {
+  "method": "Direct Design Method (system-based design by advanced analysis) -- steltic_ddm 0.1",
+  "basis": [
+   "Zhang, Shayan, Rasmussen & Ellingwood, JCSR 123 (2016) I & II",
+   "AISC 360-22 Appendix 1 (design by advanced analysis) -- cite via Query file manager",
+   "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50",
+   "Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+   "Zhang H., Rasmussen K.J.R., Shayan S., Ellingwood B.R. -- System reliability of steel frames designed by inelastic analysis, SSRC Annual Stability Conference 2013 (open PDF, aisc.org). Table 10: phi_s = 0.90/0.85/0.80/0.70 at beta_T = 2.5/2.75/3.0/3.5, 1.2G+1.5Q, nine planar moment frames",
+   "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid)",
+   "Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449"
+  ],
+  "phi_s_provisional": false,
+  "phi_s_status": "Classes used: HR-G = 0.70 at beta_T 3.50 [VERIFIED]; HR-W = 0.80 at beta_T 3.00 [VERIFIED]. Every class used is verified from open documents (SSRC 2013 Table 10; Wan 2024 thesis Tables 6.10-6.14 / Eq. 6.9; Arrayago-Rasmussen-Zhang 2022 for the cited HSS/CFS wind values); see docs/PHI_S_SOURCES.md.",
+  "phi_s_classes": {
+   "HR-G": {
+    "phi_s": 0.7,
+    "beta_T": 3.5,
+    "status": "verified"
+   },
+   "SEIS": {
+    "phi_s": null,
+    "beta_T": null,
+    "status": "n/a"
+   },
+   "HR-W": {
+    "phi_s": 0.8,
+    "beta_T": 3.0,
+    "status": "verified"
+   }
+  },
+  "model": {
+   "elements": "forceBeamColumn / Corotational / 5 IP fibre",
+   "nsub": [
+    2,
+    2,
+    4
+   ],
+   "material": "Steel01 Fy=50 E=29000 b=0.002",
+   "residual_stress": "lehigh",
+   "out_of_plumb": "1/500",
+   "out_of_straightness": "L/1000",
+   "diaphragm": "rigid (as designed)",
+   "joints": "as designed",
+   "transfer_gate": {
+    "pass": true,
+    "rows": [
+     {
+      "quantity": "T1 (s)",
+      "steltic": 1.1147,
+      "gmnia": 1.1231,
+      "ratio": 1.0075,
+      "ok": true
+     },
+     {
+      "quantity": "T2 (s)",
+      "steltic": 0.964,
+      "gmnia": 0.9668,
+      "ratio": 1.0029,
+      "ok": true
+     },
+     {
+      "quantity": "T3 (s)",
+      "steltic": 0.7369,
+      "gmnia": 0.7411,
+      "ratio": 1.0057,
+      "ok": true
+     },
+     {
+      "quantity": "roof disp X under ELF pattern (in)",
+      "steltic": 1.5421,
+      "gmnia": 1.5515,
+      "ratio": 1.0061,
+      "ok": true
+     },
+     {
+      "quantity": "roof disp Y under ELF pattern (in)",
+      "steltic": 2.0531,
+      "gmnia": 2.0833,
+      "ratio": 1.0147,
+      "ok": true
+     }
+    ]
+   }
+  },
+  "combinations": [
+   {
+    "label": "1.4D",
+    "kind": "gravity",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 3.518,
+    "lambda_first_yield": 2.797,
+    "phi_s": 0.7,
+    "phi_class": "HR-G",
+    "phi_source": "Zhang H., Rasmussen K.J.R., Shayan S., Ellingwood B.R. -- System reliability of steel frames designed by inelastic analysis, SSRC Annual Stability Conference 2013 (open PDF, aisc.org). Table 10: phi_s = 0.90/0.85/0.80/0.70 at beta_T = 2.5/2.75/3.0/3.5, 1.2G+1.5Q, nine planar moment frames; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 2.462 PASS",
+    "mechanism": "beam yielding (38 beam members at hinge level), limited post-peak ductility",
+    "hinges_by_role": {
+     "roof": 38
+    },
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": null,
+    "steps": 136,
+    "seconds": 209.5
+   },
+   {
+    "label": "1.2D+1.6L+0.5Lr",
+    "kind": "gravity",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 1.84,
+    "lambda_first_yield": 1.821,
+    "phi_s": 0.7,
+    "phi_class": "HR-G",
+    "phi_source": "Zhang H., Rasmussen K.J.R., Shayan S., Ellingwood B.R. -- System reliability of steel frames designed by inelastic analysis, SSRC Annual Stability Conference 2013 (open PDF, aisc.org). Table 10: phi_s = 0.90/0.85/0.80/0.70 at beta_T = 2.5/2.75/3.0/3.5, 1.2G+1.5Q, nine planar moment frames; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 1.288 PASS",
+    "mechanism": "inelastic column instability -- 15 columns yielded at the peak (W14X193), no beam hinge",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": null,
+    "steps": 39,
+    "seconds": 136.6
+   },
+   {
+    "label": "1.2D+1.6Lr+0.5L",
+    "kind": "gravity",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 2.957,
+    "lambda_first_yield": 2.597,
+    "phi_s": 0.7,
+    "phi_class": "HR-G",
+    "phi_source": "Zhang H., Rasmussen K.J.R., Shayan S., Ellingwood B.R. -- System reliability of steel frames designed by inelastic analysis, SSRC Annual Stability Conference 2013 (open PDF, aisc.org). Table 10: phi_s = 0.90/0.85/0.80/0.70 at beta_T = 2.5/2.75/3.0/3.5, 1.2G+1.5Q, nine planar moment frames; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 2.070 PASS",
+    "mechanism": "partial yielding (30 gravity_col, 12 floor, 38 roof) without a developed hinge at the peak",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": null,
+    "steps": 66,
+    "seconds": 158.9
+   },
+   {
+    "label": "(1.2+0.2SDS)D+rhoEX+t++0.5L",
+    "kind": "seismic",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 2.174,
+    "lambda_first_yield": null,
+    "phi_s": null,
+    "phi_class": "SEIS",
+    "phi_source": null,
+    "check": "n/a",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": 3.601,
+    "steps": 47,
+    "seconds": 97.3
+   },
+   {
+    "label": "(0.9-0.2SDS)D+rhoEX+t+",
+    "kind": "seismic",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 4.313,
+    "lambda_first_yield": 3.355,
+    "phi_s": null,
+    "phi_class": "SEIS",
+    "phi_source": null,
+    "check": "n/a",
+    "mechanism": "partial yielding (18 lateral_col, 34 floor, 10 roof) without a developed hinge at the peak",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": 7.058,
+    "steps": 91,
+    "seconds": 113.8
+   },
+   {
+    "label": "(1.2+0.2SDS)D+rhoEX-t++0.5L",
+    "kind": "seismic",
+    "imperfection": "-X",
+    "scheme": "proportional",
+    "lambda_u": 2.174,
+    "lambda_first_yield": null,
+    "phi_s": null,
+    "phi_class": "SEIS",
+    "phi_source": null,
+    "check": "n/a",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": -3.601,
+    "steps": 47,
+    "seconds": 105.9
+   },
+   {
+    "label": "(0.9-0.2SDS)D+rhoEX-t+",
+    "kind": "seismic",
+    "imperfection": "-X",
+    "scheme": "proportional",
+    "lambda_u": 4.313,
+    "lambda_first_yield": 3.45,
+    "phi_s": null,
+    "phi_class": "SEIS",
+    "phi_source": null,
+    "check": "n/a",
+    "mechanism": "partial yielding (17 lateral_col, 29 floor) without a developed hinge at the peak",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": -6.899,
+    "steps": 90,
+    "seconds": 110.1
+   },
+   {
+    "label": "(1.2+0.2SDS)D+rhoEY+t++0.5L",
+    "kind": "seismic",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 2.166,
+    "lambda_first_yield": null,
+    "phi_s": null,
+    "phi_class": "SEIS",
+    "phi_source": null,
+    "check": "n/a",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": 4.911,
+    "steps": 50,
+    "seconds": 111.9
+   },
+   {
+    "label": "(0.9-0.2SDS)D+rhoEY+t+",
+    "kind": "seismic",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 4.299,
+    "lambda_first_yield": 2.764,
+    "phi_s": null,
+    "phi_class": "SEIS",
+    "phi_source": null,
+    "check": "n/a",
+    "mechanism": "beam yielding (10 beam members at hinge level), limited post-peak ductility",
+    "hinges_by_role": {
+     "lateral_col": 3,
+     "floor": 10
+    },
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": 10.342,
+    "steps": 101,
+    "seconds": 133.6
+   },
+   {
+    "label": "(1.2+0.2SDS)D+rhoEY-t++0.5L",
+    "kind": "seismic",
+    "imperfection": "-Y",
+    "scheme": "proportional",
+    "lambda_u": 2.166,
+    "lambda_first_yield": null,
+    "phi_s": null,
+    "phi_class": "SEIS",
+    "phi_source": null,
+    "check": "n/a",
+    "mechanism": "partial yielding (6 roof) without a developed hinge at the peak",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": -4.914,
+    "steps": 46,
+    "seconds": 117.3
+   },
+   {
+    "label": "(0.9-0.2SDS)D+rhoEY-t+",
+    "kind": "seismic",
+    "imperfection": "-Y",
+    "scheme": "proportional",
+    "lambda_u": 4.298,
+    "lambda_first_yield": 2.763,
+    "phi_s": null,
+    "phi_class": "SEIS",
+    "phi_source": null,
+    "check": "n/a",
+    "mechanism": "beam yielding (10 beam members at hinge level), limited post-peak ductility",
+    "hinges_by_role": {
+     "lateral_col": 3,
+     "floor": 10
+    },
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": -10.341,
+    "steps": 101,
+    "seconds": 125.1
+   },
+   {
+    "label": "1.2D+1.0WX++0.5L+0.5Lr",
+    "kind": "wind",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 2.412,
+    "lambda_first_yield": null,
+    "phi_s": 0.8,
+    "phi_class": "HR-W",
+    "phi_source": "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid); Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 1.930 PASS",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": 0.783,
+    "steps": 53,
+    "seconds": 96.2
+   },
+   {
+    "label": "0.9D+1.0WX+",
+    "kind": "wind",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 3.464,
+    "lambda_first_yield": null,
+    "phi_s": 0.8,
+    "phi_class": "HR-W",
+    "phi_source": "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid); Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 2.771 PASS",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": 1.064,
+    "steps": 73,
+    "seconds": 99.8
+   },
+   {
+    "label": "1.2D+1.0WX-+0.5L+0.5Lr",
+    "kind": "wind",
+    "imperfection": "-X",
+    "scheme": "proportional",
+    "lambda_u": 2.412,
+    "lambda_first_yield": null,
+    "phi_s": 0.8,
+    "phi_class": "HR-W",
+    "phi_source": "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid); Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 1.930 PASS",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": -0.783,
+    "steps": 53,
+    "seconds": 96.4
+   },
+   {
+    "label": "0.9D+1.0WX-",
+    "kind": "wind",
+    "imperfection": "-X",
+    "scheme": "proportional",
+    "lambda_u": 3.464,
+    "lambda_first_yield": null,
+    "phi_s": 0.8,
+    "phi_class": "HR-W",
+    "phi_source": "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid); Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 2.771 PASS",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": -1.064,
+    "steps": 73,
+    "seconds": 96.6
+   },
+   {
+    "label": "1.2D+1.0WY++0.5L+0.5Lr",
+    "kind": "wind",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 2.407,
+    "lambda_first_yield": null,
+    "phi_s": 0.8,
+    "phi_class": "HR-W",
+    "phi_source": "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid); Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 1.925 PASS",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": 1.542,
+    "steps": 53,
+    "seconds": 118.3
+   },
+   {
+    "label": "0.9D+1.0WY+",
+    "kind": "wind",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 3.454,
+    "lambda_first_yield": null,
+    "phi_s": 0.8,
+    "phi_class": "HR-W",
+    "phi_source": "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid); Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 2.763 PASS",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": 2.121,
+    "steps": 76,
+    "seconds": 97.2
+   },
+   {
+    "label": "1.2D+1.0WY-+0.5L+0.5Lr",
+    "kind": "wind",
+    "imperfection": "-Y",
+    "scheme": "proportional",
+    "lambda_u": 2.407,
+    "lambda_first_yield": null,
+    "phi_s": 0.8,
+    "phi_class": "HR-W",
+    "phi_source": "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid); Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 1.925 PASS",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": -1.542,
+    "steps": 53,
+    "seconds": 110.2
+   },
+   {
+    "label": "0.9D+1.0WY-",
+    "kind": "wind",
+    "imperfection": "-Y",
+    "scheme": "proportional",
+    "lambda_u": 3.454,
+    "lambda_first_yield": null,
+    "phi_s": 0.8,
+    "phi_class": "HR-W",
+    "phi_source": "Wan W. -- System reliability of semi-rigid steel frames designed with Direct Design Method, PhD thesis, University of Sydney 2024 (open access, hdl 2123/32474): Tables 6.10-6.14 (rigid rows: mean beta 3.02 at phi_s 0.80, 2.80 at 0.85; five planar hot-rolled frames, 1.2D+0.5L+W), Table 6.15 and Eq. 6.9 beta = -4.41 phi_s + 6.65 (semi-rigid); Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R., Yan S. -- System-based limit state design criterion for 3D steel frames under wind loads, J. Constr. Steel Res. 157 (2019) 440-449; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 2.763 PASS",
+    "mechanism": "peak reached while elastic (geometric instability)",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": -2.121,
+    "steps": 76,
+    "seconds": 107.7
+   }
+  ],
+  "sensitivity": [],
+  "member_state_at_collapse": [
+   {
+    "role": "floor",
+    "section": "W27X94",
+    "n": 190,
+    "DC": 0.897,
+    "combo": "1.2D+1.6Lr+0.5L",
+    "ratio": 1.15,
+    "yielded": 12,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "floor",
+    "section": "W36X194",
+    "n": 24,
+    "DC": 0.309,
+    "combo": "(0.9-0.2SDS)D+rhoEX+t+",
+    "ratio": 1.23,
+    "yielded": 2,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "floor",
+    "section": "W36X232",
+    "n": 36,
+    "DC": 0.285,
+    "combo": "(0.9-0.2SDS)D+rhoEX+t+",
+    "ratio": 2.03,
+    "yielded": 32,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "floor",
+    "section": "W36X256",
+    "n": 16,
+    "DC": 0.268,
+    "combo": "(0.9-0.2SDS)D+rhoEY+t+",
+    "ratio": 1.77,
+    "yielded": 5,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "floor",
+    "section": "W40X277",
+    "n": 24,
+    "DC": 0.304,
+    "combo": "(0.9-0.2SDS)D+rhoEY-t+",
+    "ratio": 6.22,
+    "yielded": 23,
+    "hinges": 10,
+    "buckled": 0
+   },
+   {
+    "role": "gravity_col",
+    "section": "W14X145",
+    "n": 30,
+    "DC": 0.496,
+    "combo": "1.4D",
+    "ratio": 0.98,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "gravity_col",
+    "section": "W14X193",
+    "n": 30,
+    "DC": 0.622,
+    "combo": "1.4D",
+    "ratio": 2.15,
+    "yielded": 30,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "gravity_col",
+    "section": "W14X90",
+    "n": 30,
+    "DC": 0.38,
+    "combo": "1.4D",
+    "ratio": 0.72,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "lateral_col",
+    "section": "W14X500",
+    "n": 40,
+    "DC": 0.142,
+    "combo": "(0.9-0.2SDS)D+rhoEY-t+",
+    "ratio": 1.46,
+    "yielded": 7,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "lateral_col",
+    "section": "W14X605",
+    "n": 40,
+    "DC": 0.18,
+    "combo": "(0.9-0.2SDS)D+rhoEY-t+",
+    "ratio": 2.86,
+    "yielded": 20,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "lateral_col",
+    "section": "W14X730",
+    "n": 40,
+    "DC": 0.183,
+    "combo": "(0.9-0.2SDS)D+rhoEY-t+",
+    "ratio": 5.43,
+    "yielded": 30,
+    "hinges": 3,
+    "buckled": 0
+   },
+   {
+    "role": "roof",
+    "section": "W24X76",
+    "n": 38,
+    "DC": 0.728,
+    "combo": "1.4D",
+    "ratio": 9.14,
+    "yielded": 38,
+    "hinges": 38,
+    "buckled": 0
+   },
+   {
+    "role": "roof",
+    "section": "W33X141",
+    "n": 12,
+    "DC": 0.265,
+    "combo": "(0.9-0.2SDS)D+rhoEX+t+",
+    "ratio": 0.53,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "roof",
+    "section": "W36X232",
+    "n": 8,
+    "DC": 0.142,
+    "combo": "(0.9-0.2SDS)D+rhoEY+t+",
+    "ratio": 0.44,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   }
+  ],
+  "caveats": [
+   "LTB/local buckling of beams outside the fibre model",
+   "collector axial not in rigid-diaphragm model",
+   "connections not modelled",
+   "composite action ignored"
+  ]
+ }
+}

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steltic-nonlinear"
+version = "0.1.0"
+description = "Steltic_nonlinear (SNL): Pushover (ASCE 41 NSP), NLRHA (ASCE 7-22 Ch. 16) and DDM (GMNIA system capacity) on a Steltic steel design package, with 3-D viewers and the four-analyses comparison"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = {text = "MIT"}
+dependencies = ["openseespy>=3.5", "numpy>=1.24", "scipy>=1.10", "matplotlib>=3.7"]
+
+[project.scripts]
+snl = "snl.cli:main"
+
+[tool.setuptools]
+packages = ["snl", "pushover", "nlrha", "steltic_ddm", "records"]
+
+[tool.setuptools.package-data]
+snl = ["four_analyses.css"]
+pushover = ["aisc_shapes.csv", "hinge_params.json", "viewer_core.html", "vendor/*"]
+nlrha = ["ch16_params.json", "viewer_core.html", "vendor/*"]
+steltic_ddm = ["data/*", "viewer_core.html", "vendor/*"]
+records = ["p695_farfield/*", "p695_farfield/*/*"]

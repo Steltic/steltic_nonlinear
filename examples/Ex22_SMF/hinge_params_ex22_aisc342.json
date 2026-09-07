@@ -1,0 +1,168 @@
+{
+ "_README": [
+  "RUN-SPECIFIC parameter file for Ex22_SMF (Steltic viewer bundle demonstration, 2026-09-05). Values read from the converted",
+  "ANSI/AISC 342-22 and ASCE/SEI 41-23 in C:/steltic/grok/converted/converted_2026-09-05 (pdf pages cited per block).",
+  "This file lives with the Ex22 outputs only; the repository copy stays a placeholder because the Grok Bot live-queries the standards.",
+  "Table C3.6 column expressions were decoded from a table whose equations the converter flattened -- see 'decode_note'."
+ ],
+ "verified": true,
+ "source": "ANSI/AISC 342-22 Tables C2.2 (pdf 61-62), C3.6 (pdf 78-79, printed 46-47), C5.5 (pdf 113-114) + Eqs. C2-2, C2-4, C3-15, C5-21; Sec. C5.4a.1.a.1(a)-(d) (pdf 106-110); Table A5.2 (pdf 43) -> AISC 341-22 Table A3.2 Ry; ASCE/SEI 41-23 Sec. 7.4.3.2.5-7.4.3.3.2, Eqs. 7-28..7-34, Tables 7-4, 7-5, 2-5 (BPON)",
+ "material": {
+  "Fy_ksi": 50.0,
+  "Ry_expected": 1.1,
+  "note": "ASTM A992 W-shapes. AISC 342-22 Sec. A5.2a / Table A5.2 (pdf 43): Fye = Ry Fy with Ry from AISC 341-22 Table A3.2 (A992: Ry = 1.1) -> Fye = 55 ksi."
+ },
+ "beam_flexure": {
+  "mode": "fr_connection",
+  "basis": "SMF beams with RBS moment connections conforming to ANSI/AISC 358 -> AISC 342-22 Table C5.5 (pdf 113-114), row 'RBS moment connection in conformance with ANSI/AISC 358 [b][e]': a = X2 <= 0.07, b = 0.07, c = 0.3; IO = 0.5a, LS = 0.75b, CP = b. X2 (note [e]) = 0.55 (h/tw)^-0.5 (bf/2tf)^-0.7 (Lb/ry)^-0.5 (L/d)^0.8. Values apply at the column face (note [a]); modified per Sec. C5.4a.1.a.1(a)-(d), cumulative (C5.4a.2).",
+  "a_expr": "0.55*(h/tw)**-0.5*(bf/(2*tf))**-0.7*(Lb/ry)**-0.5*(L/d)**0.8",
+  "a_max": 0.07,
+  "b_abs": 0.07,
+  "c_residual": 0.3,
+  "IO_frac_of_a": 0.5,
+  "LS_frac_of_b": 0.75,
+  "CP_frac_of_b": 1.0,
+  "Lb_over_ry": 55.1,
+  "Lb_note": "Steltic design bracing Lb = 0.095 E ry / Fy (calc_package inputs Lb_in, Lb/ry = 55.1 for every SMF beam)",
+  "rbs_note": "RBS flange cut c = 0.25 bf per beam (AISC 358-22 Sec. 5.8 Step 1 upper limit; Steltic's W40X277 detail c = 4.0 in = 0.25 bf); Z_RBS = Zx - 2 c tbf (d - tbf) (AISC 358-22 Eq. 5.8-4) sets M_CE of the hinge (C5.3a.1(b): M_CE per ANSI/AISC 358)",
+  "Mc_over_My": 1.15,
+  "Mc_note": "capping ratio taken as Cpr = 1.15 (AISC 358 Eq. 2.4.3-2 upper limit) -- modelling assumption, not a Table C5.5 value",
+  "modifiers": [
+   {
+    "factor": 0.8,
+    "why": "C5.4a.1.a.1(b): V_PZ/V_ye (Eq. C5-21 / C4.3a with Spec. J10.6(a)) outside 0.6-0.9 at most joints -- corner joints 0.3-0.5, interior Y-face joints 1.1-1.4 (no doubler plates); interior X-face joints 0.88-0.93. Applied to all FR hinges (conservative)."
+   }
+  ],
+  "modifier_checks": {
+   "(a) continuity plates": "1 in plates >= tbf/2 (max tbf 1.73 in) and W14 column flanges tcf >= bbf/5.2 -> satisfied, no reduction",
+   "(b) panel zone": "see modifiers: x0.8 applied",
+   "(c) slenderness": "all SMF beams highly ductile (bf/2tf <= 0.31 sqrt(E/Fye) = 7.1, h/tw <= 2.45 sqrt(E/Fye) = 56.3) -> no reduction",
+   "(d) clear span / depth": "Lcf/db = (360 - dc)/db >= 8.1 for every SMF beam -> no reduction (applies to Table C5.4 m anyway)"
+  },
+  "theta_y": "AISC 342-22 Eq. C2-2 with eta = 0 (shear deformation not modelled), L_CL = span between column centrelines, M_CE = Z_RBS Fye",
+  "noncompact_reduction": 0.5,
+  "table_C2_2_reference": {
+   "note": "beam (member) values, used only if a hinge is NOT an FR connection: highly ductile a = 9 thy, b = 11 thy, c = 0.6; IO 0.25a, LS a, CP b; non-moderately ductile a = 4 thy, b = 6 thy, c = 0.2; IO 0.25a, LS 0.75a, CP a (AISC 342-22 Table C2.2, pdf 62)",
+   "a_over_thetay": 9.0,
+   "b_over_thetay": 11.0,
+   "c_residual": 0.6,
+   "IO_over_thetay": 2.25,
+   "LS_over_thetay": 9.0,
+   "CP_over_thetay": 11.0
+  },
+  "rbs_c_frac_bf": 0.25
+ },
+ "column_flexure": {
+  "basis": "AISC 342-22 Table C3.6 (pdf 78, printed 46), 'Columns and braces in compression, 1. highly ductile': a = 5.5 (h/tw)^-0.95 (L/ry)^-0.5 (1 - PG/Pye)^2.4 <= 0.07; b = 20 (h/tw)^-0.9 (L/ry)^-0.5 (1 - PG/Pye)^3.4 <= 0.07 (as printed); c = 0.4 - 0.4 PG/Pye; IO = 0.5a, LS = 0.75b, CP = b. Sec. C3.4a.2.b: elastic (force-controlled) where a = 0 or PG/Pye > 0.6. theta_y per Eq. C3-15 with M_CE, tau_b = 1 (PG/Pye <= 0.5).",
+  "decode_note": "The converter flattened the Table C3.6 equations into digit strings ('5 5 1 0 07 0 95 0 5 2 4', '20 1 0 07 0 9 0 5 3 4', '0 4 0 4'); the expressions above are the consistent reading. The b cap prints as 0.07 (ASCE 41-17 used 0.15) -- CONFIRM against the PDF page 46 before relying on CP for columns. Row 2 (non-moderately ductile) could not be decoded; Ex22 columns are all highly ductile so it is not used.",
+  "a_expr": "5.5*(h/tw)**-0.95*(L/ry)**-0.5*(1-PG/Pye)**2.4",
+  "b_expr": "20*(h/tw)**-0.9*(L/ry)**-0.5*(1-PG/Pye)**3.4",
+  "c_expr": "0.4-0.4*PG/Pye",
+  "a_min": 0.0,
+  "a_max": 0.07,
+  "b_max": 0.07,
+  "Mc_over_My": 1.1,
+  "IO_frac_of_a": 0.5,
+  "LS_frac_of_b": 0.75,
+  "CP_frac_of_b": 1.0,
+  "force_controlled_above_P_over_Pye": 0.6,
+  "Mpce_axial_reduction": "min(1.0, 1.18*(1-PG/Pye))",
+  "theta_y_uses_Mpce": true,
+  "non_highly_ductile_reduction": 0.5,
+  "note": "PG = gravity axial (ASCE 41-23 Eq. 7-3 combination as applied by the tool); Pye = Ag Fye. L = unbraced length = storey height (L/ry, not 0.1 L/ry as in ASCE 41-17)."
+ },
+ "brace_axial": {
+  "basis": "HSS brace, concentrically braced frame -- phenomenological axial backbone (ASCE 41-17 Table 9-8 form, PLACEHOLDER from memory); deformations are multiples of delta_c (axial shortening at expected buckling) and delta_T (axial elongation at expected yield)",
+  "Fy_ksi": 50.0,
+  "Ry_expected": 1.3,
+  "K_effective": 1.0,
+  "Pcr_expected_factor": 1.14,
+  "compression": {
+   "slender_limit": "4.2*sqrt(E/Fye)",
+   "stocky_limit": "2.1*sqrt(E/Fye)",
+   "slender": {
+    "a_over_dc": 0.5,
+    "b_over_dc": 10.0,
+    "c": 0.3,
+    "IO_over_dc": 0.5,
+    "LS_over_dc": 8.0,
+    "CP_over_dc": 10.0
+   },
+   "stocky": {
+    "a_over_dc": 1.0,
+    "b_over_dc": 8.0,
+    "c": 0.5,
+    "IO_over_dc": 0.5,
+    "LS_over_dc": 7.0,
+    "CP_over_dc": 8.0
+   },
+   "note": "linear interpolation between the stocky and slender limits on KL/r"
+  },
+  "tension": {
+   "a_over_dT": 11.0,
+   "b_over_dT": 14.0,
+   "c": 0.8,
+   "hardening_ratio": 1.1,
+   "IO_over_dT": 0.5,
+   "LS_over_dT": 10.0,
+   "CP_over_dT": 13.0
+  },
+  "element": "corotTruss + Hysteretic (no pinching, no cyclic damage) -- monotonic pushover; cyclic deterioration to be added for NLRHA",
+  "note": "UNVERIFIED placeholders. Retrieve AISC 342-22 brace modelling parameters / acceptance and AISC 341-22 Table A3.2 Ry (A500 Gr. C) and F2.3 expected brace strengths (RyFyAg; 1.14 Fcre Ag) through Query file manager before use."
+ },
+ "gravity_for_pushover": {
+  "expr": "1.1*(QD + 0.25*QL)",
+  "note": "ASCE 41 Sec. 7.2.2 Eq. 7-1 form; QL = 25% of the unreduced design live load. Prototype distributes each level's weight equally to that level's column nodes. Verify clause and factors."
+ },
+ "nsp": {
+  "load_pattern": "first mode shape x mass (ASCE 41 Sec. 7.4.3.2.3)",
+  "push_to_fraction_of_target": 1.5,
+  "Ke_at_fraction_of_Vy": 0.6,
+  "C1_site_factor_a": {
+   "A": 130,
+   "B": 130,
+   "C": 90,
+   "D": 60,
+   "E": 60,
+   "F": 60
+  },
+  "default_site_class": "D",
+  "Cm_steel_MF_3plus_stories": 0.9,
+  "Cm_steel_CBF_3plus_stories": 0.9,
+  "Cm_1_2_stories": 1.0,
+  "hazard_levels": {
+   "BSE-1N": 1.0,
+   "BSE-2N": 1.5
+  },
+  "note": "BSE-1N spectrum = ASCE 7 design spectrum (SDS, SD1); BSE-2N = 1.5x (MCE_R). Performance check: LS at BSE-1N, CP at BSE-2N (BPON). Confirm Table 7-4/7-5 and Eq. 7-28..7-32 numbering in ASCE 41-23.",
+  "verified_against": "ASCE/SEI 41-23 Sec. 7.4.3.2.5 (Ke at 0.6 Vy, bilinear balance), Eq. 7-28 Te, Eq. 7-29 delta_t, Eq. 7-30 C1 (a = 130 A/B, 90 C, 60 D/E/F; C1 = 1 for Te > 1.0 s), Eq. 7-31 C2 (= 1 for Te > 0.7 s), Eq. 7-32 mu_strength with Cm (Table 7-4: steel MF 3+ storeys 0.9; 1.0 if T > 1.0 s), Eq. 7-33 mu_max with h = 1 + 0.15 ln Te, Eq. 7-34 alpha_e with lambda = 0.8 (SX1 >= 0.6) / 0.2; Table 7-5 C0 (tool uses Gamma1*phi_roof per bullet 1); BSE-2N = MCE_R, BSE-1N = 2/3 BSE-2N (Sec. 2.3.1.1); BPON Table 2-5: RC IV -> IO at BSE-1N, LS at BSE-2N. Equation numbers in the tool's comments are the ASCE 41-17 numbering (one lower)."
+ },
+ "numerics": {
+  "post_cap_ratio": 0.5,
+  "tail_strategies": [
+   "fine_step",
+   "arclength"
+  ],
+  "note": "Ex22 modelling decision (tail-protocol rung 3, disclosed): the descent from Mc to the residual c*My is spread over 0.5a of hinge rotation instead of the default 0.15a (near-vertical). Reason: with 660 IMK hinges the near-vertical drop stopped the static solver at Vmax in both directions and produced non-convergence in the first Chapter 16 record (Imperial Valley Delta, 21 failed steps at 2% drift). The change eases the numerics; it does not alter a, b, c or the acceptance limits."
+ },
+ "fema_p695": {
+  "delta_u_at_strength_fraction": 0.8,
+  "note": "Omega = Vmax/V ; mu_T = delta_u / delta_y,eff with delta_y,eff = C0*(Vmax/W)*(g/4pi^2)*max(T,T1)^2 (FEMA P-695 Sec. 6.3)."
+ },
+ "compactness": {
+  "note": "AISC 341-22 Table D1.1 form (lambda_hd / lambda_md), Fye in place of Ry Fy, Ca = PG/Pye (AISC 342-22 Table C3.6 note [b]). Numeric limits are the AISC 341-22 Table D1.1 values as implemented in this tool -- AISC 341 was NOT in the converted set; re-verify with Query file manager.",
+  "flange_hd": 0.32,
+  "flange_md": 0.4,
+  "web_Ca_break": 0.114,
+  "web_hd_lowCa": 2.57,
+  "web_hd_lowCa_k": 1.04,
+  "web_md_lowCa": 3.96,
+  "web_md_lowCa_k": 3.04,
+  "web_hd_highCa": 0.88,
+  "web_hd_highCa_c": 2.68,
+  "web_hd_floor": 1.57,
+  "web_md_highCa": 1.29,
+  "web_md_highCa_c": 2.12,
+  "web_md_floor": 1.57
+ }
+}

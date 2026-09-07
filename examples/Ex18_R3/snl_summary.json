@@ -1,0 +1,93 @@
+{
+ "building": "Ex18_R3",
+ "date": "2026-09-07",
+ "risk_category": "I_II",
+ "basis": {
+  "SDS": 0.2,
+  "SD1": 0.09,
+  "S1": 0.09,
+  "R": 3.0,
+  "Cd": 3.0,
+  "Om0": 3.0,
+  "Ie": 1.0,
+  "system": "R=3 steel not specifically detailed (OCBF-type X-braced), AISC 360 only",
+  "W_kip": 9746.0,
+  "V_design_kip": 260.0,
+  "T_design_s": 1.12,
+  "L_floor_psf": 65.0,
+  "heights_in": null,
+  "site_class": null,
+  "sources": {
+   "SDS": "cfg.py",
+   "SD1": "cfg.py",
+   "S1": "cfg.py",
+   "R": "cfg.py",
+   "Cd": "cfg.py",
+   "Om0": "cfg.py",
+   "Ie": "cfg.py",
+   "system": "cfg.py",
+   "L_floor_psf": "cfg.py",
+   "W_kip": "report.html",
+   "V_design_kip": "report.html",
+   "T_design_s": "report.html"
+  }
+ },
+ "steltic": {
+  "dc_max": 0.959,
+  "drift_max_pct": 0.534,
+  "drift_limit_pct": 2.0,
+  "V_kip": 260.0,
+  "W_kip": 9746.0
+ },
+ "pushover": {
+  "Omega": {
+   "X": 6.515939499710956,
+   "Y": 6.182898885530932
+  },
+  "Vmax": {
+   "X": 1694.1442699248485,
+   "Y": 1607.5537102380422
+  },
+  "target_disp_BSE2N": {
+   "X": 3.00324844886414,
+   "Y": 3.4023517689437277
+  },
+  "bpon_levels": [
+   "LS",
+   "CP"
+  ],
+  "bpon_ok": true,
+  "nsp_permitted": true,
+  "max_story_drift_BSE2N": {
+   "X": 0.0038433154210942787,
+   "Y": 0.004649809383314967
+  },
+  "tail": {
+   "X": "captured",
+   "Y": "lower_bound"
+  },
+  "params_verified": false
+ },
+ "nlrha": {
+  "verdict": "ACCEPTABLE",
+  "n_records": 11,
+  "n_unacceptable": 0,
+  "mean_drift_max": 0.004069756744955963,
+  "mean_limit": 0.0395316,
+  "roof_mean_in": [
+   3.1187480104382477,
+   3.106377406988027
+  ],
+  "worst_DC_CP": 0.21661722394209354,
+  "worst_DC_force_controlled": 0.7883862726053337,
+  "retried": []
+ },
+ "ddm": {
+  "governing": "1.2D+1.6L+0.5Lr",
+  "lambda_u": 1.2783539422101076,
+  "phi_lambda": 1.023,
+  "n_pass": 19,
+  "n_checked": 19,
+  "gate_ok": true
+ }
+}

@@ -1,0 +1,1364 @@
+{
+ "building": "Ex18_R3",
+ "generated": "2026-09-05T05:29:21",
+ "ch16": {
+  "_README": [
+   "ASCE 7-22 Chapter 16 rules implemented by the Non Linear Dynamic Bot's tool. Each item names the clause it",
+   "implements and the pdf page of the user's converted ASCE 7-22 (converted/ASCE7, printed pages 187-190) that was",
+   "read to confirm it. `verified: true` here means: read against that converted text on 2026-09-04. The wording is",
+   "paraphrased, not quoted -- spec text never leaves the Query file manager computer."
+  ],
+  "document": "ASCE/SEI 7-22",
+  "converted_source": "converted/ASCE7 (Docling), Chapter 16 pdf pages 248-251",
+  "verified": true,
+  "target_spectrum": {
+   "clause": "16.2.1.1 -> 11.4.6",
+   "pdf_page": 248,
+   "rule": "Method 1: single target = MCE_R spectrum = 1.5 x design response spectrum (5% damped)",
+   "factor": 1.5
+  },
+  "n_motions": {
+   "clause": "16.2.2",
+   "pdf_page": 249,
+   "rule": "not less than 11 ground motions, each a pair of orthogonal horizontal components; same tectonic regime, consistent M and R, similar spectral shape",
+   "min": 11
+  },
+  "period_range": {
+   "clause": "16.2.3.1",
+   "pdf_page": 249,
+   "rule": "upper bound >= 2 x largest first-mode period (>= 1.5x if justified by MCE_R dynamic analysis); lower bound includes the modes giving 90% mass participation each direction and <= 0.2 x smallest first-mode period",
+   "upper_factor": 2.0,
+   "lower_factor": 0.2
+  },
+  "amplitude_scaling": {
+   "clause": "16.2.3.2",
+   "pdf_page": 249,
+   "rule": "maximum-direction spectrum per pair; identical factor on both components; suite average generally matches or exceeds target and is not below 90% of target at any period in the range",
+   "min_ratio": 0.9
+  },
+  "spectral_matching": {
+   "clause": "16.2.3.3",
+   "pdf_page": 249,
+   "rule": "if matched: suite average >= 110% of target over the range (not used by this tool)"
+  },
+  "orientation": {
+   "clause": "16.2.4",
+   "pdf_page": 249,
+   "rule": "non-near-fault: pairs applied at orthogonal orientations so the mean component spectrum applied in each direction is within +-10% of the mean of all components over the period range",
+   "tol": 0.1
+  },
+  "modeling": {
+   "clause": "16.3.1",
+   "pdf_page": 250,
+   "rule": "3-D model; hysteretic behaviour consistent with ASCE 41 or test data; strength/stiffness degradation included unless shown not to occur"
+  },
+  "gravity": {
+   "clause": "16.3.2",
+   "pdf_page": 250,
+   "rule": "1.0D + 0.5L with L = 80% of unreduced live > 100 psf, else 40% of unreduced live; also 1.0D alone unless the exception (0.5L sum <= 25% D and L0 < 100 psf over >= 75% of area) applies",
+   "live_factor_le100psf": 0.4,
+   "live_factor_gt100psf": 0.8,
+   "combination_factor": 0.5,
+   "exception_live_over_dead": 0.25
+  },
+  "p_delta": {
+   "clause": "16.3.3",
+   "pdf_page": 250,
+   "rule": "P-delta with the spatial distribution of gravity loads included"
+  },
+  "torsion": {
+   "clause": "16.3.4",
+   "pdf_page": 250,
+   "rule": "inherent eccentricity; accidental 5% eccentricity only where a Type 1 horizontal irregularity exists"
+  },
+  "damping": {
+   "clause": "16.3.5",
+   "pdf_page": 250,
+   "rule": "hysteretic dissipation modelled directly; additional viscous damping <= 2.5% in significant modes",
+   "xi_max": 0.025,
+   "xi_used": 0.025
+  },
+  "results_basis": {
+   "clause": "16.4",
+   "pdf_page": 250,
+   "rule": "mean of story drift and element demand Qu used; if one unacceptable motion is permitted, use 120% of median but not less than the mean of the acceptable ones"
+  },
+  "unacceptable_response": {
+   "clause": "16.4.1.1",
+   "pdf_page": 250,
+   "rule": "non-convergence; deformation-controlled demand beyond valid modelling range; critical/ordinary force-controlled demand beyond capacity; peak transient story drift > 150% of the permissible mean; residual drift > 0.015 hsx for > 240 ft. Exception: RC I/II without spectral matching -> at most ONE motion may be unacceptable",
+   "peak_drift_factor_of_mean_limit": 1.5,
+   "max_unacceptable_RC_I_II": 1
+  },
+  "transient_drift": {
+   "clause": "16.4.1.2",
+   "pdf_page": 250,
+   "rule": "mean transient story drift <= 2 x Table 12.12-1 limit; for hn > 100 ft also <= hsx(4.71e-2 - 7.14e-5 hn) with hn in ft, not less than 0.03 hn; computed at the structure's edges within one analysis",
+   "factor_on_table_12_12_1": 2.0,
+   "table_12_12_1_all_other_RC_I_II": 0.02,
+   "tall_a": 0.0471,
+   "tall_b": 7.14e-05,
+   "tall_floor": 0.03,
+   "tall_height_ft": 100
+  },
+  "residual_drift": {
+   "clause": "16.4.1.3",
+   "pdf_page": 250,
+   "rule": "for > 240 ft: mean residual story drift <= 0.01 hsx",
+   "height_ft": 240,
+   "limit": 0.01
+  },
+  "force_controlled": {
+   "clause": "16.4.2.1",
+   "pdf_page": 251,
+   "rule": "(1.2 + 0.12 SMS) D + 0.5 L + 1.3 Ie (Qu - Qns) <= phi B Rn and (0.9 - 0.12 SMS) D + 1.3 Ie (Qu - Qns) <= phi B Rn; phi per material standard (critical), 0.9 (ordinary), 1.0 (noncritical); B = 1.0 or 0.9 Rne/Rn",
+   "gamma": 1.3,
+   "phi_critical": "material standard",
+   "phi_ordinary": 0.9,
+   "phi_noncritical": 1.0,
+   "B": 1.0
+  },
+  "deformation_controlled": {
+   "clause": "16.4.2.2",
+   "pdf_page": 251,
+   "rule": "valid range of modelling per the material standard, else ASCE 41 maximum deformation parameter; may be extended if strength and stiffness degrade to negligible values"
+  },
+  "gravity_system": {
+   "clause": "16.4.2.3",
+   "pdf_page": 251,
+   "rule": "elements not in the SFRS shown to carry gravity at the mean building displacements"
+  },
+  "linear_analysis": {
+   "clause": "16.1.2",
+   "pdf_page": 248,
+   "rule": "a Chapter 12 linear analysis is ALSO required (the Steltic package is that analysis); rho may be 1.0, Omega0 may be 1.0, drift limits of 12.12.1 need not apply for RC I-III"
+  },
+  "design_review": {
+   "clause": "16.5",
+   "pdf_page": 251,
+   "rule": "independent structural design review; at least one reviewer a registered design professional"
+  },
+  "component_models": {
+   "verified": false,
+   "note": "hinge / brace backbones come from steltic_pushover/hinge_params.json (ASCE 41 -> AISC 342 placeholders, UNVERIFIED). Cyclic deterioration is OFF (Lambda = 0) in this prototype -- 16.3.1 requires degradation unless shown not to govern; flagged in the report."
+  }
+ },
+ "component_params_verified": false,
+ "basis": {
+  "SDS": 0.2,
+  "SD1": 0.09,
+  "S1": 0.09,
+  "R": 3.0,
+  "Cd": 3.0,
+  "Om0": 3.0,
+  "Ie": 1.0,
+  "system": "R=3 steel not specifically detailed (OCBF-type X-braced), AISC 360 only",
+  "W_kip": 9746.0,
+  "V_design_kip": 260.0,
+  "T_design_s": 1.12,
+  "L_floor_psf": 65.0,
+  "heights_in": null,
+  "site_class": null,
+  "sources": {
+   "SDS": "cfg.py",
+   "SD1": "cfg.py",
+   "S1": "cfg.py",
+   "R": "cfg.py",
+   "Cd": "cfg.py",
+   "Om0": "cfg.py",
+   "Ie": "cfg.py",
+   "system": "cfg.py",
+   "L_floor_psf": "cfg.py",
+   "W_kip": "report.html",
+   "V_design_kip": "report.html",
+   "T_design_s": "report.html"
+  }
+ },
+ "modal": {
+  "modes": [
+   {
+    "mode": 1,
+    "T": 1.758996658841686,
+    "fx": 1.9124570584808796e-15,
+    "fy": 0.7070165641704745
+   },
+   {
+    "mode": 2,
+    "T": 1.6113915851876697,
+    "fx": 0.7259215466131361,
+    "fy": 1.8342822123291835e-15
+   },
+   {
+    "mode": 3,
+    "T": 1.199691873774059,
+    "fx": 1.1196399812314921e-15,
+    "fy": 9.455638492071367e-17
+   },
+   {
+    "mode": 4,
+    "T": 0.5058350040595042,
+    "fx": 1.79145254413376e-16,
+    "fy": 0.21221004311081962
+   },
+   {
+    "mode": 5,
+    "T": 0.49527054055029257,
+    "fx": 0.1988666379229776,
+    "fy": 2.0194440468393295e-16
+   },
+   {
+    "mode": 6,
+    "T": 0.3534970297097706,
+    "fx": 1.6072229423691175e-18,
+    "fy": 1.5559010850203973e-16
+   },
+   {
+    "mode": 7,
+    "T": 0.26622447162199825,
+    "fx": 1.7124496505790213e-15,
+    "fy": 0.04229779352716577
+   },
+   {
+    "mode": 8,
+    "T": 0.26575239304261605,
+    "fx": 0.03819282303998257,
+    "fy": 1.809233965845712e-15
+   },
+   {
+    "mode": 9,
+    "T": 0.1881354721294227,
+    "fx": 6.073706588085987e-16,
+    "fy": 1.6603581237023816e-14
+   },
+   {
+    "mode": 10,
+    "T": 0.18560587564742903,
+    "fx": 0.021410690751086793,
+    "fy": 2.8401868057598364e-19
+   },
+   {
+    "mode": 11,
+    "T": 0.18463857244247545,
+    "fx": 1.05025646365551e-21,
+    "fy": 0.022291165540222275
+   },
+   {
+    "mode": 12,
+    "T": 0.1450954920411641,
+    "fx": 3.909230665795857e-18,
+    "fy": 0.008306422093900435
+   }
+  ],
+  "T1x": 1.6113915851876697,
+  "T1y": 1.758996658841686,
+  "T90": 0.49527054055029257,
+  "cum_x": 0.924788184536117,
+  "cum_y": 0.9192266072812963
+ },
+ "ground_motions": {
+  "periods": [
+   0.16113915851876698,
+   0.17521332097074085,
+   0.19051674420913908,
+   0.2071567939181506,
+   0.22525021327961858,
+   0.24492394201930226,
+   0.2663160069900028,
+   0.2895764905397029,
+   0.314868583458592,
+   0.3423697298922379,
+   0.3722728722533826,
+   0.40478780486640603,
+   0.44014264584135243,
+   0.47858543750388505,
+   0.5203858866094585,
+   0.5658372565506945,
+   0.6152584248333015,
+   0.668996120255367,
+   0.7274273554856147,
+   0.7909620721070988,
+   0.8600460166834176,
+   0.9351638680253411,
+   1.0168426375981139,
+   1.1056553669259928,
+   1.202225147934256,
+   1.3072294944345786,
+   1.4214050954232182,
+   1.5455529835401831,
+   1.680544154950229,
+   1.8273256800736202,
+   1.986927348038297,
+   2.1604688914695527,
+   2.3491678423048765,
+   2.55434807374875,
+   2.7774490882959966,
+   3.020036116986554,
+   3.2838111007459894,
+   3.5706246308545735,
+   3.8824889323168,
+   4.221591981220047
+  ],
+  "target": [
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.30000000000000004,
+   0.28208129504338314,
+   0.25942286959314753,
+   0.2385845018812491,
+   0.21941999418630792,
+   0.20179489224611383,
+   0.18558554195405114,
+   0.17067822182720357,
+   0.15696834515971417,
+   0.1443597262638699,
+   0.13276390565100984,
+   0.12209952941786448,
+   0.11229177848422657,
+   0.10327184367760314,
+   0.09497644298214944,
+   0.08734737756500219,
+   0.08033112346518391,
+   0.07387845608045143,
+   0.06794410481756474,
+   0.06248643548307371,
+   0.05746715818634113,
+   0.05285105870550938,
+   0.04860575143172988,
+   0.04470145215836207,
+   0.041110769121077584,
+   0.03780851082285002,
+   0.03477150929556967,
+   0.03197845755832253
+  ],
+  "T_lower": 0.32227831703753396,
+  "T_upper": 3.517993317683372,
+  "suite_mean_rotd100": [
+   0.35732982326094936,
+   0.3813992437166418,
+   0.37945915691903687,
+   0.35487776736897025,
+   0.3446414339830357,
+   0.3416763761377158,
+   0.3261341759278205,
+   0.3000918117003739,
+   0.2881004815682393,
+   0.29185850372207667,
+   0.2901589886193646,
+   0.27904235030750446,
+   0.26999999999999996,
+   0.26645521285106016,
+   0.2532063495377626,
+   0.23543206158531363,
+   0.22246623242118452,
+   0.21274276684745946,
+   0.1894514491430713,
+   0.1658299266916081,
+   0.15930544683175296,
+   0.13512715976600648,
+   0.12876744464035592,
+   0.1273493467199276,
+   0.12840018509613033,
+   0.11998825109003665,
+   0.11455728823930253,
+   0.10715062372825233,
+   0.09453024393682265,
+   0.08441405776934909,
+   0.08213818310236137,
+   0.07354602364331292,
+   0.06544796441806172,
+   0.0595301452133894,
+   0.05181982413660862,
+   0.045138684397397426,
+   0.04187509937482621,
+   0.03684699229288618,
+   0.03386174472070626,
+   0.03138845816557087
+  ],
+  "min_ratio_in_range": 0.8999999999999997,
+  "mean_ratio_in_range": 1.053758349288784,
+  "passes_90pct": true,
+  "orientation_dev_x": 0.08001814392740247,
+  "orientation_dev_y": 0.08001814392740236,
+  "orientation_ok": true,
+  "common_multiplier": 1.0276226197688911,
+  "selected": [
+   {
+    "id": 12102,
+    "earthquake": "Loma Prieta",
+    "station": "Gilroy Array #3",
+    "M": 6.9,
+    "r_rup_km": 12.8,
+    "site_class": "D",
+    "dt": 0.005,
+    "duration_s": 39.945,
+    "sf": 0.2883957105571153,
+    "shape_misfit": 0.15135460523019198,
+    "x_comp": 1,
+    "comp1": "LOMAP/G03000.AT2",
+    "comp2": "LOMAP/G03090.AT2",
+    "pga_g": 0.56
+   },
+   {
+    "id": 12122,
+    "earthquake": "Superstition Hills",
+    "station": "Poe Road (temp)",
+    "M": 6.5,
+    "r_rup_km": 11.2,
+    "site_class": "D",
+    "dt": 0.01,
+    "duration_s": 22.3,
+    "sf": 0.341361701413775,
+    "shape_misfit": 0.1828504384945098,
+    "x_comp": 2,
+    "comp1": "SUPERST/B-POE270.AT2",
+    "comp2": "SUPERST/B-POE360.AT2",
+    "pga_g": 0.45
+   },
+   {
+    "id": 12062,
+    "earthquake": "Imperial Valley",
+    "station": "El Centro Array #11",
+    "M": 6.5,
+    "r_rup_km": 12.5,
+    "site_class": "D",
+    "dt": 0.005,
+    "duration_s": 39.035000000000004,
+    "sf": 0.3323399175654895,
+    "shape_misfit": 0.190995238235346,
+    "x_comp": 1,
+    "comp1": "IMPVALL/H-E11140.AT2",
+    "comp2": "IMPVALL/H-E11230.AT2",
+    "pga_g": 0.38
+   },
+   {
+    "id": 12061,
+    "earthquake": "Imperial Valley",
+    "station": "Delta",
+    "M": 6.5,
+    "r_rup_km": 22.0,
+    "site_class": "D",
+    "dt": 0.01,
+    "duration_s": 99.92,
+    "sf": 0.3156145821811456,
+    "shape_misfit": 0.20308746320172308,
+    "x_comp": 2,
+    "comp1": "IMPVALL/H-DLT262.AT2",
+    "comp2": "IMPVALL/H-DLT352.AT2",
+    "pga_g": 0.35
+   },
+   {
+    "id": 12082,
+    "earthquake": "Kocaeli, Turkey",
+    "station": "Arcelik",
+    "M": 7.5,
+    "r_rup_km": 13.5,
+    "site_class": "C",
+    "dt": 0.005,
+    "duration_s": 30.0,
+    "sf": 0.9106211926114759,
+    "shape_misfit": 0.22806615378646053,
+    "x_comp": 2,
+    "comp1": "KOCAELI/ARC000.AT2",
+    "comp2": "KOCAELI/ARC090.AT2",
+    "pga_g": 0.22
+   },
+   {
+    "id": 12151,
+    "earthquake": "San Fernando",
+    "station": "LA - Hollywood Stor",
+    "M": 6.6,
+    "r_rup_km": 22.8,
+    "site_class": "D",
+    "dt": 0.01,
+    "duration_s": 28.0,
+    "sf": 0.6030511584900697,
+    "shape_misfit": 0.2308402527954141,
+    "x_comp": 2,
+    "comp1": "SFERN/PEL090.AT2",
+    "comp2": "SFERN/PEL180.AT2",
+    "pga_g": 0.21
+   },
+   {
+    "id": 12081,
+    "earthquake": "Kocaeli, Turkey",
+    "station": "Duzce",
+    "M": 7.5,
+    "r_rup_km": 15.4,
+    "site_class": "D",
+    "dt": 0.005,
+    "duration_s": 27.185000000000002,
+    "sf": 0.22579887160874013,
+    "shape_misfit": 0.23757316866771022,
+    "x_comp": 1,
+    "comp1": "KOCAELI/DZC180.AT2",
+    "comp2": "KOCAELI/DZC270.AT2",
+    "pga_g": 0.36
+   },
+   {
+    "id": 12012,
+    "earthquake": "Northridge",
+    "station": "Canyon Country-WLC",
+    "M": 6.7,
+    "r_rup_km": 12.4,
+    "site_class": "D",
+    "dt": 0.01,
+    "duration_s": 19.990000000000002,
+    "sf": 0.2429341257727151,
+    "shape_misfit": 0.24076170745615086,
+    "x_comp": 2,
+    "comp1": "NORTHR/LOS000.AT2",
+    "comp2": "NORTHR/LOS270.AT2",
+    "pga_g": 0.48
+   },
+   {
+    "id": 12111,
+    "earthquake": "Manjil, Iran",
+    "station": "Abbar",
+    "M": 7.4,
+    "r_rup_km": 12.6,
+    "site_class": "C",
+    "dt": 0.02,
+    "duration_s": 46.0,
+    "sf": 0.23266922058344483,
+    "shape_misfit": 0.24252530515748466,
+    "x_comp": 2,
+    "comp1": "MANJIL/ABBAR--L.AT2",
+    "comp2": "MANJIL/ABBAR--T.AT2",
+    "pga_g": 0.51
+   },
+   {
+    "id": 12072,
+    "earthquake": "Kobe, Japan",
+    "station": "Shin-Osaka",
+    "M": 6.9,
+    "r_rup_km": 19.2,
+    "site_class": "D",
+    "dt": 0.01,
+    "duration_s": 40.96,
+    "sf": 0.35972214196913677,
+    "shape_misfit": 0.2569856172158077,
+    "x_comp": 2,
+    "comp1": "KOBE/SHI000.AT2",
+    "comp2": "KOBE/SHI090.AT2",
+    "pga_g": 0.24
+   },
+   {
+    "id": 12121,
+    "earthquake": "Superstition Hills",
+    "station": "El Centro Imp. Co.",
+    "M": 6.5,
+    "r_rup_km": 18.2,
+    "site_class": "D",
+    "dt": 0.005,
+    "duration_s": 40.0,
+    "sf": 0.29941687937559114,
+    "shape_misfit": 0.2691588509993035,
+    "x_comp": 1,
+    "comp1": "SUPERST/B-ICC000.AT2",
+    "comp2": "SUPERST/B-ICC090.AT2",
+    "pga_g": 0.36
+   }
+  ]
+ },
+ "gravity": {
+  "table": [
+   {
+    "level": 1,
+    "z_in": 180.0,
+    "D_kip": 1237.5,
+    "Lexp_kip": 195.0,
+    "QG_kip": 1432.5,
+    "nodes": 30
+   },
+   {
+    "level": 2,
+    "z_in": 336.0,
+    "D_kip": 1222.5,
+    "Lexp_kip": 195.0,
+    "QG_kip": 1417.5,
+    "nodes": 30
+   },
+   {
+    "level": 3,
+    "z_in": 492.0,
+    "D_kip": 1222.5,
+    "Lexp_kip": 195.0,
+    "QG_kip": 1417.5,
+    "nodes": 30
+   },
+   {
+    "level": 4,
+    "z_in": 648.0,
+    "D_kip": 1222.5,
+    "Lexp_kip": 195.0,
+    "QG_kip": 1417.5,
+    "nodes": 30
+   },
+   {
+    "level": 5,
+    "z_in": 804.0,
+    "D_kip": 1222.5,
+    "Lexp_kip": 195.0,
+    "QG_kip": 1417.5,
+    "nodes": 30
+   },
+   {
+    "level": 6,
+    "z_in": 960.0,
+    "D_kip": 1222.5,
+    "Lexp_kip": 195.0,
+    "QG_kip": 1417.5,
+    "nodes": 30
+   },
+   {
+    "level": 7,
+    "z_in": 1116.0,
+    "D_kip": 1222.5,
+    "Lexp_kip": 195.0,
+    "QG_kip": 1417.5,
+    "nodes": 30
+   },
+   {
+    "level": 8,
+    "z_in": 1272.0,
+    "D_kip": 1173.8,
+    "Lexp_kip": 60.0,
+    "QG_kip": 1233.8,
+    "nodes": 30
+   }
+  ],
+  "split": {
+   "sum_D": 9746.25,
+   "sum_Lexp": 1425.0,
+   "ratio": 0.1462100808003078,
+   "no_live_case_needed": false
+  }
+ },
+ "per_record": [
+  {
+   "record": 12102,
+   "label": "Loma Prieta Gilroy Array #3 (1989)",
+   "sf": 0.2883957105571153,
+   "converged": true,
+   "peak_drift": 0.00610350793975844,
+   "peak_roof_in": [
+    1.7505426389016518,
+    4.665809744038769
+   ],
+   "residual": 0.0004134036358928911,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 116.09640312194824,
+   "steps": 1600
+  },
+  {
+   "record": 12122,
+   "label": "Superstition Hills Poe Road (temp) (1987)",
+   "sf": 0.341361701413775,
+   "converged": true,
+   "peak_drift": 0.004153351924499516,
+   "peak_roof_in": [
+    2.0765085412093343,
+    2.506540626165561
+   ],
+   "residual": 0.0005837564982330765,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 96.298415184021,
+   "steps": 1271
+  },
+  {
+   "record": 12062,
+   "label": "Imperial Valley El Centro Array #11 (1979)",
+   "sf": 0.3323399175654895,
+   "converged": true,
+   "peak_drift": 0.0046983720403175715,
+   "peak_roof_in": [
+    3.6291794733197875,
+    2.490888340534937
+   ],
+   "residual": 0.0004997504204398617,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 127.79306221008301,
+   "steps": 1751
+  },
+  {
+   "record": 12061,
+   "label": "Imperial Valley Delta (1979)",
+   "sf": 0.3156145821811456,
+   "converged": true,
+   "peak_drift": 0.007231653814654065,
+   "peak_roof_in": [
+    5.593404710533395,
+    3.343659167840356
+   ],
+   "residual": 0.0008018851216108756,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 371.24745297431946,
+   "steps": 4576
+  },
+  {
+   "record": 12082,
+   "label": "Kocaeli, Turkey Arcelik (1999)",
+   "sf": 0.9106211926114759,
+   "converged": true,
+   "peak_drift": 0.004572277643609324,
+   "peak_roof_in": [
+    3.9583513033483944,
+    1.8971388094714536
+   ],
+   "residual": 0.0008299443285686245,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 134.70709800720215,
+   "steps": 1625
+  },
+  {
+   "record": 12151,
+   "label": "San Fernando LA - Hollywood Stor (1971)",
+   "sf": 0.6030511584900697,
+   "converged": true,
+   "peak_drift": 0.0029853879420643583,
+   "peak_roof_in": [
+    1.6395599152796994,
+    2.1653087276010248
+   ],
+   "residual": 0.0012749047251462038,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 109.04368686676025,
+   "steps": 1330
+  },
+  {
+   "record": 12081,
+   "label": "Kocaeli, Turkey Duzce (1999)",
+   "sf": 0.22579887160874013,
+   "converged": true,
+   "peak_drift": 0.006180280787496206,
+   "peak_roof_in": [
+    2.270111392026707,
+    4.955767924069459
+   ],
+   "residual": 0.0011097984705280505,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 112.00727844238281,
+   "steps": 1475
+  },
+  {
+   "record": 12012,
+   "label": "Northridge Canyon Country-WLC (1994)",
+   "sf": 0.2429341257727151,
+   "converged": true,
+   "peak_drift": 0.0043287733955813595,
+   "peak_roof_in": [
+    2.8516922055924816,
+    3.633775583391509
+   ],
+   "residual": 0.0006821433242095412,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 83.7715916633606,
+   "steps": 1072
+  },
+  {
+   "record": 12111,
+   "label": "Manjil, Iran Abbar (1990)",
+   "sf": 0.23266922058344483,
+   "converged": true,
+   "peak_drift": 0.005427103262088983,
+   "peak_roof_in": [
+    4.2408535599604615,
+    1.6810615405423905
+   ],
+   "residual": 0.0004929236995584416,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 191.2684154510498,
+   "steps": 2463
+  },
+  {
+   "record": 12072,
+   "label": "Kobe, Japan Shin-Osaka (1995)",
+   "sf": 0.35972214196913677,
+   "converged": true,
+   "peak_drift": 0.003899614028821423,
+   "peak_roof_in": [
+    3.243595023194008,
+    2.335619840378028
+   ],
+   "residual": 0.0008082379218585633,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 135.93999648094177,
+   "steps": 1907
+  },
+  {
+   "record": 12121,
+   "label": "Superstition Hills El Centro Imp. Co. (1987)",
+   "sf": 0.29941687937559114,
+   "converged": true,
+   "peak_drift": 0.005088214595993142,
+   "peak_roof_in": [
+    3.0524293514548018,
+    4.494581172834808
+   ],
+   "residual": 0.0008334501578467234,
+   "unacceptable": false,
+   "flags": [],
+   "seconds": 152.45813155174255,
+   "steps": 2076
+  }
+ ],
+ "story": [
+  {
+   "story": 1,
+   "h_in": 180.0,
+   "mean_X": 0.0020570654697854903,
+   "mean_Y": 0.00197294446155798,
+   "max_X": 0.00306512542034615,
+   "max_Y": 0.0025703244291168815,
+   "ok": true
+  },
+  {
+   "story": 2,
+   "h_in": 156.0,
+   "mean_X": 0.0022172169252609253,
+   "mean_Y": 0.0021009386349293644,
+   "max_X": 0.003343928714507339,
+   "max_Y": 0.002907227973798917,
+   "ok": true
+  },
+  {
+   "story": 3,
+   "h_in": 156.0,
+   "mean_X": 0.002275677069569747,
+   "mean_Y": 0.002289503557263912,
+   "max_X": 0.0035577662802289333,
+   "max_Y": 0.0032875085906382538,
+   "ok": true
+  },
+  {
+   "story": 4,
+   "h_in": 156.0,
+   "mean_X": 0.002396678078249757,
+   "mean_Y": 0.0024831804911937187,
+   "max_X": 0.00413697813649887,
+   "max_Y": 0.0038522907595426913,
+   "ok": true
+  },
+  {
+   "story": 5,
+   "h_in": 156.0,
+   "mean_X": 0.0035825142417740125,
+   "mean_Y": 0.0034854476207009013,
+   "max_X": 0.006471166063519194,
+   "max_Y": 0.006049474490780235,
+   "ok": true
+  },
+  {
+   "story": 6,
+   "h_in": 156.0,
+   "mean_X": 0.004003717643573452,
+   "mean_Y": 0.003979039252665854,
+   "max_X": 0.007231653814654065,
+   "max_Y": 0.006180280787496206,
+   "ok": true
+  },
+  {
+   "story": 7,
+   "h_in": 156.0,
+   "mean_X": 0.003708148665931097,
+   "mean_Y": 0.004069756744955963,
+   "max_X": 0.00616010522382195,
+   "max_Y": 0.00610350793975844,
+   "ok": true
+  },
+  {
+   "story": 8,
+   "h_in": 156.0,
+   "mean_X": 0.0032216348671638196,
+   "mean_Y": 0.0036548734490819755,
+   "max_X": 0.004958466561140777,
+   "max_Y": 0.005100302310949174,
+   "ok": true
+  }
+ ],
+ "deformation_groups": [
+  {
+   "kind": "brace",
+   "section": "HSS8X8X1/2",
+   "z_in": 180,
+   "n": 8,
+   "Qu_comp_in": 0.30087317294592447,
+   "Qu_tens_in": 0.2550921168052117,
+   "CP_comp": 2.2656553712632856,
+   "CP_tens": 11.72779101302476,
+   "b_comp": 2.2656553712632856,
+   "b_tens": 12.629928783257434,
+   "DC_CP": 0.13279741339397236,
+   "DC_valid": 0.13279741339397236
+  },
+  {
+   "kind": "brace",
+   "section": "HSS8X8X1/2",
+   "z_in": 336,
+   "n": 8,
+   "Qu_comp_in": 0.22512252304184957,
+   "Qu_tens_in": 0.19567495644087207,
+   "CP_comp": 2.324241538981196,
+   "CP_tens": 11.43217357407698,
+   "b_comp": 2.324241538981196,
+   "b_tens": 12.31157154131367,
+   "DC_CP": 0.09685848878706875,
+   "DC_valid": 0.09685848878706875
+  },
+  {
+   "kind": "brace",
+   "section": "HSS8X8X1/2",
+   "z_in": 492,
+   "n": 8,
+   "Qu_comp_in": 0.19685741102820617,
+   "Qu_tens_in": 0.16438737569583592,
+   "CP_comp": 2.324241538981196,
+   "CP_tens": 11.43217357407698,
+   "b_comp": 2.324241538981196,
+   "b_tens": 12.31157154131367,
+   "DC_CP": 0.08469748420144677,
+   "DC_valid": 0.08469748420144677
+  },
+  {
+   "kind": "brace",
+   "section": "HSS8X8X1/2",
+   "z_in": 648,
+   "n": 8,
+   "Qu_comp_in": 0.1698136592733435,
+   "Qu_tens_in": 0.14333605057280155,
+   "CP_comp": 2.324241538981196,
+   "CP_tens": 11.43217357407698,
+   "b_comp": 2.324241538981196,
+   "b_tens": 12.31157154131367,
+   "DC_CP": 0.07306196728063785,
+   "DC_valid": 0.07306196728063785
+  },
+  {
+   "kind": "brace",
+   "section": "HSS6X6X3/8",
+   "z_in": 804,
+   "n": 8,
+   "Qu_comp_in": 0.27700418052413317,
+   "Qu_tens_in": 0.24275881521128895,
+   "CP_comp": 1.3073858656769217,
+   "CP_tens": 11.432173574076979,
+   "b_comp": 1.3073858656769217,
+   "b_tens": 12.311571541313668,
+   "DC_CP": 0.21187637697208042,
+   "DC_valid": 0.21187637697208042
+  },
+  {
+   "kind": "brace",
+   "section": "HSS6X6X3/8",
+   "z_in": 960,
+   "n": 8,
+   "Qu_comp_in": 0.28320229684406556,
+   "Qu_tens_in": 0.25683188433534226,
+   "CP_comp": 1.3073858656769217,
+   "CP_tens": 11.432173574076979,
+   "b_comp": 1.3073858656769217,
+   "b_tens": 12.311571541313668,
+   "DC_CP": 0.21661722394209354,
+   "DC_valid": 0.21661722394209354
+  },
+  {
+   "kind": "brace",
+   "section": "HSS6X6X3/8",
+   "z_in": 1116,
+   "n": 8,
+   "Qu_comp_in": 0.2284120286109793,
+   "Qu_tens_in": 0.2060633071583931,
+   "CP_comp": 1.3073858656769217,
+   "CP_tens": 11.432173574076979,
+   "b_comp": 1.3073858656769217,
+   "b_tens": 12.311571541313668,
+   "DC_CP": 0.17470896282997142,
+   "DC_valid": 0.17470896282997142
+  },
+  {
+   "kind": "brace",
+   "section": "HSS6X6X3/8",
+   "z_in": 1272,
+   "n": 8,
+   "Qu_comp_in": 0.15257639951878135,
+   "Qu_tens_in": 0.14406541089107866,
+   "CP_comp": 1.3073858656769217,
+   "CP_tens": 11.432173574076979,
+   "b_comp": 1.3073858656769217,
+   "b_tens": 12.311571541313668,
+   "DC_CP": 0.11670341826724757,
+   "DC_valid": 0.11670341826724757
+  },
+  {
+   "kind": "col",
+   "section": "W14X109",
+   "z_in": 0,
+   "n": 22,
+   "Qu_rad": 1.9431761282122247e-15,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 1.2954507521414832e-14,
+   "DC_valid": 1.2954507521414832e-14
+  },
+  {
+   "kind": "col",
+   "section": "W14X159",
+   "z_in": 0,
+   "n": 8,
+   "Qu_rad": 1.269191704069997e-15,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 8.461278027133314e-15,
+   "DC_valid": 8.461278027133314e-15
+  },
+  {
+   "kind": "col",
+   "section": "W14X109",
+   "z_in": 180,
+   "n": 44,
+   "Qu_rad": 3.4528089279354084e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.00023018726186236057,
+   "DC_valid": 0.00023018726186236057
+  },
+  {
+   "kind": "col",
+   "section": "W14X159",
+   "z_in": 180,
+   "n": 16,
+   "Qu_rad": 3.5083052248860284e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.0002338870149924019,
+   "DC_valid": 0.0002338870149924019
+  },
+  {
+   "kind": "col",
+   "section": "W14X109",
+   "z_in": 336,
+   "n": 22,
+   "Qu_rad": 2.4276558621320204e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.0001618437241421347,
+   "DC_valid": 0.0001618437241421347
+  },
+  {
+   "kind": "col",
+   "section": "W14X99",
+   "z_in": 336,
+   "n": 22,
+   "Qu_rad": 2.7120143357224496e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.00018080095571482998,
+   "DC_valid": 0.00018080095571482998
+  },
+  {
+   "kind": "col",
+   "section": "W14X159",
+   "z_in": 336,
+   "n": 8,
+   "Qu_rad": 2.137644728289366e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.0001425096485526244,
+   "DC_valid": 0.0001425096485526244
+  },
+  {
+   "kind": "col",
+   "section": "W14X120",
+   "z_in": 336,
+   "n": 8,
+   "Qu_rad": 2.94310732897032e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.00019620715526468802,
+   "DC_valid": 0.00019620715526468802
+  },
+  {
+   "kind": "col",
+   "section": "W14X99",
+   "z_in": 492,
+   "n": 44,
+   "Qu_rad": 2.163721008601373e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.00014424806724009154,
+   "DC_valid": 0.00014424806724009154
+  },
+  {
+   "kind": "col",
+   "section": "W14X120",
+   "z_in": 492,
+   "n": 16,
+   "Qu_rad": 2.2440033930279978e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.00014960022620186651,
+   "DC_valid": 0.00014960022620186651
+  },
+  {
+   "kind": "col",
+   "section": "W14X99",
+   "z_in": 648,
+   "n": 22,
+   "Qu_rad": 6.55007566346132e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.0004366717108974214,
+   "DC_valid": 0.0004366717108974214
+  },
+  {
+   "kind": "col",
+   "section": "W14X82",
+   "z_in": 648,
+   "n": 30,
+   "Qu_rad": 9.045331758493559e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.000603022117232904,
+   "DC_valid": 0.000603022117232904
+  },
+  {
+   "kind": "col",
+   "section": "W14X120",
+   "z_in": 648,
+   "n": 8,
+   "Qu_rad": 5.774712484606203e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.00038498083230708023,
+   "DC_valid": 0.00038498083230708023
+  },
+  {
+   "kind": "col",
+   "section": "W14X82",
+   "z_in": 804,
+   "n": 60,
+   "Qu_rad": 4.548559310550379e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.0003032372873700253,
+   "DC_valid": 0.0003032372873700253
+  },
+  {
+   "kind": "col",
+   "section": "W14X82",
+   "z_in": 960,
+   "n": 30,
+   "Qu_rad": 3.461503054758194e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.00023076687031721294,
+   "DC_valid": 0.00023076687031721294
+  },
+  {
+   "kind": "col",
+   "section": "W14X61",
+   "z_in": 960,
+   "n": 30,
+   "Qu_rad": 4.7649611573526106e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.0003176640771568407,
+   "DC_valid": 0.0003176640771568407
+  },
+  {
+   "kind": "col",
+   "section": "W14X61",
+   "z_in": 1116,
+   "n": 60,
+   "Qu_rad": 3.948098168038496e-05,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 0.00026320654453589976,
+   "DC_valid": 0.00026320654453589976
+  },
+  {
+   "kind": "col",
+   "section": "W14X61",
+   "z_in": 1272,
+   "n": 30,
+   "Qu_rad": 2.0102227227254907e-10,
+   "CP": 0.15,
+   "b": 0.15,
+   "DC_CP": 1.3401484818169938e-09,
+   "DC_valid": 1.3401484818169938e-09
+  }
+ ],
+ "force_controlled_columns": [
+  {
+   "ele": 1,
+   "section": "W14X109",
+   "z_in": 0.0,
+   "Qu": 372.375,
+   "Qns": 372.37499999999994,
+   "demand": 449.0455,
+   "phiBRn": 1214.544992610437,
+   "KLr": 48.257372654155496,
+   "DC": 0.3697232319363162
+  },
+  {
+   "ele": 217,
+   "section": "W14X159",
+   "z_in": 0.0,
+   "Qu": 1049.7570165312982,
+   "Qns": 358.2700115692795,
+   "demand": 1330.9694581931767,
+   "phiBRn": 1812.2857676071858,
+   "KLr": 45.0,
+   "DC": 0.7344147826920777
+  },
+  {
+   "ele": 2,
+   "section": "W14X109",
+   "z_in": 180.0,
+   "Qu": 324.62500000000006,
+   "Qns": 324.62499999999994,
+   "demand": 391.46396894931195,
+   "phiBRn": 1267.1226773872909,
+   "KLr": 41.8230563002681,
+   "DC": 0.3089392810461576
+  },
+  {
+   "ele": 194,
+   "section": "W14X159",
+   "z_in": 180.0,
+   "Qu": 851.6022742406657,
+   "Qns": 318.83149216343105,
+   "demand": 1077.0796180814698,
+   "phiBRn": 1880.3163006034106,
+   "KLr": 39.0,
+   "DC": 0.5728183166501429
+  },
+  {
+   "ele": 219,
+   "section": "W14X120",
+   "z_in": 336.0,
+   "Qu": 727.200258754825,
+   "Qns": 267.3354350372453,
+   "demand": 920.2029860903691,
+   "phiBRn": 1398.7497414044747,
+   "KLr": 41.711229946524064,
+   "DC": 0.6578753574362772
+  },
+  {
+   "ele": 3,
+   "section": "W14X99",
+   "z_in": 336.0,
+   "Qu": 277.375,
+   "Qns": 277.375,
+   "demand": 334.48538586774083,
+   "phiBRn": 1150.6975930166766,
+   "KLr": 42.04851752021563,
+   "DC": 0.29068052970446534
+  },
+  {
+   "ele": 220,
+   "section": "W14X120",
+   "z_in": 492.0,
+   "Qu": 613.4533316332336,
+   "Qns": 221.79564484162617,
+   "demand": 776.6174600616655,
+   "phiBRn": 1398.7497414044747,
+   "KLr": 41.711229946524064,
+   "DC": 0.555222594201783
+  },
+  {
+   "ele": 4,
+   "section": "W14X99",
+   "z_in": 492.0,
+   "Qu": 230.12500000000003,
+   "Qns": 230.12500000000003,
+   "demand": 277.5068027861699,
+   "phiBRn": 1150.6975930166766,
+   "KLr": 42.04851752021563,
+   "DC": 0.24116397259392555
+  },
+  {
+   "ele": 221,
+   "section": "W14X82",
+   "z_in": 648.0,
+   "Qu": 503.2651919953156,
+   "Qns": 177.3739314187679,
+   "demand": 637.5531421960548,
+   "phiBRn": 808.681181230072,
+   "KLr": 62.903225806451616,
+   "DC": 0.7883862726053337
+  },
+  {
+   "ele": 230,
+   "section": "W14X82",
+   "z_in": 804.0,
+   "Qu": 364.72966670170763,
+   "Qns": 131.5452601431054,
+   "demand": 461.76962342672897,
+   "phiBRn": 808.681181230072,
+   "KLr": 62.903225806451616,
+   "DC": 0.5710156661792706
+  },
+  {
+   "ele": 231,
+   "section": "W14X61",
+   "z_in": 960.0,
+   "Qu": 220.09873933121142,
+   "Qns": 84.84681755046861,
+   "demand": 278.14393097118307,
+   "phiBRn": 598.8571398648542,
+   "KLr": 63.6734693877551,
+   "DC": 0.46445790232033074
+  },
+  {
+   "ele": 232,
+   "section": "W14X61",
+   "z_in": 1116.0,
+   "Qu": 79.45416876885378,
+   "Qns": 39.48317252348524,
+   "demand": 99.57489249365433,
+   "phiBRn": 598.8571398648542,
+   "KLr": 63.6734693877551,
+   "DC": 0.16627486902155944
+  }
+ ],
+ "verdict": {
+  "n_records": 11,
+  "n_unacceptable": 0,
+  "unacceptable_allowed": 1,
+  "unacceptable_ok": true,
+  "mean_drift_ok": true,
+  "mean_drift_max": 0.004069756744955963,
+  "deformation_ok": true,
+  "valid_range_ok": true,
+  "force_controlled_ok": true,
+  "residual_applicable": false,
+  "residual_ok": null,
+  "overall": true
+ },
+ "limits": {
+  "mean_limit": 0.0395316,
+  "tall_limit": 0.0395316,
+  "unacceptable_peak": 0.0592974
+ }
+}

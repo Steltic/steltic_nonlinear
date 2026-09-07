@@ -1,0 +1,122 @@
+{
+  "_README": [
+    "Nonlinear component modelling parameters + acceptance criteria used by the Pushover Analyst.",
+    "STATUS: the numbers below are PLACEHOLDER DEFAULTS written from memory of ASCE 41-17 Table 9-7.1",
+    "(beams) and the Lignos-based ASCE 41-17 column expressions. They are NOT verified against a licensed",
+    "copy of ASCE/SEI 41-23 or ANSI/AISC 342-22. The Pushover Analyst Grok Bot MUST send a retrieval plan",
+    "to Query file manager (doc AISC_342_22 / ASCE_41_23), copy the printed values into this file, set",
+    "verified=true and fill `source` with the exact table/equation ids and printed page. Until then every",
+    "report produced from this file carries a red UNVERIFIED banner. Never edit `verified` without doing the lookup."
+  ],
+  "verified": false,
+  "source": "placeholder -- ASCE 41-17 Table 9-7.1 (from memory); AISC 342-22 Ch. C / ASCE 41-23 Ch. 9 NOT retrieved",
+  "material": {
+    "Fy_ksi": 50.0,
+    "Ry_expected": 1.1,
+    "note": "A992 W-shapes: Fye = Ry*Fy (AISC 341-22 Table A3.2 Ry=1.1 for ASTM A992). Confirm the ASCE 41/AISC 342 lower-bound and expected material factors."
+  },
+  "beam_flexure": {
+    "basis": "compact W-shape beam, flexure, primary component; theta_y = Z*Fye*L/(6*E*I)",
+    "a_over_thetay": 9.0,
+    "b_over_thetay": 11.0,
+    "c_residual": 0.6,
+    "Mc_over_My": 1.1,
+    "IO_over_thetay": 1.0,
+    "LS_over_thetay": 6.0,
+    "CP_over_thetay": 8.0,
+    "noncompact_reduction": 0.5,
+    "note": "Table values apply to compact flanges/webs (bf/2tf <= 52/sqrt(Fye), h/tw <= 418/sqrt(Fye)); otherwise linear interpolation to the slender limits in the standard -- prototype applies a flat 0.5 factor and flags it."
+  },
+  "column_flexure": {
+    "basis": "wide-flange column, flexure with axial PG/Pye < 0.6 (Lignos-type expressions as adopted in ASCE 41-17 Table 9-7.1); rotations in RADIANS (plastic)",
+    "a_expr": "0.8*(1-PG/Pye)**2.2*(0.1*L/ry)**-0.8*(h/tw)**-0.6",
+    "b_expr": "7.4*(1-PG/Pye)**2.3*(0.1*L/ry)**-0.5*(h/tw)**-0.7",
+    "c_expr": "0.9-0.9*PG/Pye",
+    "a_min": 0.0,
+    "b_max": 0.15,
+    "Mc_over_My": 1.1,
+    "IO_frac_of_a": 0.5,
+    "LS_frac_of_b": 0.75,
+    "CP_frac_of_b": 1.0,
+    "force_controlled_above_P_over_Pye": 0.6,
+    "Mpce_axial_reduction": "min(1.0, 1.18*(1-PG/Pye))",
+    "note": "PG = gravity axial (QG) in the pushover; Pye = Ag*Fye. Columns with PG/Pye > 0.6 are force-controlled -> report P/PCL, no hinge."
+  },
+  "brace_axial": {
+    "basis": "HSS brace, concentrically braced frame -- phenomenological axial backbone (ASCE 41-17 Table 9-8 form, PLACEHOLDER from memory); deformations are multiples of delta_c (axial shortening at expected buckling) and delta_T (axial elongation at expected yield)",
+    "Fy_ksi": 50.0,
+    "Ry_expected": 1.3,
+    "K_effective": 1.0,
+    "Pcr_expected_factor": 1.14,
+    "compression": {
+      "slender_limit": "4.2*sqrt(E/Fye)",
+      "stocky_limit": "2.1*sqrt(E/Fye)",
+      "slender": {
+        "a_over_dc": 0.5,
+        "b_over_dc": 10.0,
+        "c": 0.3,
+        "IO_over_dc": 0.5,
+        "LS_over_dc": 8.0,
+        "CP_over_dc": 10.0
+      },
+      "stocky": {
+        "a_over_dc": 1.0,
+        "b_over_dc": 8.0,
+        "c": 0.5,
+        "IO_over_dc": 0.5,
+        "LS_over_dc": 7.0,
+        "CP_over_dc": 8.0
+      },
+      "note": "linear interpolation between the stocky and slender limits on KL/r"
+    },
+    "tension": {
+      "a_over_dT": 11.0,
+      "b_over_dT": 14.0,
+      "c": 0.8,
+      "hardening_ratio": 1.1,
+      "IO_over_dT": 0.5,
+      "LS_over_dT": 10.0,
+      "CP_over_dT": 13.0
+    },
+    "element": "corotTruss + Hysteretic (no pinching, no cyclic damage) -- monotonic pushover; cyclic deterioration to be added for NLRHA",
+    "note": "UNVERIFIED placeholders. Retrieve AISC 342-22 brace modelling parameters / acceptance and AISC 341-22 Table A3.2 Ry (A500 Gr. C) and F2.3 expected brace strengths (RyFyAg; 1.14 Fcre Ag) through Query file manager before use."
+  },
+  "gravity_for_pushover": {
+    "expr": "1.1*(QD + 0.25*QL)",
+    "note": "ASCE 41 Sec. 7.2.2 Eq. 7-1 form; QL = 25% of the unreduced design live load. Prototype distributes each level's weight equally to that level's column nodes. Verify clause and factors."
+  },
+  "nsp": {
+    "load_pattern": "first mode shape x mass (ASCE 41 Sec. 7.4.3.2.3)",
+    "push_to_fraction_of_target": 1.5,
+    "Ke_at_fraction_of_Vy": 0.6,
+    "C1_site_factor_a": {
+      "A": 130,
+      "B": 130,
+      "C": 90,
+      "D": 60,
+      "E": 60,
+      "F": 60
+    },
+    "default_site_class": "D",
+    "Cm_steel_MF_3plus_stories": 0.9,
+    "Cm_steel_CBF_3plus_stories": 0.9,
+    "Cm_1_2_stories": 1.0,
+    "hazard_levels": {
+      "BSE-1N": 1.0,
+      "BSE-2N": 1.5
+    },
+    "note": "BSE-1N spectrum = ASCE 7 design spectrum (SDS, SD1); BSE-2N = 1.5x (MCE_R). Performance check: LS at BSE-1N, CP at BSE-2N (BPON). Confirm Table 7-4/7-5 and Eq. 7-28..7-32 numbering in ASCE 41-23."
+  },
+  "numerics": {
+    "post_cap_ratio": 0.15,
+    "tail_strategies": [
+      "fine_step",
+      "arclength"
+    ],
+    "note": "post_cap_ratio = fraction of the capping rotation a over which strength descends from Mc to c*My (0.15 ~ ASCE 41 vertical drop). Raising it to capture the descending branch is a modelling change: only with the user's consent, and it is disclosed in the report. tail_strategies is the solver escalation ladder tried automatically when the push stops before 0.8*Vmax."
+  },
+  "fema_p695": {
+    "delta_u_at_strength_fraction": 0.8,
+    "note": "Omega = Vmax/V ; mu_T = delta_u / delta_y,eff with delta_y,eff = C0*(Vmax/W)*(g/4pi^2)*max(T,T1)^2 (FEMA P-695 Sec. 6.3)."
+  }
+}

@@ -1,0 +1,1249 @@
+{
+ "building": "Ex18_R3",
+ "code": "AISC 360-22 LRFD",
+ "note": "Framework provides DEMANDS only. The agent must derive every capacity and D/C from the AISC 360/341 RAG and add 'limit_state', 'cited', 'capacity', and 'DC' to each member and connection.",
+ "members": [
+  {
+   "id": "roof-W24X62",
+   "inputs": {
+    "kind": "beam",
+    "role": "roof",
+    "section": "W24X62",
+    "length_in": 360.0,
+    "Lb_in": 76.0,
+    "A": 18.2,
+    "Ix": 1550.0,
+    "Iy": 34.5,
+    "J": 1.71,
+    "Zx": 153.0,
+    "Zy": 15.7,
+    "Sx": 131.0,
+    "Sy": 9.8,
+    "rx": 9.23,
+    "ry": 1.38,
+    "Aw": 10.19,
+    "ho": 23.1,
+    "rts": 1.75,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 4117.5,
+    "My_kipin": 0.0,
+    "V_kip": 45.75,
+    "governing_combo": "1.2D+1.6Lr+0.5L"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00",
+   "capacity": {
+    "phiMn_kipin": 5406.0,
+    "phiVn_kip": 305.7,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.762
+  },
+  {
+   "id": "floor-W24X84",
+   "inputs": {
+    "kind": "beam",
+    "role": "floor",
+    "section": "W24X84",
+    "length_in": 360.0,
+    "Lb_in": 107.4,
+    "A": 24.7,
+    "Ix": 2370.0,
+    "Iy": 94.4,
+    "J": 3.7,
+    "Zx": 224.0,
+    "Zy": 32.6,
+    "Sx": 196.0,
+    "Sy": 20.9,
+    "rx": 9.79,
+    "ry": 1.95,
+    "Aw": 11.33,
+    "ho": 23.3,
+    "rts": 2.37,
+    "P_comp_kip": 0.0,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 6547.5,
+    "My_kipin": 0.0,
+    "V_kip": 72.75,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "flexure (LTB/FLB) + shear",
+   "cited": "AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 G2.1(a): Vn=0.6FyAwCv1 (G2-1), Cv1=1.0, phi_v=1.00",
+   "capacity": {
+    "phiMn_kipin": 9174.0,
+    "phiVn_kip": 339.8,
+    "Lb_in": 120.0,
+    "Cb": 1.0
+   },
+   "DC": 0.714
+  },
+  {
+   "id": "brace-HSS6X6X3/8",
+   "inputs": {
+    "kind": "brace",
+    "role": "brace",
+    "section": "HSS6X6X3/8",
+    "length_in": 392.3,
+    "A": 7.58,
+    "r": 2.28,
+    "P_comp_kip": 92.76,
+    "P_tens_kip": 70.02,
+    "Mz_kipin": 0.0,
+    "My_kipin": 0.0,
+    "V_kip": 0.0,
+    "governing_combo": "1.2D+1.0WY-+0.5L+0.5Lr"
+   },
+   "limit_state": "brace compression E3 (X-brace, KL=half diagonal) + tension D2 - ANALYSIS forces (R=3: NO expected-strength capacity design)",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 D2(a), Eq. D2-1, phi_t=0.90; AISC 341 NOT applicable (R=3, brief)",
+   "capacity": {
+    "phiPn_kip": 199.0,
+    "phiTn_kip": 341.0
+   },
+   "DC": 0.467
+  },
+  {
+   "id": "brace-HSS8X8X1/2",
+   "inputs": {
+    "kind": "brace",
+    "role": "brace",
+    "section": "HSS8X8X1/2",
+    "length_in": 402.5,
+    "A": 13.5,
+    "r": 3.02,
+    "P_comp_kip": 199.15,
+    "P_tens_kip": 148.81,
+    "Mz_kipin": 0.0,
+    "My_kipin": 0.0,
+    "V_kip": 0.0,
+    "governing_combo": "1.2D+1.0WY++0.5L+0.5Lr"
+   },
+   "limit_state": "brace compression E3 (X-brace, KL=half diagonal) + tension D2 - ANALYSIS forces (R=3: NO expected-strength capacity design)",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 D2(a), Eq. D2-1, phi_t=0.90; AISC 341 NOT applicable (R=3, brief)",
+   "capacity": {
+    "phiPn_kip": 441.0,
+    "phiTn_kip": 608.0
+   },
+   "DC": 0.452
+  },
+  {
+   "id": "gravity_col-W14X109",
+   "inputs": {
+    "kind": "col",
+    "role": "gravity_col",
+    "section": "W14X109",
+    "length_in": 180.0,
+    "Lb_in": 180.0,
+    "A": 32.0,
+    "Ix": 1240.0,
+    "Iy": 447.0,
+    "J": 7.12,
+    "Zx": 192.0,
+    "Zy": 92.7,
+    "Sx": 173.0,
+    "Sy": 61.2,
+    "rx": 6.22,
+    "ry": 3.73,
+    "Aw": 7.51,
+    "ho": 13.4,
+    "rts": 4.17,
+    "P_comp_kip": 1111.72,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 236.9,
+    "My_kipin": 86.1,
+    "V_kip": 2.47,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a",
+   "capacity": {
+    "phiPn_kip": 1215.0,
+    "phiMnx_kipin": 8475.0,
+    "phiMny_kipin": 4172.0,
+    "Lc_in": 180.0
+   },
+   "DC": 0.959
+  },
+  {
+   "id": "lateral_col-W14X120",
+   "inputs": {
+    "kind": "col",
+    "role": "lateral_col",
+    "section": "W14X120",
+    "length_in": 156.0,
+    "Lb_in": 156.0,
+    "A": 35.3,
+    "Ix": 1380.0,
+    "Iy": 495.0,
+    "J": 9.37,
+    "Zx": 212.0,
+    "Zy": 102.0,
+    "Sx": 190.0,
+    "Sy": 67.5,
+    "rx": 6.24,
+    "ry": 3.74,
+    "Aw": 8.55,
+    "ho": 13.6,
+    "rts": 4.2,
+    "P_comp_kip": 1025.26,
+    "P_tens_kip": 546.49,
+    "Mz_kipin": 333.7,
+    "My_kipin": 70.8,
+    "V_kip": 2.73,
+    "governing_combo": "(1.2+0.2SDS)D+Om0*EY-+0.5L [col]"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-1 (Lb<=Lp: LTB does not apply)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a; designed to ANALYSIS (wind-governed) forces per AISC 360 only (R=3)",
+   "capacity": {
+    "phiPn_kip": 1399.0,
+    "phiMnx_kipin": 9540.0,
+    "phiMny_kipin": 4590.0,
+    "Lc_in": 156.0
+   },
+   "DC": 0.778
+  },
+  {
+   "id": "lateral_col-W14X159",
+   "inputs": {
+    "kind": "col",
+    "role": "lateral_col",
+    "section": "W14X159",
+    "length_in": 180.0,
+    "Lb_in": 180.0,
+    "A": 46.7,
+    "Ix": 1900.0,
+    "Iy": 748.0,
+    "J": 19.7,
+    "Zx": 287.0,
+    "Zy": 146.0,
+    "Sx": 254.0,
+    "Sy": 96.2,
+    "rx": 6.38,
+    "ry": 4.0,
+    "Aw": 11.18,
+    "ho": 13.8,
+    "rts": 4.51,
+    "P_comp_kip": 1559.78,
+    "P_tens_kip": 912.08,
+    "Mz_kipin": 369.6,
+    "My_kipin": 147.5,
+    "V_kip": 3.65,
+    "governing_combo": "(1.2+0.2SDS)D+Om0*EY-+0.5L [col]"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a; designed to ANALYSIS (wind-governed) forces per AISC 360 only (R=3)",
+   "capacity": {
+    "phiPn_kip": 1812.0,
+    "phiMnx_kipin": 12834.0,
+    "phiMny_kipin": 6570.0,
+    "Lc_in": 180.0
+   },
+   "DC": 0.906
+  },
+  {
+   "id": "gravity_col-W14X61",
+   "inputs": {
+    "kind": "col",
+    "role": "gravity_col",
+    "section": "W14X61",
+    "length_in": 156.0,
+    "Lb_in": 156.0,
+    "A": 17.9,
+    "Ix": 640.0,
+    "Iy": 107.0,
+    "J": 2.19,
+    "Zx": 102.0,
+    "Zy": 32.8,
+    "Sx": 92.1,
+    "Sy": 21.5,
+    "rx": 5.98,
+    "ry": 2.45,
+    "Aw": 5.21,
+    "ho": 13.3,
+    "rts": 2.78,
+    "P_comp_kip": 224.18,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 70.9,
+    "My_kipin": 12.1,
+    "V_kip": 0.71,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a",
+   "capacity": {
+    "phiPn_kip": 599.0,
+    "phiMnx_kipin": 4201.0,
+    "phiMny_kipin": 1476.0,
+    "Lc_in": 156.0
+   },
+   "DC": 0.397
+  },
+  {
+   "id": "lateral_col-W14X61",
+   "inputs": {
+    "kind": "col",
+    "role": "lateral_col",
+    "section": "W14X61",
+    "length_in": 156.0,
+    "Lb_in": 156.0,
+    "A": 17.9,
+    "Ix": 640.0,
+    "Iy": 107.0,
+    "J": 2.19,
+    "Zx": 102.0,
+    "Zy": 32.8,
+    "Sx": 92.1,
+    "Sy": 21.5,
+    "rx": 5.98,
+    "ry": 2.45,
+    "Aw": 5.21,
+    "ho": 13.3,
+    "rts": 2.78,
+    "P_comp_kip": 188.36,
+    "P_tens_kip": 44.83,
+    "Mz_kipin": 71.3,
+    "My_kipin": 12.1,
+    "V_kip": 0.7,
+    "governing_combo": "(1.2+0.2SDS)D+Om0*EY-+0.5L [col]"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a; designed to ANALYSIS (wind-governed) forces per AISC 360 only (R=3)",
+   "capacity": {
+    "phiPn_kip": 599.0,
+    "phiMnx_kipin": 4201.0,
+    "phiMny_kipin": 1476.0,
+    "Lc_in": 156.0
+   },
+   "DC": 0.337
+  },
+  {
+   "id": "gravity_col-W14X82",
+   "inputs": {
+    "kind": "col",
+    "role": "gravity_col",
+    "section": "W14X82",
+    "length_in": 156.0,
+    "Lb_in": 156.0,
+    "A": 24.0,
+    "Ix": 881.0,
+    "Iy": 148.0,
+    "J": 5.07,
+    "Zx": 139.0,
+    "Zy": 44.8,
+    "Sx": 123.0,
+    "Sy": 29.3,
+    "rx": 6.05,
+    "ry": 2.48,
+    "Aw": 7.29,
+    "ho": 13.4,
+    "rts": 2.85,
+    "P_comp_kip": 520.03,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 303.9,
+    "My_kipin": 66.9,
+    "V_kip": 2.13,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a",
+   "capacity": {
+    "phiPn_kip": 809.0,
+    "phiMnx_kipin": 5841.0,
+    "phiMny_kipin": 2016.0,
+    "Lc_in": 156.0
+   },
+   "DC": 0.719
+  },
+  {
+   "id": "lateral_col-W14X82",
+   "inputs": {
+    "kind": "col",
+    "role": "lateral_col",
+    "section": "W14X82",
+    "length_in": 156.0,
+    "Lb_in": 156.0,
+    "A": 24.0,
+    "Ix": 881.0,
+    "Iy": 148.0,
+    "J": 5.07,
+    "Zx": 139.0,
+    "Zy": 44.8,
+    "Sx": 123.0,
+    "Sy": 29.3,
+    "rx": 6.05,
+    "ry": 2.48,
+    "Aw": 7.29,
+    "ho": 13.4,
+    "rts": 2.85,
+    "P_comp_kip": 554.51,
+    "P_tens_kip": 242.58,
+    "Mz_kipin": 333.7,
+    "My_kipin": 70.8,
+    "V_kip": 2.38,
+    "governing_combo": "(1.2+0.2SDS)D+Om0*EY-+0.5L [col]"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1a; designed to ANALYSIS (wind-governed) forces per AISC 360 only (R=3)",
+   "capacity": {
+    "phiPn_kip": 809.0,
+    "phiMnx_kipin": 5841.0,
+    "phiMny_kipin": 2016.0,
+    "Lc_in": 156.0
+   },
+   "DC": 0.768
+  },
+  {
+   "id": "gravity_col-W14X99",
+   "inputs": {
+    "kind": "col",
+    "role": "gravity_col",
+    "section": "W14X99",
+    "length_in": 156.0,
+    "Lb_in": 156.0,
+    "A": 29.1,
+    "Ix": 1110.0,
+    "Iy": 402.0,
+    "J": 5.37,
+    "Zx": 173.0,
+    "Zy": 83.6,
+    "Sx": 157.0,
+    "Sy": 55.2,
+    "rx": 6.17,
+    "ry": 3.71,
+    "Aw": 6.89,
+    "ho": 13.4,
+    "rts": 4.14,
+    "P_comp_kip": 815.88,
+    "P_tens_kip": 0.0,
+    "Mz_kipin": 303.9,
+    "My_kipin": 66.9,
+    "V_kip": 2.39,
+    "governing_combo": "1.2D+1.6L+0.5Lr"
+   },
+   "limit_state": "compression E3 + interaction H1-1a",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F3 (noncompact flange, Table B4.1b): LTB per F2.2 + FLB Eq. F3-1; governing F3-1 FLB; phi_b=0.90 (F1); AISC 360-22 H1.1 Eq. H1-1a",
+   "capacity": {
+    "phiPn_kip": 1151.0,
+    "phiMnx_kipin": 7746.0,
+    "phiMny_kipin": 3762.0,
+    "Lc_in": 156.0
+   },
+   "DC": 0.76
+  }
+ ],
+ "connections": [
+  {
+   "id": "conn-gravity-beam-col",
+   "type": "beam-to-column single-plate shear connection",
+   "demand": {
+    "V_kip": 88.0
+   },
+   "components": "PL 3/8 x 15 in. A572-50, (4) 7/8-in. A325-N bolts @3 in., 4/16 fillet both sides",
+   "cited": "AISC 360-22 J2.4/J3.7/J3.11/J4",
+   "checks": [
+    {
+     "limit_state": "bolt shear J3.7",
+     "demand_kip": 88.0,
+     "capacity_kip": 97.41,
+     "DC": 0.903,
+     "cited": "AISC 360-22 J3.7 + Table J3.2 (Fnv=54 ksi, A325-N), phi=0.75"
+    },
+    {
+     "limit_state": "bolt bearing/tearout J3.11",
+     "demand_kip": 88.0,
+     "capacity_kip": 153.56,
+     "DC": 0.573,
+     "cited": "AISC 360-22 J3.11 Eq. J3-6a, phi=0.75"
+    },
+    {
+     "limit_state": "plate shear yield/rupture J4.2",
+     "demand_kip": 88.0,
+     "capacity_kip": 120.66,
+     "DC": 0.729,
+     "cited": "AISC 360-22 J4.2 (Eqs. J4-3, J4-4)"
+    },
+    {
+     "limit_state": "plate-to-column fillet weld J2.4",
+     "demand_kip": 88.0,
+     "capacity_kip": 167.03,
+     "DC": 0.527,
+     "cited": "AISC 360-22 J2.4 (Eqs. J2-4, J2-5), phi=0.75, E70XX"
+    }
+   ],
+   "limit_state": "bolt shear J3.7",
+   "capacity": {
+    "phiRn_kip": 97.5
+   },
+   "DC": 0.9
+  },
+  {
+   "id": "conn-brace-gusset",
+   "type": "brace-to-gusset (slotted HSS, welded), UFM at beam-column",
+   "demand": {
+    "P_kip": 260.0,
+    "basis": "ANALYSIS force from the governing (wind) combination - AISC 360 Ch. J only; NO expected-strength amplification (R=3)"
+   },
+   "capacity_design": true,
+   "components": "PL 0.625 in. A572-50 gusset, (4) 5/16-in. fillets x 12 in., 2t fold line per AISC 341",
+   "cited": "AISC 360-22 J2.4/J4.1/J4.3/J4.4 + AISC 341-22 F2.6c/F3.6",
+   "checks": [
+    {
+     "limit_state": "brace-to-gusset fillet welds J2.4",
+     "demand_kip": 260.0,
+     "capacity_kip": 334.06,
+     "DC": 0.778,
+     "cited": "AISC 360-22 J2.4 (Eqs. J2-4, J2-5), phi=0.75, E70XX"
+    },
+    {
+     "limit_state": "gusset tension yield on Whitmore J4.1",
+     "demand_kip": 260.0,
+     "capacity_kip": 566.05,
+     "DC": 0.459,
+     "cited": "AISC 360-22 J4.1 (Eqs. J4-1, J4-2)"
+    },
+    {
+     "limit_state": "gusset compression buckling (Whitmore, E3 per J4.4)",
+     "demand_kip": 260.0,
+     "capacity_kip": 452.0,
+     "DC": 0.575,
+     "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1)"
+    }
+   ],
+   "limit_state": "brace-to-gusset fillet welds J2.4",
+   "capacity": {
+    "phiRn_kip": 334.0
+   },
+   "DC": 0.78
+  },
+  {
+   "id": "conn-col-splice",
+   "type": "column splice (CJP, 4 ft above floor)",
+   "demand": {
+    "P_tens_kip": 90.0,
+    "V_kip": 0.0
+   },
+   "components": "bolted flange plates",
+   "capacity_design": false,
+   "cited": "AISC 341-22 D2.5 + AISC 360-22 J2.6 (CJP develops base metal, Table J2.5)",
+   "checks": [
+    {
+     "limit_state": "CJP develops member (tension)",
+     "demand_kip": 90.0,
+     "capacity_kip": 1588.5,
+     "DC": 0.057,
+     "cited": "AISC 360-22 J2.6"
+    }
+   ],
+   "limit_state": "CJP develops member",
+   "capacity": {
+    "phiRn_kip": 1588.0
+   },
+   "DC": 0.057
+  },
+  {
+   "id": "conn-col-base",
+   "type": "column base plate (pinned)",
+   "demand": {
+    "P_kip": 1050.0,
+    "V_kip": 180.0
+   },
+   "components": "PL 2.25 x 23 x 24 in. A36, (4) 1-1/4 in. F1554 Gr36 rods, 5/16 fillets, 6x8x1.25 in. shear lug; grout on conc. fc'=4 ksi",
+   "cited": "AISC 360-22 J8/J9 + Manual Pt 14; anchorage to ACI 318 Ch.17 (delegated)",
+   "checks": [
+    {
+     "limit_state": "concrete bearing J8",
+     "demand_kip": 1050.0,
+     "capacity_kip": 2399.18,
+     "DC": 0.438,
+     "cited": "AISC 360-22 J8 (Eqs. J8-1, J8-2), phi_c=0.65"
+    },
+    {
+     "limit_state": "plate flexure (cantilever m; Manual Pt 14 / J8)",
+     "demand_in": 1.92,
+     "capacity_in": 2.25,
+     "DC": 0.854,
+     "cited": "AISC 360-22 J8 + Manual Part 14 method, phi_b=0.90"
+    },
+    {
+     "limit_state": "shear lug bearing (J8 basis)",
+     "demand_kip": 180.0,
+     "capacity_kip": 212.16,
+     "DC": 0.848,
+     "cited": "AISC 360-22 J8 (bearing) + ACI 318-19 anchorage (delegated)"
+    }
+   ],
+   "limit_state": "plate flexure (cantilever m; Manual Pt 14 / J8)",
+   "capacity": {
+    "phiRn": "see checks"
+   },
+   "DC": 0.85
+  },
+  {
+   "id": "collector-perimeter",
+   "type": "collector (drag strut) + connection at re-entrant/transfer line",
+   "demand": {
+    "P_kip_Omega0": 41.0,
+    "M_kipin": 6000.0,
+    "basis": "collector at analysis force: Omega0 amplification NOT applied - ASCE 7-22 12.10.2.1 (Om0 collectors) applies in SDC C-F; this building is SDC B"
+   },
+   "capacity_design": true,
+   "components": "W24X84 continuous; welded flange-plate connection to column developing Pu",
+   "cited": "AISC 360-22 E3 (Eqs. E3-1, E3-2, E3-4), phi_c=0.90 (E1); AISC 360-22 F2 (F2-2 (inelastic LTB)), phi_b=0.90 (F1); flange compact (Table B4.1b); AISC 360-22 H1.1 Eq. H1-1b",
+   "checks": [
+    {
+     "limit_state": "combined axial+flexure H1 (utilization, unitless)",
+     "demand_ratio": 0.68,
+     "capacity_ratio": 1.0,
+     "DC": 0.678,
+     "cited": "AISC 360-22 H1.1 Eq. H1-1b"
+    }
+   ],
+   "limit_state": "H1 interaction",
+   "capacity": {
+    "phiPn_kip": 843.0
+   },
+   "DC": 0.678
+  }
+ ],
+ "framework_screen": {
+  "note": "FRAMEWORK-COMPUTED irregularity screen -- the agent RESPONDS to these (classify consequences, apply rho/Ax/25% collector increases as required); do not re-derive.",
+  "plan": {
+   "reentrant": false,
+   "setback": false,
+   "nonparallel": false,
+   "nonrect": false
+  },
+  "soft_story": {
+   "K1_over_K2": {
+    "X": 1.35,
+    "Y": 1.46
+   },
+   "K1_over_avg3": {
+    "X": 1.65,
+    "Y": 1.85
+   },
+   "classification": "none",
+   "cite": "ASCE 7-22 Table 12.3-2 (computed)"
+  },
+  "torsion": {
+   "ratio_max": 1.0,
+   "classification": "none",
+   "Ax": 1.0,
+   "cite": "ASCE 7-22 Table 12.3-1 / 12.8.4.3 (computed)"
+  },
+  "Fpx_kip_by_level": {
+   "1": 50.0,
+   "2": 49.0,
+   "3": 49.0,
+   "4": 49.0,
+   "5": 50.0,
+   "6": 55.0,
+   "7": 60.0,
+   "8": 63.0
+  }
+ },
+ "capacity_design": {
+  "system": "R=3 steel, NOT specifically detailed for seismic - AISC 341 does NOT apply (no SCWB, no expected-strength design, no protected zones, no D1.1 ductility checks): members and connections designed to AISC 360-22 with ANALYSIS forces",
+  "R3_statement": "stated per brief and AISC 341-22 A1 applicability; Om0=3 used only where ASCE 7-22 specifically requires (nowhere in SDC B)",
+  "wind_vs_seismic": {
+   "computed": "factored wind MWFRS base shear: X=366 kip, Y=549 kip vs seismic V=260 kip (rho=1.0): WIND GOVERNS BOTH DIRECTIONS (ratios 1.4x / 2.1x); seismic drift 0.13%/0.24% << 2%; wind service drift H/400 OK (Ch.8)",
+   "cite": "ASCE 7-22 Ch. 26-28 (framework) vs Ch. 12 ELF"
+  }
+ },
+ "ddm_analysis": {
+  "method": "Direct Design Method (system-based design by advanced analysis) -- steltic_ddm 0.1",
+  "basis": [
+   "Zhang, Shayan, Rasmussen & Ellingwood, JCSR 123 (2016) I & II",
+   "AISC 360-22 Appendix 1 (design by advanced analysis) -- cite via Query file manager",
+   "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50",
+   "Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+   "Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+   "Zhang H., Rasmussen K.J.R., Shayan S., Ellingwood B.R. -- System reliability of steel frames designed by inelastic analysis, SSRC Annual Stability Conference 2013 (open PDF, aisc.org). Table 10: phi_s = 0.90/0.85/0.80/0.70 at beta_T = 2.5/2.75/3.0/3.5, 1.2G+1.5Q, nine planar moment frames"
+  ],
+  "phi_s_provisional": false,
+  "phi_s_status": "Classes used: HR-G = 0.80 at beta_T 3.00 [VERIFIED]; HSS-W = 0.85 at beta_T 2.50 [VERIFIED-CITED]. Every class used is verified from open documents (SSRC 2013 Table 10; Wan 2024 thesis Tables 6.10-6.14 / Eq. 6.9; Arrayago-Rasmussen-Zhang 2022 for the cited HSS/CFS wind values); see docs/PHI_S_SOURCES.md.",
+  "phi_s_classes": {
+   "HR-G": {
+    "phi_s": 0.8,
+    "beta_T": 3.0,
+    "status": "verified"
+   },
+   "HSS-W": {
+    "phi_s": 0.85,
+    "beta_T": 2.5,
+    "status": "verified-cited"
+   }
+  },
+  "model": {
+   "elements": "forceBeamColumn / Corotational / 5 IP fibre",
+   "nsub": [
+    2,
+    2,
+    4
+   ],
+   "material": "Steel01 Fy=50 E=29000 b=0.002",
+   "residual_stress": "lehigh",
+   "out_of_plumb": "1/500",
+   "out_of_straightness": "L/1000",
+   "diaphragm": "rigid (as designed)",
+   "joints": "as designed",
+   "transfer_gate": {
+    "pass": true,
+    "rows": [
+     {
+      "quantity": "T1 (s)",
+      "steltic": 1.7591,
+      "gmnia": 1.762,
+      "ratio": 1.0017,
+      "ok": true
+     },
+     {
+      "quantity": "T2 (s)",
+      "steltic": 1.6115,
+      "gmnia": 1.6137,
+      "ratio": 1.0014,
+      "ok": true
+     },
+     {
+      "quantity": "T3 (s)",
+      "steltic": 1.1998,
+      "gmnia": 1.2016,
+      "ratio": 1.0015,
+      "ok": true
+     },
+     {
+      "quantity": "roof disp X under ELF pattern (in)",
+      "steltic": 1.3342,
+      "gmnia": 1.3386,
+      "ratio": 1.0032,
+      "ok": true
+     },
+     {
+      "quantity": "roof disp Y under ELF pattern (in)",
+      "steltic": 1.6217,
+      "gmnia": 1.6279,
+      "ratio": 1.0038,
+      "ok": true
+     }
+    ]
+   }
+  },
+  "combinations": [
+   {
+    "label": "1.4D",
+    "kind": "gravity",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 2.25,
+    "lambda_first_yield": 1.666,
+    "phi_s": 0.8,
+    "phi_class": "HR-G",
+    "phi_source": "Zhang H., Rasmussen K.J.R., Shayan S., Ellingwood B.R. -- System reliability of steel frames designed by inelastic analysis, SSRC Annual Stability Conference 2013 (open PDF, aisc.org). Table 10: phi_s = 0.90/0.85/0.80/0.70 at beta_T = 2.5/2.75/3.0/3.5, 1.2G+1.5Q, nine planar moment frames; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 1.800 PASS",
+    "mechanism": "beam yielding (15 beam members at hinge level), limited post-peak ductility",
+    "hinges_by_role": {
+     "roof": 15
+    },
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": null,
+    "steps": 110,
+    "seconds": 243.0
+   },
+   {
+    "label": "1.2D+1.6L+0.5Lr",
+    "kind": "gravity",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 1.278,
+    "lambda_first_yield": 1.24,
+    "phi_s": 0.8,
+    "phi_class": "HR-G",
+    "phi_source": "Zhang H., Rasmussen K.J.R., Shayan S., Ellingwood B.R. -- System reliability of steel frames designed by inelastic analysis, SSRC Annual Stability Conference 2013 (open PDF, aisc.org). Table 10: phi_s = 0.90/0.85/0.80/0.70 at beta_T = 2.5/2.75/3.0/3.5, 1.2G+1.5Q, nine planar moment frames; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 1.023 PASS",
+    "mechanism": "inelastic column instability -- 12 columns yielded at the peak (W14X109), no beam hinge",
+    "hinges_by_role": {},
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": null,
+    "steps": 29,
+    "seconds": 83.4
+   },
+   {
+    "label": "1.2D+1.6Lr+0.5L",
+    "kind": "gravity",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 1.927,
+    "lambda_first_yield": 1.748,
+    "phi_s": 0.8,
+    "phi_class": "HR-G",
+    "phi_source": "Zhang H., Rasmussen K.J.R., Shayan S., Ellingwood B.R. -- System reliability of steel frames designed by inelastic analysis, SSRC Annual Stability Conference 2013 (open PDF, aisc.org). Table 10: phi_s = 0.90/0.85/0.80/0.70 at beta_T = 2.5/2.75/3.0/3.5, 1.2G+1.5Q, nine planar moment frames; Zhang H., Shayan S., Rasmussen K.J.R., Ellingwood B.R. -- System-based design of planar steel frames, II: Reliability results and design recommendations, J. Constr. Steel Res. 123 (2016) 154-161",
+    "check": "phi_s*lambda_u = 1.542 PASS",
+    "mechanism": "column yielding / inelastic instability (12 column members at hinge level)",
+    "hinges_by_role": {
+     "gravity_col": 12
+    },
+    "buckled_braces": 0,
+    "roof_disp_at_peak_in": null,
+    "steps": 41,
+    "seconds": 285.1
+   },
+   {
+    "label": "(1.2+0.2SDS)D+rhoEX+t++0.5L",
+    "kind": "seismic",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 1.948,
+    "lambda_first_yield": 1.766,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.656 PASS",
+    "mechanism": "brace buckling (12 braces) governs the peak",
+    "hinges_by_role": {},
+    "buckled_braces": 12,
+    "roof_disp_at_peak_in": 3.572,
+    "steps": 51,
+    "seconds": 131.4
+   },
+   {
+    "label": "(0.9-0.2SDS)D+rhoEX+t+",
+    "kind": "seismic",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 3.497,
+    "lambda_first_yield": 2.467,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 2.973 PASS",
+    "mechanism": "brace buckling (18 braces) with 15 beam members at hinge level at the peak (proportional scaling also scales gravity)",
+    "hinges_by_role": {
+     "roof": 15
+    },
+    "buckled_braces": 18,
+    "roof_disp_at_peak_in": 7.051,
+    "steps": 103,
+    "seconds": 178.9
+   },
+   {
+    "label": "(1.2+0.2SDS)D+rhoEX-t++0.5L",
+    "kind": "seismic",
+    "imperfection": "-X",
+    "scheme": "proportional",
+    "lambda_u": 1.948,
+    "lambda_first_yield": 1.766,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.656 PASS",
+    "mechanism": "brace buckling (12 braces) governs the peak",
+    "hinges_by_role": {},
+    "buckled_braces": 12,
+    "roof_disp_at_peak_in": -3.572,
+    "steps": 51,
+    "seconds": 133.8
+   },
+   {
+    "label": "(0.9-0.2SDS)D+rhoEX-t+",
+    "kind": "seismic",
+    "imperfection": "-X",
+    "scheme": "proportional",
+    "lambda_u": 3.497,
+    "lambda_first_yield": 2.467,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 2.972 PASS",
+    "mechanism": "brace buckling (18 braces) with 15 beam members at hinge level at the peak (proportional scaling also scales gravity)",
+    "hinges_by_role": {
+     "roof": 15
+    },
+    "buckled_braces": 18,
+    "roof_disp_at_peak_in": -7.051,
+    "steps": 107,
+    "seconds": 112.8
+   },
+   {
+    "label": "(1.2+0.2SDS)D+rhoEY+t++0.5L",
+    "kind": "seismic",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 1.95,
+    "lambda_first_yield": 1.758,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.658 PASS",
+    "mechanism": "brace buckling (9 braces) governs the peak",
+    "hinges_by_role": {},
+    "buckled_braces": 9,
+    "roof_disp_at_peak_in": 4.135,
+    "steps": 49,
+    "seconds": 125.8
+   },
+   {
+    "label": "(0.9-0.2SDS)D+rhoEY+t+",
+    "kind": "seismic",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 3.138,
+    "lambda_first_yield": 2.087,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 2.667 PASS",
+    "mechanism": "brace buckling (18 braces) with 15 beam members at hinge level at the peak (proportional scaling also scales gravity)",
+    "hinges_by_role": {
+     "roof": 15
+    },
+    "buckled_braces": 18,
+    "roof_disp_at_peak_in": 6.968,
+    "steps": 87,
+    "seconds": 176.6
+   },
+   {
+    "label": "(1.2+0.2SDS)D+rhoEY-t++0.5L",
+    "kind": "seismic",
+    "imperfection": "-Y",
+    "scheme": "proportional",
+    "lambda_u": 1.95,
+    "lambda_first_yield": 1.758,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.658 PASS",
+    "mechanism": "brace buckling (9 braces) governs the peak",
+    "hinges_by_role": {},
+    "buckled_braces": 9,
+    "roof_disp_at_peak_in": -4.135,
+    "steps": 49,
+    "seconds": 126.9
+   },
+   {
+    "label": "(0.9-0.2SDS)D+rhoEY-t+",
+    "kind": "seismic",
+    "imperfection": "-Y",
+    "scheme": "proportional",
+    "lambda_u": 3.138,
+    "lambda_first_yield": 2.087,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 2.667 PASS",
+    "mechanism": "brace buckling (18 braces) with 15 beam members at hinge level at the peak (proportional scaling also scales gravity)",
+    "hinges_by_role": {
+     "brace": 1,
+     "roof": 15
+    },
+    "buckled_braces": 18,
+    "roof_disp_at_peak_in": -6.968,
+    "steps": 88,
+    "seconds": 158.3
+   },
+   {
+    "label": "1.2D+1.0WX++0.5L+0.5Lr",
+    "kind": "wind",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 1.975,
+    "lambda_first_yield": 1.761,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.678 PASS",
+    "mechanism": "brace buckling (14 braces) with 15 beam members at hinge level at the peak (proportional scaling also scales gravity)",
+    "hinges_by_role": {
+     "roof": 15
+    },
+    "buckled_braces": 14,
+    "roof_disp_at_peak_in": 3.62,
+    "steps": 52,
+    "seconds": 142.0
+   },
+   {
+    "label": "0.9D+1.0WX+",
+    "kind": "wind",
+    "imperfection": "+X",
+    "scheme": "proportional",
+    "lambda_u": 3.293,
+    "lambda_first_yield": 2.053,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 2.799 PASS",
+    "mechanism": "brace buckling (14 braces) with 15 beam members at hinge level at the peak (proportional scaling also scales gravity)",
+    "hinges_by_role": {
+     "brace": 2,
+     "roof": 15
+    },
+    "buckled_braces": 14,
+    "roof_disp_at_peak_in": 6.696,
+    "steps": 106,
+    "seconds": 125.7
+   },
+   {
+    "label": "1.2D+1.0WX-+0.5L+0.5Lr",
+    "kind": "wind",
+    "imperfection": "-X",
+    "scheme": "proportional",
+    "lambda_u": 1.975,
+    "lambda_first_yield": 1.761,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.678 PASS",
+    "mechanism": "brace buckling (14 braces) with 15 beam members at hinge level at the peak (proportional scaling also scales gravity)",
+    "hinges_by_role": {
+     "roof": 15
+    },
+    "buckled_braces": 14,
+    "roof_disp_at_peak_in": -3.62,
+    "steps": 52,
+    "seconds": 134.0
+   },
+   {
+    "label": "0.9D+1.0WX-",
+    "kind": "wind",
+    "imperfection": "-X",
+    "scheme": "proportional",
+    "lambda_u": 3.293,
+    "lambda_first_yield": 2.053,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 2.799 PASS",
+    "mechanism": "brace buckling (14 braces) with 15 beam members at hinge level at the peak (proportional scaling also scales gravity)",
+    "hinges_by_role": {
+     "brace": 2,
+     "roof": 15
+    },
+    "buckled_braces": 14,
+    "roof_disp_at_peak_in": -6.696,
+    "steps": 106,
+    "seconds": 132.6
+   },
+   {
+    "label": "1.2D+1.0WY++0.5L+0.5Lr",
+    "kind": "wind",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 1.891,
+    "lambda_first_yield": 1.361,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.608 PASS",
+    "mechanism": "brace buckling (14 braces) governs the peak",
+    "hinges_by_role": {
+     "brace": 2
+    },
+    "buckled_braces": 14,
+    "roof_disp_at_peak_in": 6.137,
+    "steps": 58,
+    "seconds": 83.2
+   },
+   {
+    "label": "0.9D+1.0WY+",
+    "kind": "wind",
+    "imperfection": "+Y",
+    "scheme": "proportional",
+    "lambda_u": 2.304,
+    "lambda_first_yield": 1.57,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.958 PASS",
+    "mechanism": "brace buckling (14 braces) governs the peak",
+    "hinges_by_role": {
+     "brace": 4
+    },
+    "buckled_braces": 14,
+    "roof_disp_at_peak_in": 7.474,
+    "steps": 68,
+    "seconds": 64.1
+   },
+   {
+    "label": "1.2D+1.0WY-+0.5L+0.5Lr",
+    "kind": "wind",
+    "imperfection": "-Y",
+    "scheme": "proportional",
+    "lambda_u": 1.891,
+    "lambda_first_yield": 1.361,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.608 PASS",
+    "mechanism": "brace buckling (14 braces) governs the peak",
+    "hinges_by_role": {
+     "brace": 2
+    },
+    "buckled_braces": 14,
+    "roof_disp_at_peak_in": -6.137,
+    "steps": 58,
+    "seconds": 91.1
+   },
+   {
+    "label": "0.9D+1.0WY-",
+    "kind": "wind",
+    "imperfection": "-Y",
+    "scheme": "proportional",
+    "lambda_u": 2.304,
+    "lambda_first_yield": 1.57,
+    "phi_s": 0.85,
+    "phi_class": "HSS-W",
+    "phi_source": "Arrayago I., Rasmussen K.J.R., Zhang H. -- System-based reliability analysis of stainless steel frames subjected to gravity and wind loads, Structural Safety 97 (2022) 102211 (CC-BY, UPCommons), sec. 5.3, quoting the carbon-steel calibrations for gravity + wind at beta_0 ~ 2.50; Liu W., Zhang H., Rasmussen K.J.R. -- System reliability-based Direct Design Method for space frames with cold-formed steel hollow sections, Eng. Struct. 166 (2018) 79-92",
+    "check": "phi_s*lambda_u = 1.958 PASS",
+    "mechanism": "brace buckling (14 braces) governs the peak",
+    "hinges_by_role": {
+     "brace": 4
+    },
+    "buckled_braces": 14,
+    "roof_disp_at_peak_in": -7.474,
+    "steps": 67,
+    "seconds": 112.1
+   }
+  ],
+  "sensitivity": [],
+  "member_state_at_collapse": [
+   {
+    "role": "brace",
+    "section": "HSS6X6X3/8",
+    "n": 32,
+    "DC": 0.467,
+    "combo": "(0.9-0.2SDS)D+rhoEY+t+",
+    "ratio": 2.54,
+    "yielded": 4,
+    "hinges": 0,
+    "buckled": 10
+   },
+   {
+    "role": "brace",
+    "section": "HSS8X8X1/2",
+    "n": 32,
+    "DC": 0.452,
+    "combo": "0.9D+1.0WY+",
+    "ratio": 9.51,
+    "yielded": 8,
+    "hinges": 4,
+    "buckled": 8
+   },
+   {
+    "role": "floor",
+    "section": "W24X84",
+    "n": 343,
+    "DC": 0.714,
+    "combo": "(1.2+0.2SDS)D+rhoEY+t++0.5L",
+    "ratio": 0.54,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "gravity_col",
+    "section": "W14X109",
+    "n": 44,
+    "DC": 0.959,
+    "combo": "1.2D+1.6Lr+0.5L",
+    "ratio": 3.33,
+    "yielded": 24,
+    "hinges": 12,
+    "buckled": 0
+   },
+   {
+    "role": "gravity_col",
+    "section": "W14X61",
+    "n": 44,
+    "DC": 0.397,
+    "combo": "1.4D",
+    "ratio": 0.49,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "gravity_col",
+    "section": "W14X82",
+    "n": 44,
+    "DC": 0.719,
+    "combo": "(0.9-0.2SDS)D+rhoEX+t+",
+    "ratio": 0.75,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "gravity_col",
+    "section": "W14X99",
+    "n": 44,
+    "DC": 0.76,
+    "combo": "1.2D+1.6Lr+0.5L",
+    "ratio": 0.85,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "lateral_col",
+    "section": "W14X120",
+    "n": 16,
+    "DC": 0.778,
+    "combo": "(0.9-0.2SDS)D+rhoEY+t+",
+    "ratio": 0.95,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "lateral_col",
+    "section": "W14X159",
+    "n": 16,
+    "DC": 0.906,
+    "combo": "(0.9-0.2SDS)D+rhoEY-t+",
+    "ratio": 2.78,
+    "yielded": 3,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "lateral_col",
+    "section": "W14X61",
+    "n": 16,
+    "DC": 0.337,
+    "combo": "(0.9-0.2SDS)D+rhoEX+t+",
+    "ratio": 0.44,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "lateral_col",
+    "section": "W14X82",
+    "n": 16,
+    "DC": 0.768,
+    "combo": "(0.9-0.2SDS)D+rhoEY-t+",
+    "ratio": 0.97,
+    "yielded": 0,
+    "hinges": 0,
+    "buckled": 0
+   },
+   {
+    "role": "roof",
+    "section": "W24X62",
+    "n": 49,
+    "DC": 0.762,
+    "combo": "1.4D",
+    "ratio": 8.12,
+    "yielded": 15,
+    "hinges": 15,
+    "buckled": 0
+   }
+  ],
+  "caveats": [
+   "LTB/local buckling of beams outside the fibre model",
+   "collector axial not in rigid-diaphragm model",
+   "connections not modelled",
+   "composite action ignored"
+  ]
+ }
+}

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Ex18_R3 · Steltic viewer bundle</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; background:#14171c; color:#dde3ea; font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden; }
+  #bar { position:fixed; top:0; left:0; right:0; height:36px; display:flex; align-items:center; gap:6px; padding:0 12px; background:#101318; border-bottom:1px solid #2c333e; z-index:10; }
+  .brand { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:#8b95a3; margin-right:10px; white-space:nowrap; }
+  .brand b { color:#fff; letter-spacing:0; text-transform:none; font-size:12.5px; margin-left:6px; }
+  .chip { font-size:11px; letter-spacing:.06em; text-transform:uppercase; padding:4px 12px; border:1px solid #2c333e; border-radius:5px; color:#5d6774; user-select:none; white-space:nowrap; }
+  .chip.ok { color:#dde3ea; cursor:pointer; border-color:#3a4656; } .chip.ok:hover { background:#26405e; }
+  .chip.on { background:var(--c); color:#14171c; border-color:var(--c); font-weight:700; }
+  .chip.na { opacity:.45; text-decoration:line-through; cursor:not-allowed; }
+  .chip.probing { opacity:.6; }
+  .sp { flex:1; }
+  .note { font-size:10.5px; color:#5d6774; white-space:nowrap; }
+  a.open { font-size:11px; color:#9fb4cc; text-decoration:none; margin-left:10px; white-space:nowrap; } a.open:hover { color:#fff; }
+  iframe { position:fixed; top:36px; left:0; width:100%; height:calc(100% - 36px); border:0; background:#14171c; display:none; }
+  #empty { position:fixed; inset:36px 0 0 0; display:flex; align-items:center; justify-content:center; color:#8b95a3; font-size:13px; text-align:center; line-height:1.6; }
+</style></head>
+<body>
+<div id="bar"><span class="brand">Steltic viewer bundle <b>Ex18_R3</b></span><span id="chips" style="display:flex;gap:6px"></span><span class="sp"></span><span class="note" id="note">looking for viewers in this folder…</span><a class="open" id="open" target="_blank" style="display:none">open standalone ↗</a></div>
+<div id="empty">No viewer found next to this file.<br><span style="font-size:11.5px">Expected: viewer_3d.html · pushover/pushover_viewer_3d.html · nlrha/nlrha_viewer_3d.html · ddm_viewer_3d.html</span></div>
+<script>
+const MODS = [['steltic','Steltic','#cfe3ff','viewer_3d.html'],['pushover','Pushover','#ffb454','pushover/pushover_viewer_3d.html'],['nlrha','NLRHA','#3fc1a0','nlrha/nlrha_viewer_3d.html'],['ddm','DDM','#e0b341','ddm_viewer_3d.html']];
+const avail = {}, frames = {}; let current = null, pending = MODS.length;
+const chips = document.getElementById('chips');
+MODS.forEach(([k,label,col,rel]) => { const c = document.createElement('span'); c.className='chip probing'; c.dataset.mod=k; c.style.setProperty('--c', col); c.textContent=label; c.title='looking for '+rel; chips.appendChild(c); });
+function probe(rel, cb){ const s=document.createElement('script'); s.src=rel; s.onload=()=>{ s.remove(); cb(true); }; s.onerror=()=>{ s.remove(); cb(false); }; document.head.appendChild(s); }
+window.addEventListener('error', e => { if (e.filename && /\.html$/i.test(e.filename)) { e.preventDefault(); } }, true);   // the probes are html files loaded as scripts: swallow their syntax errors
+function select(k){
+  if (!avail[k]) return; current = k;
+  if (!frames[k]){ const f=document.createElement('iframe'); f.src=MODS.find(x=>x[0]===k)[3]; f.title=k; document.body.appendChild(f); frames[k]=f; }
+  MODS.forEach(([m]) => { const c = chips.querySelector('[data-mod="'+m+'"]'); c.classList.toggle('on', m===k); if (frames[m]) frames[m].style.display = m===k?'block':'none'; });
+  document.getElementById('empty').style.display='none';
+  const a=document.getElementById('open'); a.href=MODS.find(x=>x[0]===k)[3]; a.style.display='inline';
+  try { history.replaceState(null, '', '#'+k); } catch(e){}
+}
+MODS.forEach(([k,label,col,rel]) => probe(rel, ok => {
+  avail[k]=ok; const c = chips.querySelector('[data-mod="'+k+'"]'); c.classList.remove('probing');
+  if (ok){ c.classList.add('ok'); c.title='open '+rel; c.onclick=()=>select(k); } else { c.classList.add('na'); c.title=rel+' — not in this folder'; }
+  if (--pending===0){
+    const n = MODS.filter(([m])=>avail[m]).length; document.getElementById('note').textContent = n ? (n+' of 4 viewers in this folder · greyed = not present · the module strip inside each viewer switches too') : 'no viewers found next to this file';
+    const want = (location.hash||'').slice(1); if (avail[want]) select(want); else { const first = MODS.find(([m])=>avail[m]); if (first) select(first[0]); }
+  }
+}));
+window.addEventListener('message', e => { const k = e.data && e.data.stelticBundle; if (k && avail[k]) select(k); });
+window.addEventListener('keydown', e => { const i = parseInt(e.key)-1; if (i>=0 && i<MODS.length && !e.ctrlKey && !e.metaKey) select(MODS[i][0]); });
+</script>
+</body></html>

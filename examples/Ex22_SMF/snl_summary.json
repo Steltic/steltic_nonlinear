@@ -1,0 +1,95 @@
+{
+ "building": "Ex22_SMF",
+ "date": "2026-09-07",
+ "risk_category": "IV",
+ "basis": {
+  "SDS": 1.0,
+  "SD1": 0.6,
+  "S1": 0.6,
+  "R": 8.0,
+  "Cd": 5.5,
+  "Om0": 3.0,
+  "Ie": 1.5,
+  "system": "SMF",
+  "W_kip": 13476.0,
+  "V_design_kip": 1360.0,
+  "T_design_s": 1.11,
+  "L_floor_psf": 90.0,
+  "heights_in": null,
+  "site_class": null,
+  "sources": {
+   "SDS": "cfg.py",
+   "SD1": "cfg.py",
+   "S1": "cfg.py",
+   "R": "cfg.py",
+   "Cd": "cfg.py",
+   "Om0": "cfg.py",
+   "Ie": "cfg.py",
+   "system": "cfg.py",
+   "L_floor_psf": "cfg.py",
+   "W_kip": "report.html",
+   "V_design_kip": "report.html",
+   "T_design_s": "report.html"
+  }
+ },
+ "steltic": {
+  "dc_max": 0.897,
+  "drift_max_pct": 0.91,
+  "drift_limit_pct": 1.0,
+  "V_kip": 1360.0,
+  "W_kip": 13476.0
+ },
+ "pushover": {
+  "Omega": {
+   "X": 5.529124063617735,
+   "Y": 4.330809616519907
+  },
+  "Vmax": {
+   "X": 7519.6087265201195,
+   "Y": 5889.901078467073
+  },
+  "target_disp_BSE2N": {
+   "X": 11.430343456384824,
+   "Y": 12.994249738411876
+  },
+  "bpon_levels": [
+   "IO",
+   "LS"
+  ],
+  "bpon_ok": true,
+  "nsp_permitted": true,
+  "max_story_drift_BSE2N": {
+   "X": 0.016397930691745947,
+   "Y": 0.01828419239209613
+  },
+  "tail": {
+   "X": "lower_bound",
+   "Y": "lower_bound"
+  },
+  "params_verified": true
+ },
+ "nlrha": {
+  "verdict": "ACCEPTABLE",
+  "n_records": 11,
+  "n_unacceptable": 0,
+  "mean_drift_max": 0.014626632634027642,
+  "mean_limit": 0.02,
+  "roof_mean_in": [
+   8.52991686058815,
+   10.89704177855904
+  ],
+  "worst_DC_CP": 0.1430801511496734,
+  "worst_DC_force_controlled": 0.4039571218000776,
+  "retried": [
+   "Northridge Canyon Country-WLC (1994)"
+  ]
+ },
+ "ddm": {
+  "governing": "1.2D+1.6L+0.5Lr",
+  "lambda_u": 1.8402842073753185,
+  "phi_lambda": 1.288,
+  "n_pass": 11,
+  "n_checked": 11,
+  "gate_ok": true
+ }
+}

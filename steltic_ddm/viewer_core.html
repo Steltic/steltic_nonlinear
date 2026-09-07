@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  :root { --acc: __ACCENT__; --bg:#14171c; --panel:rgba(22,26,33,.94); --line:#2c333e; --ink:#dde3ea; --mute:#8b95a3; --dim:#7d8794; --hi:#cfe3ff; }
+  body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--ink); overflow:hidden; }
+  #canvas { position:fixed; inset:0; }
+  .panel { position:fixed; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:12.5px; backdrop-filter:blur(6px); }
+  #left { top:12px; left:12px; width:272px; max-height:calc(100vh - 24px); overflow-y:auto; }
+  body.info-open #left { max-height:calc(60vh - 30px); }
+  #rightcol { position:fixed; top:12px; right:12px; bottom:12px; width:300px; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+  #rightcol .panel { position:static; pointer-events:auto; }
+  #right { flex:0 1 auto; min-height:120px; overflow-y:auto; }
+  #legend { flex:none; }
+  #chart { bottom:12px; left:296px; right:324px; height:172px; padding:10px 12px 8px; }
+  #info { bottom:12px; left:12px; width:272px; display:none; max-height:40vh; overflow-y:auto; }
+  .bundle { display:flex; gap:4px; margin-bottom:8px; }
+  .bundle span { flex:1; text-align:center; font-size:10px; letter-spacing:.06em; text-transform:uppercase; padding:3px 0; border:1px solid var(--line); border-radius:4px; color:var(--dim); }
+  .bundle span.on { background:var(--acc); color:#14171c; border-color:var(--acc); font-weight:700; }
+  .bundle span.link { color:var(--ink); cursor:pointer; border-color:#3a4656; } .bundle span.link:hover { background:#26405e; }
+  .bundle span.na { opacity:.4; text-decoration:line-through; cursor:not-allowed; }
+  .bundle span.hub { flex:0 0 auto; padding:3px 6px; }
+  h1 { font-size:14px; margin-bottom:2px; color:#fff; }
+  .sub { color:var(--mute); font-size:11px; }
+  .accline { color:var(--acc); font-size:11px; margin:2px 0 8px; }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:12px 0 6px; }
+  label { display:flex; align-items:center; gap:6px; padding:2px 0; cursor:pointer; user-select:none; }
+  select, input[type=range] { width:100%; }
+  select { background:#1d222b; color:var(--ink); border:1px solid #333c49; border-radius:6px; padding:5px; font-size:12px; }
+  .row { display:flex; gap:8px; align-items:center; margin:4px 0; }
+  .row span.val { color:#9fb4cc; min-width:44px; text-align:right; font-variant-numeric:tabular-nums; font-size:11.5px; }
+  .stat { display:flex; justify-content:space-between; padding:1.5px 0; gap:8px; }
+  .stat b { color:var(--hi); font-weight:600; font-variant-numeric:tabular-nums; text-align:right; }
+  .swatch { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:middle; }
+  .caveat { font-size:10.5px; color:#79828e; line-height:1.45; margin-top:10px; border-top:1px solid var(--line); padding-top:8px; }
+  #info h3 { font-size:13px; color:#fff; margin-bottom:4px; }
+  table { width:100%; border-collapse:collapse; }
+  td, th { padding:1.5px 0; font-size:11.5px; text-align:left; }
+  td:last-child, th:last-child { text-align:right; color:#9fb4cc; font-variant-numeric:tabular-nums; }
+  th { color:var(--dim); font-weight:600; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; }
+  .badge { display:inline-block; padding:1px 7px; border-radius:9px; font-size:10.5px; font-weight:600; }
+  .ok { background:#1f5c3a; color:#c9f2d9; } .ng { background:#6a2222; color:#ffd6d6; } .wn { background:#6a4d12; color:#ffe7b3; }
+  button { background:#26405e; color:var(--hi); border:none; border-radius:6px; padding:5px 10px; font-size:11.5px; cursor:pointer; }
+  button:hover { background:#2f4f75; } button.acc { background:var(--acc); color:#14171c; font-weight:700; }
+  .btns { display:flex; gap:6px; margin-top:6px; } .btns button { flex:1; }
+  .lgsec { margin-top:6px; border-top:1px solid var(--line); padding-top:5px; font-size:11px; }
+  .toplist div { display:flex; justify-content:space-between; padding:1px 0; font-size:11.5px; cursor:pointer; }
+  .toplist div:hover { color:#fff; }
+  canvas.chart { width:100%; height:100%; display:block; }
+  .hint { position:fixed; bottom:2px; left:50%; transform:translateX(-50%); color:#5d6774; font-size:10.5px; }
+  @media (max-width:1100px){ #chart{ left:12px; right:12px; bottom:auto; top:calc(100vh - 190px);} #legend{ display:none;} #rightcol{ bottom:200px; } }
+</style>
+</head>
+<body>
+<div id="canvas"></div>
+
+<div id="left" class="panel">
+  <div class="bundle" id="bundle"></div>
+  <h1 id="title"></h1>
+  <div class="sub" id="subtitle"></div>
+  <div class="accline" id="accline"></div>
+  __LEFT_PANEL__
+  <h2>Show</h2>
+  <label><input type="checkbox" id="fCol" checked> Columns</label>
+  <label><input type="checkbox" id="fBeam" checked> Beams</label>
+  <label><input type="checkbox" id="fBrace" checked> Braces</label>
+  <label><input type="checkbox" id="fSlab" checked> Floor slabs</label>
+  <label><input type="checkbox" id="fSupp" checked> Supports</label>
+  <label><input type="checkbox" id="fGhost" checked> Undeformed ghost</label>
+  <label><input type="checkbox" id="fAxes" checked> Axes</label>
+  <div class="row"><span style="min-width:90px">Deformation ×</span><input type="range" id="amp" min="0" max="60" value="__AMP__"><span class="val" id="ampV"></span></div>
+  <div class="btns"><button id="resetCam">Reset camera</button><button id="viewPlan">Plan</button><button id="viewX">Elev X</button><button id="viewY">Elev Y</button></div>
+  <div class="caveat" id="caveat"></div>
+</div>
+
+<div id="rightcol"><div id="right" class="panel">__RIGHT_PANEL__</div><div id="legend" class="panel"></div></div>
+<div id="chart" class="panel"><canvas class="chart" id="chartCanvas"></canvas></div>
+<div id="info" class="panel"><h3 id="iTitle"></h3><div id="iBody"></div></div>
+<div class="hint">drag · orbit &nbsp; right-drag / shift · pan &nbsp; wheel · zoom &nbsp; click · member &nbsp; R · reset &nbsp; space · play</div>
+
+<script>
+__THREE__
+</script>
+<script>
+const DATA = __DATA__;
+// =====================================================================================================
+//  Steltic analysis-viewer core (shared by the Pushover, NLRHA and DDM viewers)
+// =====================================================================================================
+const W = () => window.innerWidth, H = () => window.innerHeight;
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(W(), H()); renderer.setPixelRatio(window.devicePixelRatio);
+document.getElementById('canvas').appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x14171c);
+const M = DATA.model;
+const nodeOf = t => M.nodes[String(t)];
+function map3(x,y,z){ return new THREE.Vector3(x, z, y); }         // model z-up -> three y-up
+let bmin=[1e9,1e9,1e9], bmax=[-1e9,-1e9,-1e9];
+for (const t in M.nodes){ const c=M.nodes[t]; for(let d=0;d<3;d++){bmin[d]=Math.min(bmin[d],c[d]); bmax[d]=Math.max(bmax[d],c[d]);} }
+const DIM=[bmax[0]-bmin[0], bmax[1]-bmin[1], bmax[2]-bmin[2]], MAXD=Math.max(...DIM);
+const CTR = map3((bmin[0]+bmax[0])/2, (bmin[1]+bmax[1])/2, (bmin[2]+bmax[2])/2*1.15);
+scene.fog = new THREE.Fog(0x14171c, MAXD*2.2, MAXD*6);
+const camera = new THREE.PerspectiveCamera(45, W()/H(), MAXD/200, MAXD*14);
+scene.add(new THREE.AmbientLight(0xffffff, .55));
+const dl = new THREE.DirectionalLight(0xffffff, .8); dl.position.set(MAXD*.6, MAXD*1.1, -MAXD*.4); scene.add(dl);
+const dl2 = new THREE.DirectionalLight(0x88aaff, .25); dl2.position.set(-MAXD*.5, MAXD*.35, MAXD*.6); scene.add(dl2);
+const grid = new THREE.GridHelper(MAXD*2.5, 40, 0x2a3542, 0x1e2631);
+grid.position.set((bmin[0]+bmax[0])/2, -MAXD/800, (bmin[1]+bmax[1])/2); scene.add(grid);
+
+// ---------- orbit controls (identical to the Steltic viewer) ----------
+const HOME = {r: MAXD*2.15, theta: Math.PI/4.4, phi: 1.12};
+let sph = {...HOME}, target = CTR.clone();
+function applyCam(){
+  camera.position.set(target.x + sph.r*Math.sin(sph.phi)*Math.cos(sph.theta), target.y + sph.r*Math.cos(sph.phi), target.z + sph.r*Math.sin(sph.phi)*Math.sin(sph.theta));
+  camera.lookAt(target);
+}
+applyCam();
+let drag = null;
+renderer.domElement.addEventListener('mousedown', e => { drag = {x:e.clientX, y:e.clientY, btn:e.button, shift:e.shiftKey, moved:0}; });
+window.addEventListener('mouseup', e => { if (drag && drag.moved < 4 && drag.btn === 0) pick(e); drag = null; });
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dx = e.clientX-drag.x, dy = e.clientY-drag.y; drag.x = e.clientX; drag.y = e.clientY; drag.moved += Math.abs(dx)+Math.abs(dy);
+  if (drag.btn === 2 || drag.shift) {
+    const fwd = new THREE.Vector3().subVectors(target, camera.position).normalize();
+    const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize(); const up = new THREE.Vector3().crossVectors(right, fwd);
+    target.addScaledVector(right, -dx*sph.r/900).addScaledVector(up, dy*sph.r/900);
+  } else { sph.theta += dx*0.005; sph.phi = Math.min(Math.PI-0.05, Math.max(0.05, sph.phi - dy*0.005)); }
+  applyCam();
+});
+renderer.domElement.addEventListener('wheel', e => { e.preventDefault(); sph.r = Math.min(MAXD*10, Math.max(MAXD/8, sph.r*(1+Math.sign(e.deltaY)*0.09))); applyCam(); }, {passive:false});
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+function setView(kind){ target = CTR.clone(); if(kind==='home') sph={...HOME}; if(kind==='plan') sph={r:MAXD*2.3,theta:-Math.PI/2,phi:0.06}; if(kind==='x') sph={r:MAXD*2.3,theta:-Math.PI/2,phi:Math.PI/2}; if(kind==='y') sph={r:MAXD*2.3,theta:0,phi:Math.PI/2}; applyCam(); }
+document.getElementById('resetCam').onclick = () => setView('home');
+document.getElementById('viewPlan').onclick = () => setView('plan');
+document.getElementById('viewX').onclick = () => setView('x');
+document.getElementById('viewY').onclick = () => setView('y');
+
+// ---------- palette (shared by the bundle) ----------
+const TYPE_COL = {column:0x5b8dd9, beam:0x9aa7b8, brace:0xe67e22};
+const STATE = {  // component state colours, identical in every viewer of the set
+  elastic:0x6b7a8f, yield:0xf2c14e, io:0xf2c14e, ls:0xe8742c, cp:0xd13b3b, beyond:0x7a1f1f, buckled:0xb07cff, tension:0xf2c14e };
+const STATE_LABEL = {elastic:'elastic', yield:'yielded (past θy / Δc / Δy)', io:'> IO', ls:'> LS', cp:'> CP', beyond:'beyond b (valid range)', buckled:'brace buckled', tension:'brace yielded in tension'};
+
+// ---------- members ----------
+const RB = Math.max(1.5, MAXD/340);
+const RAD = {column:2.3*RB, beam:1.7*RB, brace:1.3*RB};
+const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1);
+const meshes = [], ghosts = [];
+const LEV = M.levels;                                                 // z of every level incl. ground (index 0)
+const lvlOfZ = z => { let best=0, bd=1e9; LEV.forEach((v,i)=>{const d=Math.abs(v-z); if(d<bd){bd=d;best=i;}}); return best; };
+const nodeLvl = {}; for (const t in M.nodes) nodeLvl[t] = lvlOfZ(M.nodes[t][2]);
+const ghostMat = new THREE.LineBasicMaterial({color:0x3a4656, transparent:true, opacity:.55});
+for (const e of M.elements) {
+  const mesh = new THREE.Mesh(cylGeo, new THREE.MeshLambertMaterial({color:TYPE_COL[e.type]||0x9aa7b8}));
+  mesh.userData = e; e._lvl = Math.max(nodeLvl[e.n[0]], nodeLvl[e.n[1]]); scene.add(mesh); meshes.push(mesh);
+  const g = new THREE.BufferGeometry().setFromPoints([map3(...nodeOf(e.n[0])), map3(...nodeOf(e.n[1]))]);
+  const ln = new THREE.Line(g, ghostMat); scene.add(ln); ghosts.push(ln);
+}
+function placeMesh(mesh, p1, p2){
+  const mid = new THREE.Vector3().addVectors(p1,p2).multiplyScalar(.5), dir = new THREE.Vector3().subVectors(p2,p1), len = dir.length();
+  mesh.position.copy(mid); mesh.scale.set(RAD[mesh.userData.type], len, RAD[mesh.userData.type]);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.normalize());
+}
+// supports
+const suppGrp = new THREE.Group(); const suppMat = new THREE.MeshLambertMaterial({color:0x2ecc71});
+const fixedBase = /fixed/i.test(M.support_label||'');
+for (const t of M.fixed) { const [x,y,z]=nodeOf(t); const c = fixedBase ? new THREE.Mesh(new THREE.BoxGeometry(8*RB,4*RB,8*RB), suppMat) : new THREE.Mesh(new THREE.ConeGeometry(5.5*RB, 9*RB, 4), suppMat); c.position.copy(map3(x,y,z)).add(new THREE.Vector3(0,-5*RB,0)); suppGrp.add(c); }
+scene.add(suppGrp);
+// slabs (deform rigidly with their level)
+const slabGrp = new THREE.Group(); const slabMat = new THREE.MeshLambertMaterial({color:0x3a4656, transparent:true, opacity:.28, side:THREE.DoubleSide});
+for (const [x0,x1,y0,y1,z] of (M.slabs||[])) { const m = new THREE.Mesh(new THREE.PlaneGeometry(x1-x0, y1-y0), slabMat); m.rotation.x=-Math.PI/2; m.position.set((x0+x1)/2, z, (y0+y1)/2); m.userData={lvl:lvlOfZ(z), x:(x0+x1)/2, y:(y0+y1)/2, z}; slabGrp.add(m); }
+scene.add(slabGrp);
+// axes
+function textSprite(txt, color){ const cv=document.createElement('canvas'); cv.width=cv.height=128; const g=cv.getContext('2d'); g.font='bold 84px Segoe UI, sans-serif'; g.textAlign='center'; g.textBaseline='middle'; g.fillStyle=color; g.fillText(txt,64,68); const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv), transparent:true})); sp.scale.set(MAXD*0.06, MAXD*0.06, 1); return sp; }
+function arrow(from, dirModel, len, color, rad){ const g=new THREE.Group(); const dir=map3(...dirModel).normalize(); const sl=len*0.75; const shaft=new THREE.Mesh(cylGeo,new THREE.MeshLambertMaterial({color})); shaft.scale.set(rad,sl,rad); shaft.position.copy(from).addScaledVector(dir,sl/2); shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),dir); const head=new THREE.Mesh(new THREE.ConeGeometry(rad*2.6,len*0.25,10),new THREE.MeshLambertMaterial({color})); head.position.copy(from).addScaledVector(dir,sl+len*0.125); head.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),dir); g.add(shaft,head); return g; }
+const axesGrp = new THREE.Group();
+{ const ax0 = map3(bmin[0]-MAXD*0.16, bmin[1]-MAXD*0.16, 0), al = MAXD*0.13;
+  axesGrp.add(arrow(ax0.clone(),[1,0,0],al,0xe74c3c,RB*0.9)); axesGrp.add(arrow(ax0.clone(),[0,1,0],al,0x2ecc71,RB*0.9)); axesGrp.add(arrow(ax0.clone(),[0,0,1],al,0x5b8dd9,RB*0.9));
+  const sx=textSprite('X','#e74c3c'); sx.position.copy(ax0).add(map3(al*1.25,0,0).sub(map3(0,0,0))); axesGrp.add(sx);
+  const sy=textSprite('Y','#2ecc71'); sy.position.copy(ax0).add(map3(0,al*1.25,0).sub(map3(0,0,0))); axesGrp.add(sy);
+  const sz=textSprite('Z','#5b8dd9'); sz.position.copy(ax0).add(map3(0,0,al*1.25).sub(map3(0,0,0))); axesGrp.add(sz); }
+scene.add(axesGrp);
+// direction arrow (loading / push direction), toggled by modules
+const dirGrp = new THREE.Group(); scene.add(dirGrp);
+function showDirection(vec, color){ dirGrp.clear(); if(!vec) return; const from = map3((bmin[0]+bmax[0])/2, bmin[1]-MAXD*0.22, bmax[2]*1.02); dirGrp.add(arrow(from, vec, MAXD*0.16, color||0xffffff, RB*1.3)); }
+
+// ---------- hinge dots: solid camera-facing discs (the classic plastic-hinge symbol), colour = state ----------
+const _dotMats = {};
+function dotMaterial(hex){
+  if (_dotMats[hex]) return _dotMats[hex];
+  const cv = document.createElement('canvas'); cv.width = cv.height = 64; const g = cv.getContext('2d');
+  g.beginPath(); g.arc(32, 32, 27, 0, Math.PI*2); g.fillStyle = '#'+hex.toString(16).padStart(6,'0'); g.fill();
+  g.lineWidth = 5; g.strokeStyle = 'rgba(20,23,28,0.9)'; g.stroke();
+  const tex = new THREE.CanvasTexture(cv); tex.minFilter = THREE.LinearFilter;
+  return _dotMats[hex] = new THREE.SpriteMaterial({map:tex, depthTest:true, depthWrite:false, transparent:true});
+}
+const DOT_SIZE = RB*9;
+function hingeDot(hex){ const sp = new THREE.Sprite(dotMaterial(hex)); sp.scale.set(DOT_SIZE, DOT_SIZE, 1); sp.renderOrder = 5; sp.visible = false; scene.add(sp); return sp; }
+function setDot(sp, hex, pos, sizeMul){ sp.material = dotMaterial(hex); sp.position.copy(pos); const k = DOT_SIZE*(sizeMul||1); sp.scale.set(k, k, 1); sp.visible = true; }
+
+// ---------- deformed shape: rigid-diaphragm floor motion [ux, uy, rz] per level (index 1..NF) ----------
+let AMP = parseFloat(document.getElementById('amp').value);
+const CM = M.cm || {};                                                 // level -> [cx, cy]
+function nodeDisp(t, floors){                                           // floors: array indexed by level (0 = ground) of [ux,uy,rz]
+  const k = nodeLvl[t]; if (!floors || k===0 || !floors[k]) return [0,0,0];
+  const [x,y] = nodeOf(t); const f = floors[k]; const c = CM[k] || [0,0];
+  return [f[0] - f[2]*(y-c[1]), f[1] + f[2]*(x-c[0]), 0];
+}
+let currentFloors = null;
+function applyDeformation(floors){
+  currentFloors = floors;
+  for (const mesh of meshes){
+    const e = mesh.userData; const a = nodeOf(e.n[0]), b = nodeOf(e.n[1]); const da = nodeDisp(e.n[0], floors), db = nodeDisp(e.n[1], floors);
+    placeMesh(mesh, map3(a[0]+AMP*da[0], a[1]+AMP*da[1], a[2]+AMP*da[2]), map3(b[0]+AMP*db[0], b[1]+AMP*db[1], b[2]+AMP*db[2]));
+  }
+  slabGrp.children.forEach(m => { const k=m.userData.lvl; const f=(floors&&floors[k])||[0,0,0]; m.position.set(m.userData.x + AMP*f[0], m.userData.z, m.userData.y + AMP*f[1]); m.rotation.y = -AMP*f[2]; });
+  if (typeof onDeformed === 'function') onDeformed(floors);
+}
+document.getElementById('amp').oninput = e => { AMP = parseFloat(e.target.value); document.getElementById('ampV').textContent = '×'+AMP; applyDeformation(currentFloors); };
+document.getElementById('ampV').textContent = '×'+AMP;
+function setColor(mesh, hex){ mesh.material.color.setHex(hex); }
+function memberPos(e, frac){ const a=nodeOf(e.n[0]), b=nodeOf(e.n[1]); const da=nodeDisp(e.n[0],currentFloors), db=nodeDisp(e.n[1],currentFloors); return map3(a[0]+AMP*da[0]+frac*((b[0]+AMP*db[0])-(a[0]+AMP*da[0])), a[1]+AMP*da[1]+frac*((b[1]+AMP*db[1])-(a[1]+AMP*da[1])), a[2]+frac*(b[2]-a[2])); }
+
+// ---------- visibility ----------
+const filt = {column:'fCol', beam:'fBeam', brace:'fBrace'};
+function applyVis(){
+  const on = {}; for (const k in filt) on[k] = document.getElementById(filt[k]).checked;
+  meshes.forEach(m => m.visible = !!on[m.userData.type]);
+  const gh = document.getElementById('fGhost').checked; ghosts.forEach((g,i) => g.visible = gh && !!on[meshes[i].userData.type]);
+  slabGrp.visible = document.getElementById('fSlab').checked; suppGrp.visible = document.getElementById('fSupp').checked; axesGrp.visible = document.getElementById('fAxes').checked;
+  if (typeof onVisibility === 'function') onVisibility(on);
+}
+['fCol','fBeam','fBrace','fSlab','fSupp','fGhost','fAxes'].forEach(id => document.getElementById(id).onchange = applyVis);
+
+// ---------- picking + info ----------
+const ray = new THREE.Raycaster(); const mouse = new THREE.Vector2(); let selected = null;
+function pick(e){
+  mouse.x = (e.clientX/W())*2-1; mouse.y = -(e.clientY/H())*2+1; ray.setFromCamera(mouse, camera);
+  const hits = ray.intersectObjects(meshes.filter(m=>m.visible));
+  const info = document.getElementById('info');
+  if (!hits.length){ selected=null; info.style.display='none'; document.body.classList.remove('info-open'); if (typeof onSelect==='function') onSelect(null); return; }
+  selected = hits[0].object.userData; info.style.display='block'; document.body.classList.add('info-open');
+  document.getElementById('iTitle').textContent = `${selected.type} ${selected.tag} · ${selected.sec}`;
+  document.getElementById('iBody').innerHTML = (typeof memberInfo==='function') ? memberInfo(selected) : '';
+  if (typeof onSelect==='function') onSelect(selected);
+}
+function rows(pairs){ return '<table>'+pairs.map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('')+'</table>'; }
+
+// ---------- legend ----------
+function legend(items, title, note){ const el=document.getElementById('legend'); el.innerHTML = (title?`<h2 style="margin-top:0">${title}</h2>`:'') + items.map(([hex,lab])=>`<div style="display:flex;align-items:center;padding:1.5px 0"><span class="swatch" style="background:#${hex.toString(16).padStart(6,'0')}"></span><span style="font-size:11.5px">${lab}</span></div>`).join('') + (note?`<div class="lgsec" style="color:#8b95a3">${note}</div>`:''); }
+
+// ---------- 2-D chart helper (curves + cursor) ----------
+const chartCv = document.getElementById('chartCanvas');
+function drawChart(spec){
+  const dpr = window.devicePixelRatio||1; const box = chartCv.getBoundingClientRect(); chartCv.width = box.width*dpr; chartCv.height = box.height*dpr;
+  const g = chartCv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,box.width,box.height);
+  const ml=52, mr=14, mt=18, mb=26, pw=box.width-ml-mr, ph=box.height-mt-mb;
+  const X=v=>ml+(v-spec.xmin)/(spec.xmax-spec.xmin)*pw, Y=v=>mt+ph-(v-spec.ymin)/(spec.ymax-spec.ymin)*ph;
+  for (const b of (spec.bands||[])){ g.fillStyle=b.color; g.fillRect(X(b.x0), mt, X(b.x1)-X(b.x0), ph); if(b.label){ g.fillStyle=b.textColor||'#8b95a3'; g.font='10px Segoe UI, sans-serif'; g.textAlign='left'; g.fillText(b.label, X(b.x0)+3, mt+ph-5); } }
+  g.font='11px Segoe UI, sans-serif'; g.fillStyle='#8b95a3'; g.strokeStyle='#2c333e'; g.lineWidth=1;
+  const nx=spec.xticks||5, ny=spec.yticks||4;
+  for(let i=0;i<=ny;i++){ const v=spec.ymin+(spec.ymax-spec.ymin)*i/ny; g.beginPath(); g.moveTo(ml,Y(v)); g.lineTo(ml+pw,Y(v)); g.stroke(); g.textAlign='right'; g.fillText(spec.yfmt?spec.yfmt(v):v.toFixed(0), ml-6, Y(v)+4); }
+  for(let i=0;i<=nx;i++){ const v=spec.xmin+(spec.xmax-spec.xmin)*i/nx; g.textAlign='center'; g.fillText(spec.xfmt?spec.xfmt(v):v.toFixed(1), X(v), mt+ph+16); }
+  g.fillStyle='#dde3ea'; g.textAlign='center'; g.fillText(spec.title||'', ml+pw/2, 11); g.fillStyle='#8b95a3'; g.textAlign='right'; g.fillText(spec.xlabel||'', ml+pw, 11); g.textAlign='left'; g.fillText(spec.ylabel||'', 2, 11);
+  for (const s of spec.series){ g.strokeStyle=s.color; g.lineWidth=s.width||1.6; if(s.dash) g.setLineDash(s.dash); else g.setLineDash([]); g.beginPath(); s.pts.forEach((p,i)=>{ const x=X(p[0]), y=Y(p[1]); if(i===0) g.moveTo(x,y); else g.lineTo(x,y);} ); g.stroke(); g.setLineDash([]); }
+  for (const m of (spec.vlines||[])){ g.strokeStyle=m.color; g.setLineDash([4,3]); g.beginPath(); g.moveTo(X(m.x),mt); g.lineTo(X(m.x),mt+ph); g.stroke(); g.setLineDash([]); g.fillStyle=m.color; g.textAlign='left'; g.fillText(m.label, X(m.x)+3, mt+10+(m.dy||0)); }
+  for (const m of (spec.hlines||[])){ g.strokeStyle=m.color; g.setLineDash([3,4]); g.beginPath(); g.moveTo(ml,Y(m.y)); g.lineTo(ml+pw,Y(m.y)); g.stroke(); g.setLineDash([]); g.fillStyle=m.color; if (m.align==='left'){ g.textAlign='left'; g.fillText(m.label, ml+3, Y(m.y)-3+(m.dy||0)); } else { g.textAlign='right'; g.fillText(m.label, ml+pw-2, Y(m.y)-3+(m.dy||0)); } }
+  if (spec.cursor){ g.strokeStyle='#ffffff'; g.lineWidth=1.2; g.beginPath(); g.moveTo(X(spec.cursor[0]),mt); g.lineTo(X(spec.cursor[0]),mt+ph); g.stroke(); g.fillStyle=spec.cursorColor||'#fff'; g.beginPath(); g.arc(X(spec.cursor[0]),Y(spec.cursor[1]),4,0,Math.PI*2); g.fill(); }
+  chartCv._map = {X, Y, ml, pw, xmin:spec.xmin, xmax:spec.xmax};
+}
+chartCv.addEventListener('mousedown', e => { const m=chartCv._map; if(!m) return; const r=chartCv.getBoundingClientRect(); const seek = ev => { const x=(ev.clientX-r.left); const v=m.xmin+(x-m.ml)/m.pw*(m.xmax-m.xmin); if (typeof onChartSeek==='function') onChartSeek(Math.min(m.xmax,Math.max(m.xmin,v))); }; seek(e); const mv=ev=>seek(ev); const up=()=>{window.removeEventListener('mousemove',mv); window.removeEventListener('mouseup',up);}; window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up); });
+
+// ---------- bundle header ----------
+{ // module selector: this module highlighted; the others link to the sibling viewers of the bundle when the file exists
+  // next to this one (probed when the page opens), greyed out when it does not; inside the bundle hub the click is
+  // forwarded to the hub instead of navigating.
+  const order=['Steltic','Pushover','NLRHA','DDM']; const B = DATA.meta.bundle||{}; const me = DATA.meta.analysis; const el = document.getElementById('bundle');
+  el.innerHTML = order.map(n=>`<span data-mod="${n.toLowerCase()}" class="${n.toLowerCase()===me?'on':''}">${n}</span>`).join('') + (B.hub?`<span data-mod="hub" class="hub" title="all viewers in one page">⧉</span>`:'');
+  const inHub = (()=>{ try { return window.parent !== window; } catch(e){ return false; } })();
+  window.addEventListener('error', e => { if (e.filename && /\.html$/i.test(e.filename)) e.preventDefault(); }, true);   // probes are html files loaded as scripts
+  function probe(rel, cb){ const s=document.createElement('script'); s.src=rel; s.onload=()=>{ s.remove(); cb(true); }; s.onerror=()=>{ s.remove(); cb(false); }; document.head.appendChild(s); }
+  el.querySelectorAll('span').forEach(sp => { const k = sp.dataset.mod; if (k===me) return; const rel = B[k];
+    if (!rel){ sp.classList.add('na'); sp.title = 'not part of this bundle'; return; }
+    if (inHub && k!=='hub'){ sp.classList.add('link'); sp.title = 'show '+k; sp.onclick = () => window.parent.postMessage({stelticBundle:k}, '*'); return; }
+    if (inHub && k==='hub'){ sp.style.display='none'; return; }
+    probe(rel, ok => { if (ok){ sp.classList.add('link'); sp.title = 'open '+rel; sp.onclick = () => { window.location.href = rel + (k==='hub' ? '#'+me : ''); }; } else { sp.classList.add('na'); sp.title = rel+' — not in this folder'; } });
+  });
+  document.getElementById('title').textContent = DATA.meta.title; document.getElementById('subtitle').textContent = DATA.meta.subtitle||''; document.getElementById('accline').textContent = DATA.meta.accline||'';
+  document.getElementById('caveat').innerHTML = DATA.meta.caveat||''; }
+window.addEventListener('keydown', e => { if (e.key==='r'||e.key==='R') setView('home'); if (e.code==='Space' && typeof onSpace==='function'){ e.preventDefault(); onSpace(); } });
+window.addEventListener('resize', () => { camera.aspect=W()/H(); camera.updateProjectionMatrix(); renderer.setSize(W(),H()); if (typeof redrawChart==='function') redrawChart(); });
+let lastT = performance.now();
+function loop(now){ const dt=(now-lastT)/1000; lastT=now; if (typeof onTick==='function') onTick(dt); renderer.render(scene, camera); requestAnimationFrame(loop); }
+// =====================================================================================================
+//  analysis-specific module
+// =====================================================================================================
+__MODULE_JS__
+// -----------------------------------------------------------------------------------------------------
+applyVis(); if (typeof init==='function') init(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>

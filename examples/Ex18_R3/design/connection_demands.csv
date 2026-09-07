@@ -1,0 +1,487 @@
+connection,member_tag,type,demand_kip_or_kipft,note
+brace @ 100/100200,241,axial,P=131.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200/100100,242,axial,P=131.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 100100/200200,243,axial,P=106.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 100200/200100,244,axial,P=106.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200100/300200,245,axial,P=97.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200200/300100,246,axial,P=97.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 300100/400200,247,axial,P=84.9 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 300200/400100,248,axial,P=84.9 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 400100/500200,249,axial,P=64.7 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 400200/500100,250,axial,P=64.7 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 500100/600200,251,axial,P=55.4 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 500200/600100,252,axial,P=55.4 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 600100/700200,253,axial,P=40.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 600200/700100,254,axial,P=40.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 700100/800200,255,axial,P=21.7 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 700200/800100,256,axial,P=21.7 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 304/100404,257,axial,P=131.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 404/100304,258,axial,P=131.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 100304/200404,259,axial,P=106.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 100404/200304,260,axial,P=106.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200304/300404,261,axial,P=97.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200404/300304,262,axial,P=97.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 300304/400404,263,axial,P=84.9 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 300404/400304,264,axial,P=84.9 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 400304/500404,265,axial,P=64.7 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 400404/500304,266,axial,P=64.7 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 500304/600404,267,axial,P=55.4 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 500404/600304,268,axial,P=55.4 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 600304/700404,269,axial,P=40.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 600404/700304,270,axial,P=40.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 700304/800404,271,axial,P=21.7 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 700404/800304,272,axial,P=21.7 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 1/100002,273,axial,P=199.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 2/100001,274,axial,P=199.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 100001/200002,275,axial,P=161.6 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 100002/200001,276,axial,P=161.6 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200001/300002,277,axial,P=147.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200002/300001,278,axial,P=147.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 300001/400002,279,axial,P=127.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 300002/400001,280,axial,P=127.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 400001/500002,281,axial,P=92.8 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 400002/500001,282,axial,P=92.8 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 500001/600002,283,axial,P=71.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 500002/600001,284,axial,P=71.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 600001/700002,285,axial,P=45.0 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 600002/700001,286,axial,P=45.0 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 700001/800002,287,axial,P=23.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 700002/800001,288,axial,P=23.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 502/100503,289,axial,P=199.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 503/100502,290,axial,P=199.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 100502/200503,291,axial,P=161.6 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 100503/200502,292,axial,P=161.6 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200502/300503,293,axial,P=147.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 200503/300502,294,axial,P=147.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 300502/400503,295,axial,P=127.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 300503/400502,296,axial,P=127.3 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 400502/500503,297,axial,P=92.8 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 400503/500502,298,axial,P=92.8 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 500502/600503,299,axial,P=71.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 500503/600502,300,axial,P=71.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 600502/700503,301,axial,P=45.0 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 600503/700502,302,axial,P=45.0 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 700502/800503,303,axial,P=23.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+brace @ 700503/800502,304,axial,P=23.2 kip,gusset/weld per AISC 360 Ch.J; seismic capacity-design RyFyAg per AISC 341 (agent)
+beam-end @ 100000/100100,305,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100100/100200,306,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100200/100300,307,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100300/100400,308,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100400/100500,309,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100001/100101,310,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100101/100201,311,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100201/100301,312,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100301/100401,313,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100401/100501,314,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100002/100102,315,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100102/100202,316,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100202/100302,317,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100302/100402,318,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100402/100502,319,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100003/100103,320,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100103/100203,321,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100203/100303,322,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100303/100403,323,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100403/100503,324,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100004/100104,325,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100104/100204,326,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100204/100304,327,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100304/100404,328,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100404/100504,329,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100000/100001,330,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100001/100002,331,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100002/100003,332,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100003/100004,333,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100100/100101,334,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100101/100102,335,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100102/100103,336,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100103/100104,337,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100200/100201,338,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100201/100202,339,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100202/100203,340,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100203/100204,341,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100300/100301,342,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100301/100302,343,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100302/100303,344,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100303/100304,345,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100400/100401,346,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100401/100402,347,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100402/100403,348,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100403/100404,349,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100500/100501,350,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100501/100502,351,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100502/100503,352,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 100503/100504,353,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200000/200100,354,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200100/200200,355,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200200/200300,356,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200300/200400,357,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200400/200500,358,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200001/200101,359,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200101/200201,360,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200201/200301,361,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200301/200401,362,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200401/200501,363,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200002/200102,364,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200102/200202,365,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200202/200302,366,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200302/200402,367,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200402/200502,368,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200003/200103,369,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200103/200203,370,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200203/200303,371,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200303/200403,372,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200403/200503,373,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200004/200104,374,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200104/200204,375,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200204/200304,376,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200304/200404,377,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200404/200504,378,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200000/200001,379,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200001/200002,380,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200002/200003,381,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200003/200004,382,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200100/200101,383,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200101/200102,384,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200102/200103,385,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200103/200104,386,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200200/200201,387,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200201/200202,388,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200202/200203,389,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200203/200204,390,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200300/200301,391,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200301/200302,392,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200302/200303,393,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200303/200304,394,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200400/200401,395,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200401/200402,396,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200402/200403,397,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200403/200404,398,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200500/200501,399,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200501/200502,400,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200502/200503,401,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 200503/200504,402,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300000/300100,403,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300100/300200,404,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300200/300300,405,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300300/300400,406,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300400/300500,407,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300001/300101,408,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300101/300201,409,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300201/300301,410,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300301/300401,411,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300401/300501,412,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300002/300102,413,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300102/300202,414,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300202/300302,415,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300302/300402,416,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300402/300502,417,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300003/300103,418,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300103/300203,419,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300203/300303,420,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300303/300403,421,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300403/300503,422,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300004/300104,423,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300104/300204,424,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300204/300304,425,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300304/300404,426,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300404/300504,427,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300000/300001,428,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300001/300002,429,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300002/300003,430,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300003/300004,431,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300100/300101,432,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300101/300102,433,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300102/300103,434,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300103/300104,435,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300200/300201,436,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300201/300202,437,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300202/300203,438,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300203/300204,439,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300300/300301,440,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300301/300302,441,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300302/300303,442,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300303/300304,443,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300400/300401,444,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300401/300402,445,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300402/300403,446,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300403/300404,447,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300500/300501,448,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300501/300502,449,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300502/300503,450,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 300503/300504,451,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400000/400100,452,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400100/400200,453,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400200/400300,454,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400300/400400,455,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400400/400500,456,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400001/400101,457,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400101/400201,458,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400201/400301,459,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400301/400401,460,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400401/400501,461,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400002/400102,462,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400102/400202,463,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400202/400302,464,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400302/400402,465,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400402/400502,466,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400003/400103,467,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400103/400203,468,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400203/400303,469,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400303/400403,470,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400403/400503,471,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400004/400104,472,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400104/400204,473,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400204/400304,474,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400304/400404,475,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400404/400504,476,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400000/400001,477,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400001/400002,478,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400002/400003,479,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400003/400004,480,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400100/400101,481,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400101/400102,482,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400102/400103,483,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400103/400104,484,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400200/400201,485,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400201/400202,486,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400202/400203,487,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400203/400204,488,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400300/400301,489,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400301/400302,490,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400302/400303,491,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400303/400304,492,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400400/400401,493,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400401/400402,494,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400402/400403,495,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400403/400404,496,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400500/400501,497,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400501/400502,498,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400502/400503,499,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 400503/400504,500,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500000/500100,501,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500100/500200,502,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500200/500300,503,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500300/500400,504,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500400/500500,505,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500001/500101,506,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500101/500201,507,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500201/500301,508,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500301/500401,509,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500401/500501,510,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500002/500102,511,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500102/500202,512,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500202/500302,513,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500302/500402,514,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500402/500502,515,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500003/500103,516,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500103/500203,517,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500203/500303,518,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500303/500403,519,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500403/500503,520,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500004/500104,521,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500104/500204,522,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500204/500304,523,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500304/500404,524,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500404/500504,525,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500000/500001,526,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500001/500002,527,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500002/500003,528,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500003/500004,529,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500100/500101,530,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500101/500102,531,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500102/500103,532,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500103/500104,533,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500200/500201,534,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500201/500202,535,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500202/500203,536,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500203/500204,537,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500300/500301,538,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500301/500302,539,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500302/500303,540,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500303/500304,541,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500400/500401,542,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500401/500402,543,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500402/500403,544,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500403/500404,545,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500500/500501,546,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500501/500502,547,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500502/500503,548,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 500503/500504,549,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600000/600100,550,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600100/600200,551,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600200/600300,552,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600300/600400,553,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600400/600500,554,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600001/600101,555,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600101/600201,556,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600201/600301,557,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600301/600401,558,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600401/600501,559,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600002/600102,560,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600102/600202,561,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600202/600302,562,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600302/600402,563,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600402/600502,564,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600003/600103,565,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600103/600203,566,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600203/600303,567,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600303/600403,568,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600403/600503,569,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600004/600104,570,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600104/600204,571,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600204/600304,572,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600304/600404,573,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600404/600504,574,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600000/600001,575,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600001/600002,576,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600002/600003,577,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600003/600004,578,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600100/600101,579,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600101/600102,580,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600102/600103,581,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600103/600104,582,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600200/600201,583,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600201/600202,584,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600202/600203,585,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600203/600204,586,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600300/600301,587,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600301/600302,588,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600302/600303,589,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600303/600304,590,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600400/600401,591,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600401/600402,592,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600402/600403,593,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600403/600404,594,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600500/600501,595,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600501/600502,596,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600502/600503,597,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 600503/600504,598,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700000/700100,599,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700100/700200,600,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700200/700300,601,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700300/700400,602,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700400/700500,603,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700001/700101,604,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700101/700201,605,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700201/700301,606,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700301/700401,607,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700401/700501,608,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700002/700102,609,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700102/700202,610,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700202/700302,611,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700302/700402,612,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700402/700502,613,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700003/700103,614,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700103/700203,615,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700203/700303,616,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700303/700403,617,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700403/700503,618,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700004/700104,619,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700104/700204,620,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700204/700304,621,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700304/700404,622,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700404/700504,623,shear (+moment if MF),"V=72.8 kip, M=545.6 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700000/700001,624,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700001/700002,625,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700002/700003,626,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700003/700004,627,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700100/700101,628,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700101/700102,629,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700102/700103,630,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700103/700104,631,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700200/700201,632,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700201/700202,633,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700202/700203,634,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700203/700204,635,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700300/700301,636,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700301/700302,637,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700302/700303,638,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700303/700304,639,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700400/700401,640,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700401/700402,641,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700402/700403,642,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700403/700404,643,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700500/700501,644,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700501/700502,645,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700502/700503,646,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 700503/700504,647,shear (+moment if MF),"V=72.8 kip, M=454.7 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800000/800100,648,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800100/800200,649,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800200/800300,650,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800300/800400,651,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800400/800500,652,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800001/800101,653,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800101/800201,654,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800201/800301,655,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800301/800401,656,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800401/800501,657,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800002/800102,658,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800102/800202,659,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800202/800302,660,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800302/800402,661,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800402/800502,662,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800003/800103,663,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800103/800203,664,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800203/800303,665,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800303/800403,666,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800403/800503,667,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800004/800104,668,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800104/800204,669,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800204/800304,670,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800304/800404,671,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800404/800504,672,shear (+moment if MF),"V=45.8 kip, M=343.1 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800000/800001,673,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800001/800002,674,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800002/800003,675,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800003/800004,676,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800100/800101,677,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800101/800102,678,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800102/800103,679,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800103/800104,680,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800200/800201,681,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800201/800202,682,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800202/800203,683,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800203/800204,684,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800300/800301,685,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800301/800302,686,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800302/800303,687,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800303/800304,688,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800400/800401,689,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800401/800402,690,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800402/800403,691,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800403/800404,692,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800500/800501,693,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800501/800502,694,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800502/800503,695,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+beam-end @ 800503/800504,696,shear (+moment if MF),"V=45.8 kip, M=285.9 kip-ft",size per AISC 360 Ch.J (agent derives bolt/weld/plate from RAG); MF per A358
+"column base @ grid(4,0)",400,base plate/anchorage,"P=758.9 kip, Vx=0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(3,4)",304,base plate/anchorage,"P=758.9 kip, Vx=38.3, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(4,3)",403,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(3,1)",301,base plate/anchorage,"P=758.9 kip, Vx=0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(5,4)",504,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(5,1)",501,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(0,2)",2,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-47.9, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(2,2)",202,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(1,0)",100,base plate/anchorage,"P=758.9 kip, Vx=38.3, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(1,3)",103,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(4,2)",402,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(3,0)",300,base plate/anchorage,"P=758.9 kip, Vx=0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(3,3)",303,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(5,0)",500,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(5,3)",503,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-47.9, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(0,1)",1,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=47.9, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(2,4)",204,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(1,2)",102,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(0,4)",4,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(2,1)",201,base plate/anchorage,"P=758.9 kip, Vx=0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(3,2)",302,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(4,1)",401,base plate/anchorage,"P=758.9 kip, Vx=0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(5,2)",502,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=47.9, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(4,4)",404,base plate/anchorage,"P=758.9 kip, Vx=-38.3, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(0,0)",0,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(1,1)",101,base plate/anchorage,"P=758.9 kip, Vx=0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(0,3)",3,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(2,0)",200,base plate/anchorage,"P=758.8 kip, Vx=-38.3, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(1,4)",104,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17
+"column base @ grid(2,3)",203,base plate/anchorage,"P=758.9 kip, Vx=-0.0, Vy=-0.0, M=0.0 kip-ft",base plate/anchor rods per AISC 360 J8/J9 (agent); anchorage ACI 318 Ch.17

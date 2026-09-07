@@ -1,0 +1,51 @@
+"""sections_db.py -- AISC Shapes Database v16 lookups (aisc_shapes.csv, same file steltic ships)."""
+import csv, os
+from functools import lru_cache
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CSV = os.path.join(_HERE, "aisc_shapes.csv")
+
+
+@lru_cache(maxsize=1)
+def _table():
+    out = {}
+    with open(_CSV, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            lab = row["AISC_Manual_Label"].strip().upper().replace(" ", "")
+            rec = {}
+            for k, v in row.items():
+                if k == "AISC_Manual_Label":
+                    continue
+                try:
+                    rec[k] = float(v)
+                except (TypeError, ValueError):
+                    rec[k] = v
+            out[lab] = rec
+    return out
+
+
+def props(section: str) -> dict:
+    """Section properties (in, in^2, in^4). Adds h/tw and bf/2tf compactness ratios (h ~ d - 2tf here;
+    the tabulated h/tw is not in this csv, so the ratio is approximate and flagged as such)."""
+    t = _table()
+    key = section.strip().upper().replace(" ", "")
+    if key not in t:
+        raise KeyError(f"section {section!r} not in aisc_shapes.csv")
+    p = dict(t[key])
+    if all(k in p and isinstance(p[k], float) for k in ("d", "tw", "bf", "tf")):
+        p["h_tw"] = (p["d"] - 2.0 * p["tf"]) / p["tw"]        # approx: clear web ~ d - 2tf (no fillets)
+        p["bf_2tf"] = p["bf"] / (2.0 * p["tf"])
+        p["h_tw_approx"] = True
+    return p
+
+
+def find_by_props(A: float, Ix: float, tol=0.02):
+    """Reverse lookup (elasticBeamColumn args -> W-shape) when member_schedule.csv is missing."""
+    best = None
+    for lab, p in _table().items():
+        if not isinstance(p.get("A"), float) or not isinstance(p.get("Ix"), float):
+            continue
+        if abs(p["A"] - A) <= tol * A and abs(p["Ix"] - Ix) <= tol * Ix:
+            best = lab
+            break
+    return best
