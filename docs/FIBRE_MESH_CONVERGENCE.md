@@ -26,12 +26,29 @@ Newton / algo cascade for NLRHA is **unchanged** (do not reorder Broyden).
 | M2 | refine | nseg=8, same fibres | nsub 8 8 6 |
 | M3 | fine | nseg=12, denser fibres | nsub 12 12 8, nip 7 |
 
-Stop at the first level where **all** primary metrics vs the previous level are within **10%** relative (and for NLRHA, ACCEPTABLE / `n_unacceptable` unchanged). Cap 4 rungs → status `not_converged_within_cap` if still moving.
+Stop at the first level where **all** primary metrics vs the previous level are within **10%** relative. Cap 4 rungs → status `not_converged_within_cap` if still moving.
+
+### NLRHA dual-gate rule (Michael)
+
+NLRHA acceptance is **two independent gates**; complete only when **A ∧ B**:
+
+| Gate | Criterion | Behaviour |
+|------|-----------|-----------|
+| **A — suite / 10/11** | ≥10 of 11 records Ch.16-accepted (≤1 unacceptable) | On first pass, **lock** suite EDPs (`mean_drift_max`, roof means, `n_ok` / `n_records` / `n_unacceptable`). **Stop** further full `--n 11` suite rungs. |
+| **B — FC** | `force_controlled_ok` / `worst_FC_DC ≤ 1.0`; if FC refined across mesh levels, also ≤**10%** relative Δ on `worst_FC_DC` | After A locks, **immediately** advance an **FC-only refine** path — do **not** re-run the full 11-record suite solely to chase FC. |
+
+Status strings (Research / SNL):
+
+- `continue` — Gate A not met; keep full-suite mesh climb  
+- `gate_a_locked_fc_refine` — A locked; schedule FC-only refine (`schedule_full_suite=False`, `schedule_fc_refine=True`)  
+- `gate_a_locked_fc_pending` — A locked; B still failing and no further FC rungs  
+- `nlrha_complete` — A ∧ B  
+- `not_converged_within_cap` — Gate A never met within rung cap  
 
 ### Primary metrics
 
 - **NSP:** T1, Vy, Vpeak, δt  
-- **NLRHA:** Ch.16 mean drift max, roof mean X/Y, worst FC D/C; plus verdict stability  
+- **NLRHA:** Gate A suite EDPs + Gate B `worst_FC_DC` / `force_controlled_ok`  
 - **DDM:** λu (λG if gravity-first), φs·λu  
 
 ## CLI

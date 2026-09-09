@@ -58,14 +58,32 @@ def from_nlrha(nlrha_dir: str) -> dict:
         worst_fc = v.get("worst_FC_DC") or acc.get("worst_FC_DC")
     n_ok = sum(1 for r in (pkg.get("results") or []) if r.get("converged"))
     n_rec = v.get("n_records") or len(pkg.get("results") or [])
+    try:
+        n_rec_i = int(n_rec) if n_rec is not None else None
+    except (TypeError, ValueError):
+        n_rec_i = None
+    n_un = v.get("n_unacceptable")
+    try:
+        n_un_i = int(n_un) if n_un is not None else None
+    except (TypeError, ValueError):
+        n_un_i = None
+    # Gate A helper: accepted = records - unacceptable when both known
+    n_accepted = None
+    if n_rec_i is not None and n_un_i is not None:
+        n_accepted = n_rec_i - n_un_i
+    fc_ok = v.get("force_controlled_ok")
+    if fc_ok is None and worst_fc is not None:
+        fc_ok = float(worst_fc) <= 1.0
     return dict(
         mean_drift_max=v.get("mean_drift_max"),
         roof_mean_X=roof_x,
         roof_mean_Y=roof_y,
         worst_FC_DC=worst_fc,
+        force_controlled_ok=fc_ok,
         n_ok=n_ok,
-        n_records=n_rec,
-        n_unacceptable=v.get("n_unacceptable"),
+        n_records=n_rec_i,
+        n_unacceptable=n_un_i,
+        n_accepted=n_accepted,
         ACCEPTABLE=bool(v.get("overall")) if "overall" in v else v.get("ACCEPTABLE"),
     )
 
