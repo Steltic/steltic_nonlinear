@@ -121,6 +121,17 @@ class GMNIAModel:
                     ops.mass(t, *([1e-8 * mmin] * 6))
         return self
 
+    def _is_secondary(self, m):
+        """Purlins/girts/eave struts — keep elastic (fibre secondaries cause spurious local buckling)."""
+        sec = str(m.section).upper().replace(" ", "")
+        if ("Z250" in sec) or sec.startswith("800Z") or sec.startswith("600Z"):
+            return True
+        # Sena/CFS09–10 export labels (not catalog Z sections)
+        for tok in ("EAVE_STRUT", "RESTRAINT_PURLIN", "RESTRAINT_GIRT", "PURLIN", "GIRT", "EAVESTRUT"):
+            if tok in sec:
+                return True
+        return False
+
     def _section(self, m):
         axis = "y" if m.kind == "col" else "z"
         key = (m.section.upper(), m.kind, axis)
@@ -153,7 +164,6 @@ class GMNIAModel:
 
     def _add_member(self, m):
         nsub = {"col": self.nsub_col, "beam": self.nsub_beam, "brace": self.nsub_brace}[m.kind]
-        secTag = self._section(m)
         tr = self._transf_for(m)
         p1, p2 = self._coord(m.n1), self._coord(m.n2)
         L = math.dist(p1, p2)
@@ -177,6 +187,23 @@ class GMNIAModel:
         if rel2:
             end2 = PIN_NODE0 + m.tag * 10 + 2
             ops.node(end2, *p2); self._pin(m.n2, end2, rel2, axis)
+        if self._is_secondary(m):
+            from .sections_fiber import cfs_section_props, G_KSI, E_KSI
+            pr = cfs_section_props(m.section) or {}
+            A = float(pr.get("A") or getattr(m, "A", 0.5) or 0.5)
+            Ix = float(pr.get("Ix") or 5.0); Iy = float(pr.get("Iy") or 1.0); J = float(pr.get("J") or 1e-3)
+            if tr in (1, 2):
+                Iy_el, Iz_el = Iy, Ix
+            else:
+                Iy_el, Iz_el = Ix, Iy
+            et = SUB_ELE0 + m.tag * 100
+            ops.element("elasticBeamColumn", et, end1, end2, A, E_KSI, G_KSI, J, Iy_el, Iz_el, tr)
+            self.elems.append(dict(tag=et, mtag=m.tag, kind=m.kind, role=m.role, section=m.section,
+                                   secTag=0, s=0, n1=end1, n2=end2, L=L))
+            self.sub_nodes[m.tag] = [end1, end2]
+            return
+
+        secTag = self._section(m)
         chain = [end1]
         for s in range(1, nsub):
             f = s / nsub
@@ -214,9 +241,13 @@ class GMNIAModel:
 
     def apply_lateral(self, lat):
         for k, (fx, fy, mz) in lat.items():
+            # multi-storey: level index -> rigid-diaphragm master
             mt = k * 100000 + 99999
             if mt in self.nm.nodes:
                 ops.load(mt, fx, fy, 0.0, 0.0, 0.0, mz)
+            elif k in self.nm.nodes:
+                # portal / no-diaphragm: keys are real node tags
+                ops.load(k, fx, fy, 0.0, 0.0, 0.0, mz)
 
     def prepare(self):
         self._bt = self.nm.by_tag()

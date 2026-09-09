@@ -20,8 +20,19 @@ def _worker(args):
     import io, contextlib
     nm = ingest.load_package(job, engine_dir)
     cfg = nm.cfg
-    cases = loads.steltic_combos(cfg)
+    cases = loads.steltic_combos(cfg, nm=nm)
     combo = [c for c in cases if c[0] == combo_label][0]
+    from . import portal_adapter as PA
+    if PA.is_portal(cfg):
+        lab = combo[0]
+        if "S_bal" in lab or "S_unb" in lab or "+0.3S" in lab or lab.endswith("+0.3S"):
+            cfg["_portal_roof_psf"] = PA._snow_ps(cfg)
+            if "S_unb_L" in lab: cfg["_portal_snow_case"] = "S_unb_L"
+            elif "S_unb_R" in lab: cfg["_portal_snow_case"] = "S_unb_R"
+            else: cfg["_portal_snow_case"] = "S_bal"
+        else:
+            cfg["_portal_roof_psf"] = float(cfg.get("Lr", 20.0))
+            cfg["_portal_snow_case"] = None
     pres = loads.present_sets(nm)
     g = GMNIAModel(nm, cfg, nsub=tuple(opts["nsub"]), residual=opts["residual"], Fy=opts.get("Fy"),
                    hardening=opts["hardening"], fast=opts["fast"], nip=opts["nip"],
@@ -70,16 +81,21 @@ def run(args):
     nm = ingest.load_package(job, engine_dir)
     cfg = nm.cfg
     print("   ", json.dumps(ingest.summary(nm), default=str)[:400])
-    cases = loads.steltic_combos(cfg)
+    from . import portal_adapter as PA
+    portal = PA.is_portal(cfg)
+    cases = loads.steltic_combos(cfg, nm=nm)
     kept = loads.prune(cases, policy=args.combos, torsion=args.torsion, include_om0=args.om0)
     if args.only:
         kept = [c for c in kept if any(s in c[0] for s in args.only)]
-    print(">> %d combinations from Steltic, %d selected" % (len(cases), len(kept)))
+    print(">> %d combinations from Steltic, %d selected%s" % (len(cases), len(kept), " [portal CFS-P]" if portal else ""))
 
     # transfer gate
-    latx = [c for c in cases if "EX+t+" in c[0] and c[1] > 1.0][0][4]
-    laty = [c for c in cases if "EY+t+" in c[0] and c[1] > 1.0][0][4]
-    gate = transfer_gate.run(nm, cfg, latx, laty, tol=args.gate_tol)
+    if portal:
+        gate = PA.transfer_gate_portal(nm, cfg, tol=args.gate_tol, nsub=tuple(args.nsub))
+    else:
+        latx = [c for c in cases if "EX+t+" in c[0] and c[1] > 1.0][0][4]
+        laty = [c for c in cases if "EY+t+" in c[0] and c[1] > 1.0][0][4]
+        gate = transfer_gate.run(nm, cfg, latx, laty, tol=args.gate_tol)
     for r in gate["rows"]:
         print("   gate %-36s steltic %.4f gmnia %.4f ratio %.3f %s" % (r["quantity"], r["steltic"], r["gmnia"], r["ratio"], "ok" if r["ok"] else "FAIL"))
     if not gate["ok"] and not args.force:
@@ -120,7 +136,8 @@ def run(args):
             continue
         summ = loads.combo_summary(c)
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
-        ph = phi_s.choose(summ["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, risk_category=rc)
+        mat = "CFS-P" if portal else "HR"
+        ph = phi_s.choose(summ["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)
         runs.append(dict(combo=c, summary=summ, res=r["res"], cls=r["cls"], phi=ph, check=phi_s.check(ph["phi_s"], r["res"]["lambda_u"]),
                          imp=r["imp"], state=r["state"]))
     # member table from the governing strength combination per group
@@ -128,7 +145,12 @@ def run(args):
     groups = sorted({(m.role, m.section) for m in nm.members})
     dcmap = {}
     for m in (nm.calc_package or {}).get("members", []):
-        dcmap[(m["inputs"].get("role"), m["inputs"].get("section", "").upper())] = m.get("DC")
+        if "inputs" in m:
+            dcmap[(m["inputs"].get("role"), m["inputs"].get("section", "").upper())] = m.get("DC")
+        else:
+            role = m.get("role") or m.get("member") or m.get("id")
+            sec = (m.get("section") or "").upper()
+            dcmap[(role, sec)] = m.get("DC")
     for role, sec in groups:
         best = None
         for r in runs:
@@ -226,6 +248,7 @@ def _runs_from_results(d):
 
 
 def report(args):
+    from . import portal_adapter as PA
     """Rebuild ddm_report.html, the ddm_analysis block, ddm_results.json and the viewer from an existing ddm_results.json,
     re-applying the CURRENT phi_s policy (no re-analysis). Use after a phi_s.py update or to change the Risk Category row."""
     job = os.path.abspath(args.job_dir)
@@ -241,7 +264,8 @@ def report(args):
     print(">> Risk Category %s -> phi_s target-reliability rows (gravity beta_T %.2f, lateral %.2f)" % (rc, phi_s.BETA_TARGET["gravity"][rc], phi_s.BETA_TARGET["lateral"][rc]))
     for r in runs:
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
-        r["phi"] = phi_s.choose(r["summary"]["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, risk_category=rc)
+        mat = "CFS-P" if PA.is_portal(cfg) else "HR"
+        r["phi"] = phi_s.choose(r["summary"]["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)
         r["check"] = phi_s.check(r["phi"]["phi_s"], r["res"]["lambda_u"])
         print("   %-40s lambda_u %.3f  %-7s phi_s %s  -> %s" % (r["combo"][0][:40], r["res"]["lambda_u"], r["phi"]["cls"], r["phi"]["phi_s"], r["check"][1]))
     opts_rep = dict(d.get("options", {}))

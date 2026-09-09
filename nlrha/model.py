@@ -34,10 +34,34 @@ def ch16_gravity(pkg, ch16, live_psf=None, roof_live_psf=20.0):
     return loads, table, dict(sum_D=sumD, sum_Lexp=sumL, ratio=sumL / sumD, no_live_case_needed=no_live_case_needed)
 
 
-def build(pkg, prm, ch16, PG):
-    """Hinge model (same builder as the pushover) -> returns hinges registry + element lists for damping."""
-    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=True)
-    elastic_eles = [e["tag"] for e in pkg.model.elements if "etype" not in e and NM.member_kind(pkg, e) in ("col", "beam")]
+def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
+    """Nonlinear model (same builder as the pushover) -> hinges registry + element lists for damping.
+
+    Default plasticity is fibre (distributed forceBeamColumn). Override via args / SNL_* env /
+    numerics.plasticity.
+    """
+    import os
+    if member_nseg is not None:
+        os.environ["SNL_MEMBER_NSEG"] = str(member_nseg)
+    if plasticity is not None:
+        os.environ["SNL_PLASTICITY"] = str(plasticity)
+    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=True,
+                                       member_nseg=member_nseg, plasticity=plasticity)
+    # Fibre: all forceBeamColumn tags for Rayleigh region. IMK: elastic_ele_tags (RBS extras) or pack tags.
+    if stats.get("plasticity") == "fibre" and stats.get("fibre_eles"):
+        elastic_eles = list(stats["fibre_eles"])
+    elif stats.get("elastic_ele_tags"):
+        elastic_eles = list(stats["elastic_ele_tags"])
+    else:
+        elastic_eles = [e["tag"] for e in pkg.model.elements if "etype" not in e and NM.member_kind(pkg, e) in ("col", "beam")]
+        nseg = max(1, int(stats.get("member_nseg") or os.environ.get("SNL_MEMBER_NSEG") or 1))
+        if nseg > 1:
+            from pushover.nonlinear_model import SEG_ELE_BASE
+            for e in pkg.model.elements:
+                if "etype" in e or NM.member_kind(pkg, e) not in ("col", "beam"):
+                    continue
+                for si in range(1, nseg):
+                    elastic_eles.append(SEG_ELE_BASE + e["tag"] * 100 + si)
     return hinges, stats, elastic_eles
 
 

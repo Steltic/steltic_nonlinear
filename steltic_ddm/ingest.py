@@ -78,6 +78,9 @@ def parse_replay(path):
     with open(path) as f:
         for line in f:
             line = line.strip()
+            if '#' in line:
+                # keep string literals intact enough for ops replay; comments are export-only
+                line = line.split('#', 1)[0].rstrip()
             m = _CALL.match(line)
             if not m:
                 continue
@@ -187,7 +190,10 @@ def _assign_roles(nm):
         if m.kind == "col":
             m.role = "lateral_col" if decode_tag(m.n1)[:2] in lat_lines else "gravity_col"
         elif m.kind == "beam":
-            m.role = "roof" if (top is not None and abs(nm.nodes[m.n1][2] - top) < 1e-6) else "floor"
+            if m.n1 not in nm.nodes:
+                m.role = "floor"  # PR/slave endpoint missing from node table — do not crash
+            else:
+                m.role = "roof" if (top is not None and abs(nm.nodes[m.n1][2] - top) < 1e-6) else "floor"
         else:
             m.role = "brace"
 

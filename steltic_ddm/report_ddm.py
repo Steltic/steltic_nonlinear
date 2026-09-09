@@ -134,17 +134,28 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
 
     # 1 design basis
     parts.append('<h2>1 · Design of record and what was analysed</h2>')
+    if "heights" in cfg and "NX" in cfg:
+        geo = "%d storeys, %d × %d bays @ %.0f × %.0f in" % (len(cfg["heights"]), cfg["NX"], cfg["NY"], cfg["SX"], cfg["SY"])
+    else:
+        geo = "portal span %.0f ft, eave %.0f ft, spacing %.0f ft, %s frames" % (
+            float(cfg.get("span_ft") or 0), float(cfg.get("eave_ft") or 0), float(cfg.get("spacing_ft") or 0),
+            cfg.get("n_frames") or "?")
     parts.append('<p>Source package: <code>%s</code>. Steltic design: <b>%s</b>; system <b>%s</b>; R = %s, C<sub>d</sub> = %s, Ω<sub>0</sub> = %s; '
-                 'bases <b>%s</b>, joints <b>%s</b>, gravity framing <b>%s</b>; %d storeys, %d × %d bays @ %.0f × %.0f in. The DDM agent analysed the '
+                 'bases <b>%s</b>, joints <b>%s</b>, gravity framing <b>%s</b>; %s. The DDM agent analysed the '
                  'building exactly as designed — no member was resized.</p>' % (
                      _h(nm.job_dir), _h(cfg.get("arch", "")), _h(cfg.get("system", "")), R, cfg.get("seis", {}).get("Cd"), cfg.get("seis", {}).get("Om0"),
-                     cfg.get("model", {}).get("bases"), cfg.get("model", {}).get("joints"), cfg.get("model", {}).get("gravity"),
-                     len(cfg["heights"]), cfg["NX"], cfg["NY"], cfg["SX"], cfg["SY"]))
+                     cfg.get("model", {}).get("bases") or cfg.get("base"), cfg.get("model", {}).get("joints") or "—", cfg.get("model", {}).get("gravity") or "—",
+                     geo))
     secs = sorted({(m.role, m.section) for m in nm.members})
     parts.append('<div class="tw"><table><tr><th>role</th><th>section</th><th>members</th><th>member-based D/C (Steltic)</th><th>governing combo (Steltic)</th></tr>')
     dcmap = {}
     for m in (nm.calc_package or {}).get("members", []):
-        dcmap[(m["inputs"].get("role"), m["inputs"].get("section", "").upper())] = (m.get("DC"), m["inputs"].get("governing_combo"))
+        if "inputs" in m:
+            dcmap[(m["inputs"].get("role"), m["inputs"].get("section", "").upper())] = (m.get("DC"), m["inputs"].get("governing_combo"))
+        else:
+            role = m.get("role") or m.get("member") or m.get("id")
+            sec = (m.get("section") or "").upper()
+            dcmap[(role, sec)] = (m.get("DC"), m.get("governing_combo"))
     for role, sec in secs:
         n = sum(1 for m in nm.members if m.role == role and m.section == sec)
         dc, gc = dcmap.get((role, sec.upper()), (None, None))

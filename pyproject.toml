@@ -13,9 +13,10 @@ dependencies = ["openseespy>=3.5", "numpy>=1.24", "scipy>=1.10", "matplotlib>=3.
 
 [project.scripts]
 snl = "snl.cli:main"
+mesh-converge = "mesh_convergence.driver:cli_main"
 
 [tool.setuptools]
-packages = ["snl", "pushover", "nlrha", "steltic_ddm", "records"]
+packages = ["snl", "pushover", "nlrha", "steltic_ddm", "records", "mesh_convergence"]
 
 [tool.setuptools.package-data]
 snl = ["four_analyses.css"]

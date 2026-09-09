@@ -22,6 +22,12 @@ def _run(args):
     if missing:
         sys.exit("design basis incomplete (%s) -- add cfg.py to the package or pass --sds/--sd1" % missing)
     prm = HM.load_params(args.params)
+    if getattr(args, "plasticity", None):
+        os.environ["SNL_PLASTICITY"] = str(args.plasticity)
+        prm.setdefault("numerics", {})["plasticity"] = args.plasticity
+    if getattr(args, "member_nseg", None) is not None:
+        os.environ["SNL_MEMBER_NSEG"] = str(args.member_nseg)
+        prm.setdefault("numerics", {})["member_nseg"] = int(args.member_nseg)
     if args.post_cap_ratio is not None:
         prm.setdefault("numerics", {})["post_cap_ratio"] = args.post_cap_ratio
         prm["numerics"]["post_cap_ratio_overridden"] = True
@@ -71,6 +77,8 @@ def main(argv=None):
     r.add_argument("--system")
     r.add_argument("--tail", default="auto", help="descending-branch escalation: auto (fine_step then arclength) | fine_step | arclength | none")
     r.add_argument("--post-cap-ratio", type=float, help="RUNG 3 (modelling change, user consent): fraction of `a` over which hinges descend to residual (default 0.15; try 0.5)")
+    r.add_argument("--plasticity", default="fibre", choices=["fibre", "fiber", "imk"], help="fibre=distributed forceBeamColumn (default); imk=concentrated ModIMK")
+    r.add_argument("--member-nseg", type=int, default=4, help="member subdivisions (default 4 for fibre)")
     i = sub.add_parser("inspect"); i.add_argument("package")
     args = ap.parse_args(argv)
     if args.cmd == "inspect":

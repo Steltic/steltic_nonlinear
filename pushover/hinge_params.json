@@ -113,10 +113,45 @@
       "fine_step",
       "arclength"
     ],
-    "note": "post_cap_ratio = fraction of the capping rotation a over which strength descends from Mc to c*My (0.15 ~ ASCE 41 vertical drop). Raising it to capture the descending branch is a modelling change: only with the user's consent, and it is disclosed in the report. tail_strategies is the solver escalation ladder tried automatically when the push stops before 0.8*Vmax."
+    "note": "post_cap_ratio = fraction of the capping rotation a over which strength descends from Mc to c*My (0.15 ~ ASCE 41 vertical drop). Raising it to capture the descending branch is a modelling change: only with the user's consent, and it is disclosed in the report. tail_strategies is the solver escalation ladder tried automatically when the push stops before 0.8*Vmax. Default plasticity=fibre (forceBeamColumn + Lobatto); member_nseg=4 matches MC4 fibre suite. Use imk for concentrated ModIMK / L2 FBC path.",
+    "plasticity": "fibre",
+    "member_nseg": 4,
+    "fibre_nip": 5,
+    "fibre_nf_flange": [
+      8,
+      4
+    ],
+    "fibre_nf_web": [
+      16,
+      2
+    ],
+    "fibre_residual": "none"
   },
   "fema_p695": {
     "delta_u_at_strength_fraction": 0.8,
     "note": "Omega = Vmax/V ; mu_T = delta_u / delta_y,eff with delta_y,eff = C0*(Vmax/W)*(g/4pi^2)*max(T,T1)^2 (FEMA P-695 Sec. 6.3)."
+  },
+  "panel_zones": {
+    "mode": "rigid",
+    "material": "elastic",
+    "doubler_t_in": 0.0,
+    "K_theta": null,
+    "theta_p_over_thy": 4.0,
+    "theta_r_over_thy": 100.0,
+    "c_residual": 0.9,
+    "hysteretic": {},
+    "topology": "joint_centerline_scissors",
+    "note": [
+      "Opt-in flexible panel-zone modelling for ATC-114 / weak-PZ studies.",
+      "mode: 'rigid' (default, no behaviour change) | 'scissors' (zeroLength rotational spring at FR joint centerline).",
+      "scissors topology: column stack stays on the joint node; FR (unreleased) beam ends attach to a coincident beam-side node;",
+      "one 6-DOF zeroLength: rigid on translations/torsion/unused flexure + PZ spring on strong-axis rot DOF(s) 4/5.",
+      "Do NOT equalDOF beam-side to an RD slave (breaks Transformation). Beam-side nodes stay out of rigidDiaphragm slaves.",
+      "material: 'elastic' (K_theta = G*tp*dc*db, kip-in/rad) or 'hysteretic' (Gupta\u2013Krawinkler trilinear).",
+      "Optional K_theta override (kip-in/rad) or hysteretic.{s1p,e1p,s2p,e2p,s3p,e3p} absolute envelope.",
+      "IMK end hinges remain at member ends (centerline). Do NOT also apply AISC 342 C5.4a.1.a.1(b) PZ ductility",
+      "modifier when mode=scissors (double-counting). Not a full 8-bar Krawinkler rectangle (no geometric rigid offsets).",
+      "Pin-released gravity framing is excluded. Units: kip-in-sec."
+    ]
   }
 }

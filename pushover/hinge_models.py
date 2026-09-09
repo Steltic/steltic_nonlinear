@@ -202,6 +202,28 @@ class BraceSpec:
     def as_dict(self): return asdict(self)
 
 
+def _hss_outside_and_tdes(section: str):
+    """Parse rectangular HSS label like HSS12X12X5/8 -> (B_out, tdes). A500 design wall tdes=0.93*tnom (AISC Manual)."""
+    s = section.strip().upper().replace(" ", "")
+    if not s.startswith("HSS"):
+        return None, None
+    body = s[3:]
+    parts = body.split("X")
+    if len(parts) < 3:
+        return None, None
+    try:
+        B = float(parts[0]); H = float(parts[1])
+        t_tok = parts[2]
+        if "/" in t_tok:
+            a, b = t_tok.split("/", 1); tnom = float(a) / float(b)
+        else:
+            tnom = float(t_tok)
+    except ValueError:
+        return None, None
+    tdes = 0.93 * tnom
+    return max(B, H), tdes
+
+
 def brace_spec(section: str, L_in: float, prm: dict) -> BraceSpec:
     p = SDB.props(section); bp = prm["brace_axial"]
     Fye = bp["Fy_ksi"] * bp["Ry_expected"]
@@ -212,6 +234,46 @@ def brace_spec(section: str, L_in: float, prm: dict) -> BraceSpec:
     Pye = A * Fye; Pcre = bp["Pcr_expected_factor"] * Fcre * A
     k = E_KSI * A / L_in
     dT, dc = Pye / k, Pcre / k
+    flags = []
+    if bp.get("mode") == "table_C3_4":
+        # AISC 342-22 Table C3.4 rectangular HSS: n expressions; d = n*delta; f residual; IO/LS/CP as printed.
+        lam_hd_coef = float(bp.get("lambda_hd_coef", 0.65))  # D1.1a Case 2 walls of rect. HSS
+        B, tdes = _hss_outside_and_tdes(section)
+        if B and tdes and tdes > 0:
+            lam = (B - 3.0 * tdes) / tdes   # Spec. B4.1b rectangular HSS wall slenderness
+            lam_hd = lam_hd_coef * math.sqrt(E_KSI / Fye)
+            lam_ratio = max(lam / lam_hd, 1e-6)
+            flags.append("HSS b/t=%.2f, lambda_hd=%.2f, lambda/lambda_hd=%.3f (tdes=0.93*tnom)" % (lam, lam_hd, lam_ratio))
+        else:
+            lam_ratio = float(bp.get("lambda_over_lambda_hd_default", 1.0))
+            flags.append("HSS wall thickness not parsed; using lambda/lambda_hd=%.3f" % lam_ratio)
+        slend = KLr / math.sqrt(E_KSI / Fye)  # (Lc/r) / sqrt(E/Fy) with Fy~Fye basis as in C3.4 print
+        env = dict(lam_ratio=lam_ratio, slend=slend, KLr=KLr, Fye=Fye, E=E_KSI, math=math)
+        n_c = float(eval(bp["compression"]["n_expr"], {"__builtins__": {}}, env))
+        n_t = float(eval(bp["tension"]["n_expr"], {"__builtins__": {}}, env))
+        n_c = max(n_c, 1e-6); n_t = max(n_t, 1e-6)
+        # Map C3.4 (d,f) to Hysteretic: brief post-buckling plateau then residual at total d = n*delta.
+        a_plateau = float(bp["compression"].get("a_plateau_over_dc", 0.05))
+        a_c = a_plateau * dc
+        b_c = n_c * dc
+        c_c = float(bp["compression"]["f_residual"])
+        a_t = float(bp["tension"].get("a_plateau_over_dT", 0.05)) * dT
+        b_t = n_t * dT
+        c_t = float(bp["tension"]["f_residual"])
+        IO = float(bp["compression"].get("IO_over_dc", 1.5)) * dc
+        LS = float(bp["compression"].get("LS_frac_of_n", 0.7)) * n_c * dc
+        CP = n_c * dc
+        IO_t = float(bp["tension"].get("IO_over_dT", 1.5)) * dT
+        LS_t = float(bp["tension"].get("LS_frac_of_n", 0.7)) * n_t * dT
+        CP_t = n_t * dT
+        if IO > LS: IO = LS
+        if IO_t > LS_t: IO_t = LS_t
+        cls = "C3.4_rect_HSS"
+        flags.append("AISC 342-22 Table C3.4 rectangular HSS: n_c=%.3f n_t=%.3f KL/r=%.1f slend=%.3f" % (n_c, n_t, KLr, slend))
+        return BraceSpec("brace", section, L_in, A, r, KLr, Fye, Pye, Pcre, dT, dc,
+                         a_c=a_c, b_c=b_c, c_c=c_c, a_t=a_t, b_t=b_t, c_t=c_t,
+                         IO=IO, LS=LS, CP=CP, IO_t=IO_t, LS_t=LS_t, CP_t=CP_t,
+                         slenderness_class=cls, flags=tuple(flags))
     sl, st = 4.2 * math.sqrt(E_KSI / Fye), 2.1 * math.sqrt(E_KSI / Fye)
     cS, cK = bp["compression"]["slender"], bp["compression"]["stocky"]
     if KLr >= sl: w, cls = 1.0, "slender"
@@ -245,3 +307,121 @@ def make_brace_material(tag: int, b: BraceSpec, prm: dict):
     s3n, e3n = -b.c_c * b.Pcre_kip / A, -max(b.b_c, (b.dc + b.a_c) * 1.05) / L
     ops.uniaxialMaterial("Hysteretic", tag, s1p, e1p, s2p, e2p, s3p, e3p, s1n, e1n, s2n, e2n, s3n, e3n, 1.0, 1.0, 0.0, 0.0, 0.0)
     return "Hysteretic"
+
+
+# --------------------------------------------------------------------------- panel zones (scissors / joint rotational spring)
+NU_STEEL = 0.3
+G_KSI = E_KSI / (2.0 * (1.0 + NU_STEEL))
+
+
+@dataclass
+class PanelZoneSpec:
+    """Scissors-style joint rotational spring (kip-in, rad). One spring per FR framing plane at a joint."""
+    joint: int
+    dof: int                 # global rot DOF 4=RX or 5=RY
+    col_section: str
+    beam_sections: tuple
+    dc: float                # column depth (in)
+    tp: float                # panel thickness tw + doublers (in)
+    db: float                # governing beam depth (in)
+    Fy_ksi: float
+    K_theta: float           # elastic rotational stiffness kip-in/rad
+    material: str            # "elastic" | "hysteretic"
+    My: float = 0.0          # first yield moment of trilinear (hysteretic)
+    theta_y: float = 0.0
+    Mp: float = 0.0          # plastic / second corner
+    theta_p: float = 0.0
+    Mr: float = 0.0          # residual
+    theta_r: float = 0.0
+    flags: tuple = ()
+
+    def as_dict(self):
+        return asdict(self)
+
+
+def panel_zone_mode(prm: dict) -> str:
+    pz = prm.get("panel_zones") or {}
+    return str(pz.get("mode", "rigid")).lower()
+
+
+def _pz_block(prm: dict) -> dict:
+    return prm.get("panel_zones") or {}
+
+
+def panel_zone_props(col_section: str, beam_sections: list, prm: dict) -> dict:
+    """Column web panel geometry + Gupta–Krawinkler elastic K_theta (kip-in/rad).
+    K_theta ≈ G * tp * dc * db  with gamma≈relative joint rotation (scissors idealisation)."""
+    pz = _pz_block(prm)
+    cp = SDB.props(col_section)
+    doubler = float(pz.get("doubler_t_in", 0.0) or 0.0)
+    dc = float(cp["d"])
+    tp = float(cp["tw"]) + doubler
+    dbs = [float(SDB.props(s)["d"]) for s in beam_sections if s]
+    db = sum(dbs) / len(dbs) if dbs else dc
+    Fy = float((prm.get("material") or {}).get("Fy_ksi", 50.0))
+    K_override = pz.get("K_theta")
+    if K_override is not None:
+        K_theta = float(K_override)
+        flags = ("K_theta overridden in panel_zones.K_theta",)
+    else:
+        K_theta = G_KSI * tp * dc * db
+        flags = ("K_theta = G*tp*dc*db (scissors / Gupta–Krawinkler elastic)",)
+    return dict(dc=dc, tp=tp, db=db, Fy_ksi=Fy, K_theta=K_theta, flags=flags,
+                bf_c=float(cp["bf"]), tf_c=float(cp["tf"]))
+
+
+def panel_zone_spec(joint: int, dof: int, col_section: str, beam_sections: list, prm: dict) -> PanelZoneSpec:
+    """Build PanelZoneSpec for one FR joint plane. material from panel_zones.material (elastic|hysteretic)."""
+    pz = _pz_block(prm)
+    mat_kind = str(pz.get("material", "elastic")).lower()
+    geo = panel_zone_props(col_section, beam_sections, prm)
+    flags = list(geo["flags"])
+    My = Mp = Mr = theta_y = theta_p = theta_r = 0.0
+    if mat_kind == "hysteretic":
+        # Gupta–Krawinkler trilinear (moment–rotation of scissors spring): Vy=0.55 Fy dc tp;
+        # flange contribution raises Vp; gamma_y = Fy/(√3 G); M = V*db.
+        Vy = 0.55 * geo["Fy_ksi"] * geo["dc"] * geo["tp"]
+        Vp = Vy * (1.0 + 3.0 * geo["bf_c"] * geo["tf_c"] ** 2 / max(geo["db"] * geo["dc"] * geo["tp"], 1e-9))
+        gamma_y = geo["Fy_ksi"] / (math.sqrt(3.0) * G_KSI)
+        My = Vy * geo["db"]
+        Mp = Vp * geo["db"]
+        theta_y = gamma_y
+        theta_p = float(pz.get("theta_p_over_thy", 4.0)) * gamma_y
+        Mr = float(pz.get("c_residual", 0.9)) * Mp
+        theta_r = float(pz.get("theta_r_over_thy", 100.0)) * gamma_y
+        # keep envelope corners strictly increasing in |rotation|
+        if theta_p <= theta_y:
+            theta_p = theta_y * 1.05
+        if theta_r <= theta_p:
+            theta_r = theta_p * 1.05
+        K_theta = My / max(theta_y, 1e-12)
+        flags.append("Hysteretic trilinear Gupta–Krawinkler (Vy=0.55 Fy dc tp; Vp with flange term)")
+        # optional absolute overrides (kip-in / rad)
+        hb = pz.get("hysteretic") or {}
+        if hb.get("s1p") is not None:
+            My, theta_y = float(hb["s1p"]), float(hb["e1p"])
+            Mp, theta_p = float(hb["s2p"]), float(hb["e2p"])
+            Mr, theta_r = float(hb["s3p"]), float(hb["e3p"])
+            K_theta = My / max(theta_y, 1e-12)
+            flags.append("hysteretic envelope overridden from panel_zones.hysteretic")
+    else:
+        mat_kind = "elastic"
+        K_theta = geo["K_theta"]
+    return PanelZoneSpec(joint, dof, col_section, tuple(beam_sections), geo["dc"], geo["tp"], geo["db"],
+                         geo["Fy_ksi"], K_theta, mat_kind, My, theta_y, Mp, theta_p, Mr, theta_r, tuple(flags))
+
+
+def make_panel_zone_material(tag: int, spec: PanelZoneSpec):
+    """Uniaxial material for a scissors PZ rotational spring (stress=moment kip-in, strain=rad)."""
+    import openseespy.opensees as ops
+    if spec.material == "hysteretic":
+        s1p, e1p = spec.My, spec.theta_y
+        s2p, e2p = spec.Mp, spec.theta_p
+        s3p, e3p = spec.Mr, spec.theta_r
+        ops.uniaxialMaterial("Hysteretic", tag,
+                             s1p, e1p, s2p, e2p, s3p, e3p,
+                             -s1p, -e1p, -s2p, -e2p, -s3p, -e3p,
+                             1.0, 1.0, 0.0, 0.0, 0.0)
+        return "Hysteretic"
+    ops.uniaxialMaterial("Elastic", tag, spec.K_theta)
+    return "Elastic"

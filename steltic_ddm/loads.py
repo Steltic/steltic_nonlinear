@@ -16,7 +16,10 @@ import re
 from .ingest import decode_tag
 
 
-def steltic_combos(cfg):
+def steltic_combos(cfg, nm=None):
+    from . import portal_adapter as PA
+    if PA.is_portal(cfg):
+        return PA.portal_combos(cfg, nm=nm)
     import design_pipeline as DP
     return DP.combos(cfg)
 
@@ -24,6 +27,8 @@ def steltic_combos(cfg):
 def prune(cases, policy="default", torsion="plus", include_om0=False):
     if policy == "all":
         return list(cases)
+    # portal seismic labels are "(1.2+0.2SDS)D+E" — keep them
+    from . import portal_adapter as PA
     keep = []
     for c in cases:
         lab = c[0]
@@ -38,6 +43,8 @@ def prune(cases, policy="default", torsion="plus", include_om0=False):
             t = "t+" if torsion == "plus" else "t-"
             if torsion == "both" or t in lab:
                 keep.append(c); continue
+        if lab.endswith("+E") or "D+E" in lab:
+            keep.append(c); continue
         if col_only and include_om0:
             keep.append(c)
     return keep
@@ -76,6 +83,9 @@ def _bays_adjacent(present_k, i, j, dirn):
 
 def beam_udl(cfg, nm, pres, member, seg_index, nseg, fD, fL, fLr):
     """kip/in on sub-element seg_index (0..nseg-1) of a grid beam -- Steltic static_model.apply_gravity."""
+    from . import portal_adapter as PA
+    if PA.is_portal(cfg):
+        return PA.portal_beam_udl(cfg, nm, member, seg_index, nseg, fD, fL, fLr)
     i, j, k = decode_tag(member.n1)
     NF = len(cfg["heights"])
     if not (1 <= k <= NF):

@@ -71,6 +71,10 @@ def cmd_run(args):
     from . import ground_motions as GM, model as MD, run as RN, acceptance as AC, report as RP
     from pushover import nonlinear_model as NM
     t0 = time.time()
+    if getattr(args, "member_nseg", None) is not None:
+        os.environ["SNL_MEMBER_NSEG"] = str(args.member_nseg)
+    if getattr(args, "plasticity", None):
+        os.environ["SNL_PLASTICITY"] = str(args.plasticity)
     pkg, prm, ch16, TL = _load(args)
     if args.xi > ch16["damping"]["xi_max"]:
         sys.exit("xi %.3f exceeds the 16.3.5 cap of %.3f" % (args.xi, ch16["damping"]["xi_max"]))
@@ -136,6 +140,8 @@ def main(argv=None):
             p.add_argument("--xi", type=float, default=0.025); p.add_argument("--free-vib", type=float, default=5.0)
             p.add_argument("--parallel", type=int, default=1, help="worker processes (one OpenSees instance each)")
             p.add_argument("--integrator", default="hht", choices=["hht", "newmark"], help="HHT alpha=0.9 (default; damps spurious high modes) or Newmark average acceleration")
+            p.add_argument("--member-nseg", type=int, default=4, help="member subdivisions for fibre/IMK (default 4; matches MC4 fibre suite)")
+            p.add_argument("--plasticity", default="fibre", choices=["fibre", "fiber", "imk"], help="fibre=distributed forceBeamColumn (default); imk=concentrated ModIMK")
     args = ap.parse_args(argv)
     {"scale": cmd_scale, "run": cmd_run, "report": cmd_report}[args.cmd](args)
 

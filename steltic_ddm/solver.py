@@ -36,6 +36,8 @@ def yield_state(model, eps_y):
     out = {}
     nip = model.nip
     for e in model.elems:
+        if not e.get("secTag"):
+            continue
         sp = model.sec_props[e["secTag"]]
         ymax, zmax = _extents(sp)
         r = 0.0
@@ -77,6 +79,8 @@ def member_state(model, ys):
     """Per member: (max yield ratio over its sub-elements, fraction along the member of the worst sub-element)."""
     out = {}
     for e in model.elems:
+        if not e.get("secTag"):
+            continue
         r = ys.get(e["tag"], 0.0)
         n = max(1, len(model.sub_nodes[e["mtag"]]) - 1)
         cur = out.get(e["mtag"])
@@ -85,18 +89,34 @@ def member_state(model, ys):
     return out
 
 
+
+def _track_nodes(model):
+    """Diaphragm masters, or portal eave/apex nodes when no diaphragms."""
+    if model.masters:
+        return list(model.masters)
+    # portal: unique highest-z nodes per (rounded x,y) wall/roof line — keep eaves + apex
+    by = {}
+    for t, (x, y, z) in model.nm.nodes.items():
+        if t in model.nm.fixes:
+            continue
+        key = (round(x, 0), round(y, 0))
+        if key not in by or z > by[key][1]:
+            by[key] = (t, z)
+    nodes = [t for t, z in sorted(by.values(), key=lambda tz: tz[1])]
+    return nodes[-8:] if len(nodes) > 8 else nodes  # cap for viewer
+
 def _frame(model, eps_y, step, lam, d, ys=None, bs=None):
     """Viewer frame: masters, members at/over 0.5 eps_y with the worst sub-element location, buckled braces."""
     ys = ys if ys is not None else yield_state(model, eps_y)
     bs = bs if bs is not None else brace_state(model)
-    return dict(step=step, lam=lam, d=d, disp={t: ops.nodeDisp(t) for t in model.masters},
+    return dict(step=step, lam=lam, d=d, disp={t: ops.nodeDisp(t) for t in _track_nodes(model)},
                 mem={m: (r, f) for m, (r, f) in member_state(model, ys).items() if r >= 0.5},
                 buckled=[t for t, b in bs.items() if b["buckled"]])
 
 
 def storey_drifts(model, dirn):
     dof = 1 if dirn == "X" else 2
-    ms = model.masters
+    ms = _track_nodes(model)
     disp = [ops.nodeDisp(t, dof) for t in ms]
     z = [model.nm.nodes[t][2] for t in ms]
     dr = []
@@ -118,12 +138,34 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
     ldir, lsgn = lateral_direction(lat)
     eps_y = model.Fy / model.builder.E
 
-    # ---- elastic probe at lambda = 0.05 -------------------------------------------------------
-    ops.integrator("LoadControl", 0.05); ops.analysis("Static")
-    if ops.analyze(1) != 0:
+    # ---- elastic probe (adaptive: soft systems may fail at 0.05) ------------------------------
+    ops.analysis("Static")
+    lam_probe = None
+    for trial in (0.05, 0.02, 0.01, 0.005, 0.002):
+        ops.integrator("LoadControl", trial)
+        if ops.analyze(1) == 0:
+            lam_probe = trial
+            break
+        # rewind failed attempt before retrying a smaller step
+        model.build().prepare()
+        ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
+        W = model.apply_gravity(fD, fL, fLr, pres)
+        model.apply_lateral(lat)
+        _solver_settings()
+        ops.analysis("Static")
+    if lam_probe is None:
         raise RuntimeError("elastic probe failed for %s" % label)
+    if verbose and lam_probe < 0.05:
+        print("   note %-40s elastic probe used lambda=%.3f (0.05 failed)" % (label[:40], lam_probe))
     if ldir:
-        top = model.masters[-1]; cdof = 1 if ldir == "X" else 2
+        if model.masters:
+            top = model.masters[-1]
+        else:
+            # portal / no diaphragm: control the highest free node
+            tops = sorted(((z, t) for t, (x, y, z) in model.nm.nodes.items()
+                           if t not in model.nm.fixes), reverse=True)
+            top = tops[0][1] if tops else max(model.nm.nodes)
+        cdof = 1 if ldir == "X" else 2
         cnode = top
     else:
         # gravity case: control the largest VERTICAL beam deflection (never a brace bow or a sway DOF)
@@ -138,13 +180,13 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
     d_probe = ops.nodeDisp(cnode, cdof)
     if abs(d_probe) < 1e-12:
         raise RuntimeError("zero probe displacement -- control DOF not excited")
-    du0 = d_probe / 0.05 * dlam
+    du0 = d_probe / lam_probe * dlam
     du = du0
-    d_cap = abs(d_probe / 0.05) * disp_cap_factor
+    d_cap = abs(d_probe / lam_probe) * disp_cap_factor
     ops.integrator("DisplacementControl", cnode, cdof, du)
 
-    hist = [(0.05, d_probe)]
-    lam_max, step_at_max, d_at_max = 0.05, 0, d_probe; hi_at_max = 0
+    hist = [(lam_probe, d_probe)]
+    lam_max, step_at_max, d_at_max = lam_probe, 0, d_probe; hi_at_max = 0
     first_yield = None
     snap = dict(yield_ratio={}, braces={}, drifts=None, disp=None, step=0)
     frames = []                                   # viewer frames every `frame_every` steps (+ the peak)
@@ -177,7 +219,7 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
         lam = ops.getLoadFactor(1); d = ops.nodeDisp(cnode, cdof)
         hist.append((lam, d))
         hi = len(hist) - 1                        # index of this converged step in hist (failed steps are not counted)
-        disp_hist[hi] = {t: ops.nodeDisp(t) for t in model.masters}
+        disp_hist[hi] = {t: ops.nodeDisp(t) for t in _track_nodes(model)}
         ys = None
         if (first_yield is None and step % 2 == 0) or hi % frame_every == 0:
             ys = yield_state(model, eps_y)
@@ -190,7 +232,7 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
             if step - snap["step"] >= snapshot_every:
                 snap = dict(yield_ratio=(ys if ys is not None else yield_state(model, eps_y)), braces=brace_state(model),
                             drifts=(storey_drifts(model, ldir) if ldir else None), step=step, hist_i=hi,
-                            disp={t: ops.nodeDisp(t) for t in model.masters})
+                            disp={t: ops.nodeDisp(t) for t in _track_nodes(model)})
         elif lam < post_peak * lam_max and step > step_at_max + 3:
             log.append("post-peak branch reached %.0f%% of lambda_u at step %d" % (100 * post_peak, step)); break
         if abs(d) > d_cap:
@@ -206,7 +248,7 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
                 if snap["step"] < step - 1:
                     snap = dict(yield_ratio=yield_state(model, eps_y), braces=brace_state(model),
                                 drifts=(storey_drifts(model, ldir) if ldir else None), step=step, hist_i=len(hist) - 1,
-                                disp={t: ops.nodeDisp(t) for t in model.masters})
+                                disp={t: ops.nodeDisp(t) for t in _track_nodes(model)})
                 log.append("plateau: tangent stiffness %.1f%% of elastic at step %d -- lambda_u taken at the plateau" % (100 * k_t / k_el, step)); break
         if time_limit and time.time() - t0 > time_limit:
             log.append("time limit reached at step %d" % step); break
@@ -245,6 +287,8 @@ def classify(res, model):
     bt = model._bt
     hinges = {}         # mtag -> max ratio
     for e in model.elems:
+        if not e.get("secTag"):
+            continue
         r = yr.get(e["tag"], 0.0)
         hinges[e["mtag"]] = max(hinges.get(e["mtag"], 0.0), r)
     hinge_members = [t for t, r in hinges.items() if r >= 3.0]

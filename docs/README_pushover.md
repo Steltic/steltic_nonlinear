@@ -81,6 +81,23 @@ FR-connection table (AISC 342 Table C5.5 form): `a_expr` in `h, tw, bf, tf, Lb, 
 section as highly / moderately ductile / other. `numerics.post_cap_ratio` (default 0.15 ≈ vertical drop) is the
 tail-protocol rung 3 — raising it is a disclosed modelling change.
 
+## Panel zones (opt-in)
+
+Default `panel_zones.mode` is **`rigid`** (centreline model, no behaviour change). Set `"mode": "scissors"` in
+`hinge_params.json` (or a project `--params` copy) to enable scissors-style flexible panel zones at **FR**
+moment-frame joints only (unreleased beam + column ends):
+
+- Column stack stays on the joint node; FR beam ends attach to a coincident beam-side node (not an RD slave).
+- One 6-DOF `zeroLength` between column joint and beam-side node: rigid on translations / torsion / unused
+  flexure, PZ spring on rot DOF(s) 4/5 (`strong_rot_dof`), kip-in-sec. **Not** `equalDOF` (conflicts with
+  `rigidDiaphragm` under Transformation — caused spurious short T1 / collapsed base shear before the fix).
+- `material`: `"elastic"` (smoke / K<sub>θ</sub> = G·t<sub>p</sub>·d<sub>c</sub>·d<sub>b</sub>) or `"hysteretic"`
+  (Gupta–Krawinkler trilinear). Optional `K_theta` or `hysteretic` envelope overrides; `doubler_t_in` adds to t<sub>w</sub>.
+- IMK end hinges remain at member ends. **Do not** also apply the AISC 342 C5.4a.1.a.1(b) PZ ductility modifier
+  when scissors is on. This is **not** a full 8-bar Krawinkler rectangle (no geometric rigid offsets of beam/column depth).
+
+Same builder feeds NSP and NLRHA (`nlrha/model.py` imports `pushover.nonlinear_model`).
+
 ## Command line
 
 ```
@@ -115,7 +132,7 @@ pushover output · `tests/` smoke test · `docs/` the scoping report.
 - Braces: phenomenological `corotTruss` + `Hysteretic` axial backbone (ASCE 41 Table 9-8 form, placeholder values,
   K = 1 on the recorded brace length); no fracture, no cyclic degradation. EBF links, BRB cores and SPSW panels are
   not modelled. HSS local slenderness is not checked (no wall thickness in aisc_shapes.csv).
-- Rigid panel zones, bare centreline, no composite slab, no fracture, fixed bases as in the linear model.
+- Panel zones default **rigid**; opt-in `panel_zones.mode=scissors` (joint rotational spring). Bare centreline, no composite slab, no fracture, fixed bases as in the linear model. Full 8-bar Krawinkler is not implemented.
 - Gravity spread equally over each level's column nodes (footprint from node extents); use
   `model_static.py` tributary loads for irregular plans.
 - Higher-mode (LDP) supplement and the force-controlled Eq. 7-38 check are reported as open items.

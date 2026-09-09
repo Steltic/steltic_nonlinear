@@ -74,7 +74,7 @@ Any other set can be used with the same `index.json` layout.
 
 ## Limitations (roadmap)
 
-- Cyclic deterioration off (Λ = 0); braces are phenomenological trusses (no fracture); rigid panel zones, bare frame.
+- Cyclic deterioration off (Λ = 0); braces are phenomenological trusses (no fracture); panel zones default rigid (opt-in `panel_zones.mode=scissors` in the shared hinge_params — same builder as pushover); bare frame.
 - Selection by spectral shape against a code spectrum — not a hazard-consistent (M, R) selection (16.2.2).
 - No-live-load gravity case (16.3.2) not run automatically; accidental torsion (16.3.4), vertical motion (16.1.3),
   foundations (16.3.6), spectral matching (16.2.3.3) not implemented.

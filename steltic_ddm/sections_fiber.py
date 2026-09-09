@@ -86,6 +86,37 @@ def hss_dims(label):
     return H, B, t
 
 
+
+# Hardcoded secondary Z props (same as export_cfs_portal_3d_bay.py)
+_CFS_Z_PROPS = {
+    "800Z250-54": dict(A=0.515, Ix=5.60, Iy=0.98, J=0.0008),
+    "800Z250-68": dict(A=0.647, Ix=7.15, Iy=1.25, J=0.0012),
+    "800Z250-97": dict(A=0.910, Ix=9.80, Iy=1.70, J=0.0020),
+}
+
+
+def cfs_section_props(label):
+    """Gross A/Ix/Iy/J for CFS designators (built-up Nx... or hardcoded Z)."""
+    lab = str(label).strip()
+    key = lab.upper().replace(" ", "")
+    for k, v in _CFS_Z_PROPS.items():
+        if key == k.upper():
+            return dict(v)
+    # Named secondaries from Sena portal export (elastic-only path)
+    if any(t in key for t in ("EAVE_STRUT", "RESTRAINT_PURLIN", "RESTRAINT_GIRT", "PURLIN", "GIRT", "EAVESTRUT")):
+        return dict(A=0.5, Ix=5.0, Iy=1.0, J=1e-3)
+    # built-up e.g. 6x1200S300-118
+    try:
+        import cfs_frame as CF
+        import cfs_sections as SEC
+        fs = CF.frame_section(lab)
+        gp = SEC.gross_props(fs["base"])
+        n = int(fs["n_ply"])
+        return dict(A=n * gp["A"], Ix=n * gp["Ix"], Iy=n * gp["Iy"], J=n * gp["J"])
+    except Exception:
+        return None
+
+
 class FiberSectionBuilder:
     """Stateful builder: hands out unique material tags and records what it made."""
 
@@ -218,12 +249,81 @@ class FiberSectionBuilder:
         return dict(A=A_csv or A_model, H=H, B=B, t=t, nfib=nfib)
 
     # ---- generic dispatcher ----------------------------------------------------------------
+
+    # ---- cold-formed built-up / Z (equivalent rectangle matching A, Ix) ---------------------
+    def cfs_equiv_rect(self, secTag, label, props, residual="none", axis="y"):
+        """Thin-walled C/channel fibre from label dims (Cdddxbbxtt) or props.
+
+        Matches gross A/Ix/Iy much better than a solid A+Ix rectangle (which crushed Iy by
+        ~1e4 and caused false OOP geometric instability on Sena portals). Still NO local /
+        distortional buckling — disclose. Residual ignored (no calibrated CFS pattern).
+
+        axis='y' (columns): web along local y (strong Ix about z).
+        axis='z' (beams): web along local z (strong Ix about y).
+        """
+        import re as _re
+        A = float(props["A"]); Ix = float(props["Ix"]); Iy = float(props.get("Iy") or Ix * 0.05)
+        J = float(props.get("J") or 1e-4)
+        labU = str(label).upper().replace(" ", "")
+        # built-up e.g. 2xC203x76x2p4 or single C302x96x1p5
+        m = _re.match(r"(?:(\d+)X)?C(\d+)X(\d+)X(\d+)P(\d+)", labU)
+        n_ply = 1
+        if m:
+            if m.group(1):
+                n_ply = max(int(m.group(1)), 1)
+            d_mm, bf_mm, t_int, t_dec = map(int, m.groups()[1:])
+            d = d_mm / 25.4
+            bf = bf_mm / 25.4
+            t = float("%d.%d" % (t_int, t_dec)) / 25.4
+            lip = min(1.0, 0.3 * bf)
+            # n_ply side-by-side (built-up): thicken web stack in weak dir by n_ply
+            # fibre mesh below is single C; scale area by n_ply after A_model
+        else:
+            n_ply = 1
+            d = (12.0 * Ix / max(A, 1e-9)) ** 0.5
+            t = max(A / (2.0 * d), 0.04)
+            bf = max(Iy / max(t * (d / 2.0) ** 2, 1e-9), 4.0 * t)
+            lip = 0.0
+        hw = max(d - 2.0 * t, d * 0.85)
+        A_model = n_ply * (hw * t + 2.0 * bf * t + (2.0 * lip * t if lip > 1.5 * t else 0.0))
+        scale = A / max(A_model, 1e-9)
+        self.ops.section("Fiber", secTag, "-GJ", max(G_KSI * J, 1.0))
+        nfib = 0
+        mat = self._mat(0.0)
+        def add_rect(y0, z0, hy, hz, ny=4, nz=2):
+            nonlocal nfib
+            for i in range(ny):
+                for j in range(nz):
+                    yc = y0 - hy / 2 + (i + 0.5) * hy / ny
+                    zc = z0 - hz / 2 + (j + 0.5) * hz / nz
+                    area = scale * (hy / ny) * (hz / nz)
+                    if axis == "z":
+                        self.ops.fiber(zc, yc, area, mat)
+                    else:
+                        self.ops.fiber(yc, zc, area, mat)
+                    nfib += 1
+        y_fl = (d / 2 - t / 2)
+        add_rect(0.0, 0.0, hw, t, ny=10, nz=2)
+        add_rect(+y_fl, bf / 2 - t / 2, t, bf, ny=2, nz=6)
+        add_rect(-y_fl, bf / 2 - t / 2, t, bf, ny=2, nz=6)
+        if lip > 1.5 * t:
+            z_lip = bf - t / 2
+            add_rect(+y_fl - lip / 2, z_lip, lip, t, ny=4, nz=2)
+            add_rect(-y_fl + lip / 2, z_lip, lip, t, ny=4, nz=2)
+        self.log.append((secTag, label, "CFS-C", nfib,
+                         "A=%.3f Ix=%.2f Iy=%.2f d=%.2f bf=%.2f t=%.3f n_ply=%d axis=%s scale=%.3f (NO local/distortional)" % (
+                             A, Ix, Iy, d, bf, t, n_ply, axis, scale)))
+        return dict(A=A, H=d, B=bf, t=t, nfib=nfib, Ix=Ix, Iy=Iy, J=J)
+
     def build(self, secTag, label, kind, axis=None):
         lab = str(label).upper()
         if lab.startswith("HSS") and hss_dims(lab):
             return self.hss_rect(secTag, lab, residual=("none" if self.residual == "none" else "cf_hss_membrane"))
         if lab.startswith(("W", "HP", "M", "S")) and not lab.startswith("MC"):
             return self.w_shape(secTag, lab, axis=(axis or ("y" if kind == "col" else "z")))
+        props = cfs_section_props(label)
+        if props:
+            return self.cfs_equiv_rect(secTag, lab, props, residual="none", axis=(axis or ("y" if kind == "col" else "z")))
         raise ValueError("no fibre builder for section %s (kind %s)" % (label, kind))
 
 

@@ -68,7 +68,8 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
         ops.integrator("HHT", 0.9)                                  # alpha = 0.9: second-order accurate, damps the spurious high modes of stiff hinge springs
     ops.analysis("Transient")
     dt = dt_max                                                   # Path series interpolates the record; dt_max ~ T_lower/15
-    dt_cur = dt_max; n_ok_since_cut = 0; consec_fail = 0; dt_floor = dt_max / 64.0
+    # HR08 M051: tighten crawl abort — fallback micro-advances can reset consec_fail forever near ModIMK drops (~0.1 s sim/wall-h).
+    dt_cur = dt_max; n_ok_since_cut = 0; consec_fail = 0; crawl_fallback = 0; dt_floor = dt_max / 32.0
     next_rec = rec_every * dt_max; next_hist = 5 * dt_max                 # time-based recording (the step is adaptive)
     t_start, t_sig = arias_window(ax, ay, dt_rec)
     t_end = t_sig + free_vib_s
@@ -100,12 +101,19 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                 # adaptive time step: halve persistently and retry the same instant (domain is still at the last committed state)
                 fails += 1; consec_fail += 1; n_ok_since_cut = 0
                 dt_cur *= 0.5
-                if dt_cur < dt_floor or consec_fail > 40:
+                if dt_cur < dt_floor or consec_fail > 12:
                     converged = False; reason = "non-convergence at t=%.2f s (dt %.2e s, %d consecutive failures)" % (t, dt_cur * 2, consec_fail); break
                 continue
-            t += adv; consec_fail = 0
+            t += adv; consec_fail = 0; crawl_fallback += 1
+            # abort soft-crawl: many tiny fallback advances without a clean Newton step
+            if crawl_fallback > 40:
+                converged = False; reason = "crawl abort at t=%.2f s (%d fallback micro-advances)" % (t, crawl_fallback); break
         else:
             t += dt_cur; consec_fail = 0; n_ok_since_cut += 1
+            # Do not zero crawl_fallback while still on a cut step — otherwise ModIMK/FBC
+            # soft-crawl can reset forever (L2 ConcentratedPlasticity hygiene; cascade order unchanged).
+            if dt_cur >= dt_max * 0.999:
+                crawl_fallback = 0
             if dt_cur < dt_max and n_ok_since_cut >= 8:                  # grow back towards the nominal step
                 dt_cur = min(dt_max, dt_cur * 2); n_ok_since_cut = 0
         step += 1
@@ -130,6 +138,16 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                 h = hinges[tg]
                 if h["kind"] == "brace":
                     d = ops.eleResponse(tg, "deformation"); v = d[0] if d else 0.0
+                elif h.get("form") == "fbc_cp":
+                    # ConcentratedPlasticity end IP: Uniaxial M–θ_p (comp 0). Subtract My/Ke elastic.
+                    ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
+                    d = ops.eleResponse(h["ele"], "section", ip, "deformation")
+                    f = ops.eleResponse(h["ele"], "section", ip, "force")
+                    if d and len(d) > jc:
+                        fj = f[jc] if (f and len(f) > jc) else 0.0
+                        v = d[jc] - fj / K0[tg]
+                    else:
+                        v = 0.0
                 else:
                     d = ops.eleResponse(tg, "deformation"); f = ops.eleResponse(tg, "force"); j = h["dof"] - 1
                     v = (d[j] - f[j] / K0[tg]) if len(d) >= 6 else 0.0
