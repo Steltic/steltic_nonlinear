@@ -13,6 +13,8 @@ model_gmnia.py -- rebuild a Steltic elastic model as a GMNIA model in openseespy
     X-crossing (conservative: K = 1 on the full diagonal)
   * rigid diaphragms and master nodes exactly as Steltic recorded them
   * bases: as recorded (fixed / pinned)
+  * optional rigid_end_offset on primary beams: stiff elasticBeamColumn stubs
+    (~0.05L, ×1000 EI) for continuous FR beam–column continuity (Liu lesson)
 
 Steltic orientation decoding (engine3d):
   transf 1: vecxz (1,0,0) -> column strong axis resists Y (weak-axis bow in X)
@@ -36,7 +38,7 @@ K_ROT = 1.0e10       # kip-in/rad
 class GMNIAModel:
     def __init__(self, nm, cfg, nsub=(4, 4, 6), residual="lehigh", Fy=None, hardening=0.002,
                  elastic=False, fast=False, out_of_plumb=(None, 0.0), bow=1 / 1000.0, bow_sign=+1,
-                 brace_bow=1 / 1000.0, nip=5, brace_pins=True):
+                 brace_bow=1 / 1000.0, nip=5, brace_pins=True, rigid_end_offset=False):
         self.nm, self.cfg = nm, cfg
         self.nsub_col, self.nsub_beam, self.nsub_brace = nsub
         self.residual = residual
@@ -48,6 +50,9 @@ class GMNIAModel:
         self.bow, self.bow_sign, self.brace_bow = bow, bow_sign, brace_bow
         self.nip = nip
         self.brace_pins = brace_pins
+        # Liu lesson: continuous FR beam–column continuity via stiff end stubs.
+        # False/0 = off; True -> 0.05L; float = fraction of L (clamped 3–12 in).
+        self.rigid_end_offset = rigid_end_offset
         self.elems = []          # dict(tag, mtag, kind, role, section, secTag, s, n1, n2, L)
         self.sub_nodes = {}      # mtag -> [node tags along member incl. ends]
         self.secs = {}           # (label, kind, axis) -> secTag
@@ -162,6 +167,19 @@ class GMNIAModel:
         self.pins.append(tag)
         return tag
 
+
+    def _offset_frac(self):
+        """Return rigid-end offset fraction, or 0 if disabled."""
+        ro = self.rigid_end_offset
+        if ro is True:
+            return 0.05
+        if ro in (False, None, 0, 0.0):
+            return 0.0
+        try:
+            return float(ro)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _add_member(self, m):
         nsub = {"col": self.nsub_col, "beam": self.nsub_beam, "brace": self.nsub_brace}[m.kind]
         tr = self._transf_for(m)
@@ -203,6 +221,58 @@ class GMNIAModel:
             self.sub_nodes[m.tag] = [end1, end2]
             return
 
+        # Optional rigid end offsets on primary beams (continuous FR joint continuity).
+        off_frac = self._offset_frac() if (m.kind == "beam" and not self._is_secondary(m)) else 0.0
+        if off_frac > 0:
+            from .sections_fiber import elastic_props, E_KSI, G_KSI
+            off = max(3.0, min(12.0, off_frac * L))
+            if 2 * off >= 0.5 * L:
+                off = 0.1 * L
+            ux = (p2[0] - p1[0]) / L
+            uy = (p2[1] - p1[1]) / L
+            uz = (p2[2] - p1[2]) / L
+            n_i = SUB_NODE0 + m.tag * 100 + 90
+            n_j = SUB_NODE0 + m.tag * 100 + 91
+            xi = (p1[0] + ux * off, p1[1] + uy * off, p1[2] + uz * off)
+            xj = (p2[0] - ux * off, p2[1] - uy * off, p2[2] - uz * off)
+            ops.node(n_i, *xi); ops.node(n_j, *xj)
+            A, Ix, Iy, J = elastic_props(m.section)
+            A = A or 10.0; Ix = Ix or 100.0; Iy = Iy or 10.0; J = J or 1.0
+            scale = 1000.0
+            # Steltic beam transf 3: strong = local y → Iy_el=Ix, Iz_el=Iy
+            Iy_el, Iz_el = Ix * scale, Iy * scale
+            et_i = SUB_ELE0 + m.tag * 100 + 80
+            et_j = SUB_ELE0 + m.tag * 100 + 81
+            ops.element("elasticBeamColumn", et_i, end1, n_i, A * scale, E_KSI, G_KSI, J * scale, Iy_el, Iz_el, tr)
+            ops.element("elasticBeamColumn", et_j, n_j, end2, A * scale, E_KSI, G_KSI, J * scale, Iy_el, Iz_el, tr)
+            self.elems.append(dict(tag=et_i, mtag=m.tag, kind=m.kind, role=m.role, section=m.section,
+                                   secTag=0, s=-1, n1=end1, n2=n_i, L=off, dirn=m.dirn, rigid_stub=True))
+            self.elems.append(dict(tag=et_j, mtag=m.tag, kind=m.kind, role=m.role, section=m.section,
+                                   secTag=0, s=nsub, n1=n_j, n2=end2, L=off, dirn=m.dirn, rigid_stub=True))
+            secTag = self._section(m)
+            L_fib = L - 2 * off
+            chain = [n_i]
+            for s in range(1, nsub):
+                f = s / nsub
+                offb = bmag * L * math.sin(math.pi * (off + f * L_fib) / L)
+                x = xi[0] + (xj[0] - xi[0]) * f + bv[0] * offb
+                y = xi[1] + (xj[1] - xi[1]) * f + bv[1] * offb
+                z = xi[2] + (xj[2] - xi[2]) * f + bv[2] * offb
+                t = SUB_NODE0 + m.tag * 100 + s
+                ops.node(t, x, y, z)
+                chain.append(t)
+            chain.append(n_j)
+            self.sub_nodes[m.tag] = [end1] + chain + [end2]
+            etype = "dispBeamColumn" if self.fast else "forceBeamColumn"
+            for s in range(nsub):
+                tag = SUB_ELE0 + m.tag * 100 + s
+                extra = () if self.fast else ("-iter", 20, 1e-8)
+                ops.element(etype, tag, chain[s], chain[s + 1], tr, secTag, *extra)
+                self.elems.append(dict(tag=tag, mtag=m.tag, kind=m.kind, role=m.role, section=m.section,
+                                       secTag=secTag, s=s, n1=chain[s], n2=chain[s + 1],
+                                       L=L_fib / nsub, dirn=m.dirn))
+            return
+
         secTag = self._section(m)
         chain = [end1]
         for s in range(1, nsub):
@@ -230,7 +300,7 @@ class GMNIAModel:
         from .loads import beam_udl
         total = 0.0
         for e in self.elems:
-            if e["kind"] != "beam":
+            if e["kind"] != "beam" or e.get("rigid_stub"):
                 continue
             m = self.nm.by_tag()[e["mtag"]] if not hasattr(self, "_bt") else self._bt[e["mtag"]]
             w = beam_udl(self.cfg, self.nm, pres, m, e["s"], self.nsub_beam, fD, fL, fLr)

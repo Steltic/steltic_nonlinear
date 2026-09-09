@@ -94,6 +94,9 @@ def test_dry_run_driver(tmp_path):
         parallel=1,
         dt=0.01,
         dry_run=True,
+        early_abort_nc=2,
+        rigid_end_offset=None,
+        no_rigid_end_offset=False,
     )
     (tmp_path / "fake_job").mkdir()
     rc = main(a)
@@ -272,6 +275,9 @@ def test_dry_run_nlrha_dual_gate_driver(tmp_path):
         parallel=1,
         dt=0.01,
         dry_run=True,
+        early_abort_nc=2,
+        rigid_end_offset=None,
+        no_rigid_end_offset=False,
     )
     (tmp_path / "fake_job").mkdir()
     rc = main(a)

@@ -27,7 +27,7 @@ def test_short_push():
     pkg = PR.load(EX); prm = HM.load_params()
     loads, table = NM.gravity_loads(pkg, prm)
     PG = NM.column_gravity_axials(pkg, loads)
-    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False)
+    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False, plasticity="imk")
     assert len(hinges) == 660 and stats["col"] == 210 and stats["beam"] == 348 and stats["released_ends"] == 456  # Ex22: pinned gravity framing
     run = NM.pushover(pkg, hinges, "X", loads, prm, max_roof_drift=0.004, verbose=False, gravity_table=table)
     assert run["rec"]["V"][-1] > 1000 and 0.8 < run["pattern"]["T1"] < 1.1
@@ -40,7 +40,7 @@ def test_panel_zones_default_rigid():
     assert HM.panel_zone_mode(prm) == "rigid"
     loads, _ = NM.gravity_loads(pkg, prm)
     PG = NM.column_gravity_axials(pkg, loads)
-    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False)
+    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False, plasticity="imk")
     assert stats.get("panel_zone_mode", "rigid") == "rigid"
     assert stats.get("panel_zones", 0) == 0
     assert len(hinges) == 660
@@ -59,7 +59,7 @@ def test_panel_zones_scissors_builds():
     assert len(plan) > 0
     loads, table = NM.gravity_loads(pkg, prm)
     PG = NM.column_gravity_axials(pkg, loads)
-    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False)
+    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False, plasticity="imk")
     assert stats["panel_zone_mode"] == "scissors"
     assert stats["panel_zones"] == len(plan)
     assert len(hinges) == 660  # IMK/brace registry unchanged; PZ kept in stats registry
@@ -82,14 +82,14 @@ def test_panel_zones_scissors_push_plausible():
     prm_r = HM.load_params()
     loads, table = NM.gravity_loads(pkg, prm_r, verbose=False)
     PG = NM.column_gravity_axials(pkg, loads)
-    h_r, _ = NM.build_nonlinear(pkg, prm_r, PG, verbose=False)
+    h_r, _ = NM.build_nonlinear(pkg, prm_r, PG, verbose=False, plasticity="imk")
     run_r = NM.pushover(pkg, h_r, "X", loads, prm_r, max_roof_drift=0.004, verbose=False,
                         gravity_table=table, tail_strategies=())
     prm_s = copy.deepcopy(prm_r)
     prm_s.setdefault("panel_zones", {})
     prm_s["panel_zones"]["mode"] = "scissors"
     prm_s["panel_zones"]["material"] = "elastic"
-    h_s, stats = NM.build_nonlinear(pkg, prm_s, PG, verbose=False)
+    h_s, stats = NM.build_nonlinear(pkg, prm_s, PG, verbose=False, plasticity="imk")
     run_s = NM.pushover(pkg, h_s, "X", loads, prm_s, max_roof_drift=0.004, verbose=False,
                         gravity_table=table, tail_strategies=())
     assert stats["panel_zones"] > 0

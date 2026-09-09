@@ -30,6 +30,14 @@ four-analyses narrative.
 > Chapter 16 requires design criteria (16.1.4) and independent review (16.5). Every result must be checked and sealed by a
 > licensed professional engineer.
 
+## Product defaults
+
+See [`docs/PRODUCT_DEFAULTS.md`](docs/PRODUCT_DEFAULTS.md) (rules 1–9) and [`docs/FIBRE_MESH_CONVERGENCE.md`](docs/FIBRE_MESH_CONVERGENCE.md).
+
+- **NSP / HR DDM:** fibre + mesh 10%
+- **NLRHA:** ModIMK → PZ×1 → fibre+mesh; dual-gate; early abort on 2 NC
+- **CFS DDM:** Tier 2 fidelity gate (no shell)
+
 ## Install
 
 ```bash

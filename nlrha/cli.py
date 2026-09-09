@@ -76,6 +76,10 @@ def cmd_run(args):
     if getattr(args, "plasticity", None):
         os.environ["SNL_PLASTICITY"] = str(args.plasticity)
     pkg, prm, ch16, TL = _load(args)
+    if getattr(args, "plasticity", None):
+        prm.setdefault("numerics", {})["plasticity"] = args.plasticity
+    if getattr(args, "member_nseg", None) is not None:
+        prm.setdefault("numerics", {})["member_nseg"] = int(args.member_nseg)
     if args.xi > ch16["damping"]["xi_max"]:
         sys.exit("xi %.3f exceeds the 16.3.5 cap of %.3f" % (args.xi, ch16["damping"]["xi_max"]))
     ch16["damping"]["xi_used"] = args.xi
@@ -91,13 +95,34 @@ def cmd_run(args):
     results = []
     jobs = [(str(pkg.root), args.params, ch16, PG, loads, chosen[i - 1], args.xi, args.dt, args.free_vib, sample_brace, args.integrator) for i in sel]
     ch16["damping"]["integrator"] = args.integrator; ch16["damping"]["dt_s"] = args.dt
-    if args.parallel > 1:
+    early_nc = int(getattr(args, "early_abort_nc", 0) or 0)
+    early_aborted = False
+    if args.parallel > 1 and early_nc <= 0:
         import multiprocessing as mp
         with mp.get_context("spawn").Pool(args.parallel) as pool:
             results = pool.map(RN.run_record_worker, jobs)
+    elif args.parallel > 1 and early_nc > 0:
+        import multiprocessing as mp
+        with mp.get_context("spawn").Pool(args.parallel) as pool:
+            for out in pool.imap(RN.run_record_worker, jobs):
+                results.append(out)
+                n_nc = sum(1 for r in results if not r.get("converged"))
+                if n_nc >= early_nc:
+                    early_aborted = True
+                    print("[nlrha] early abort: %d NC (≥%d) — abandoning remaining records; next mesh/method"
+                          % (n_nc, early_nc), flush=True)
+                    pool.terminate()
+                    break
     else:
         for j in jobs:
             results.append(RN.run_record_worker(j))
+            if early_nc > 0:
+                n_nc = sum(1 for r in results if not r.get("converged"))
+                if n_nc >= early_nc:
+                    early_aborted = True
+                    print("[nlrha] early abort: %d NC (≥%d) — abandoning remaining records; next mesh/method"
+                          % (n_nc, early_nc), flush=True)
+                    break
     out = args.out or os.path.join(str(pkg.root), "nlrha"); os.makedirs(out, exist_ok=True)
     import pickle
     with open(os.path.join(out, "raw_results.pkl"), "wb") as f:            # never lose a 30-minute suite to a report bug
@@ -105,6 +130,9 @@ def cmd_run(args):
     SMS = 1.5 * pkg.basis.SDS
     rc = AC.risk_category(pkg, args.risk_category); print("[16.4] Risk Category", rc.replace("_", "/"))
     acc = AC.evaluate(results, pkg, ch16, PG, split, SMS, Ie=pkg.basis.Ie or 1.0, rc=rc)
+    acc.setdefault("meta", {})["early_aborted"] = bool(early_aborted)
+    acc["meta"]["early_abort_nc"] = early_nc
+    acc["meta"]["n_nc"] = sum(1 for r in results if not r.get("converged"))
     v = acc["verdict"]
     print("[16.4] unacceptable %d/%d (allowed %d) | mean drift max %.2f%% vs %.2f%% -> %s | deformation CP ok %s valid-range ok %s | force-controlled ok %s | OVERALL %s"
           % (v["n_unacceptable"], v["n_records"], v["unacceptable_allowed"], 100 * (v["mean_drift_max"] or 0), 100 * acc["limits"]["mean_limit"], v["mean_drift_ok"],
@@ -140,8 +168,9 @@ def main(argv=None):
             p.add_argument("--xi", type=float, default=0.025); p.add_argument("--free-vib", type=float, default=5.0)
             p.add_argument("--parallel", type=int, default=1, help="worker processes (one OpenSees instance each)")
             p.add_argument("--integrator", default="hht", choices=["hht", "newmark"], help="HHT alpha=0.9 (default; damps spurious high modes) or Newmark average acceleration")
-            p.add_argument("--member-nseg", type=int, default=4, help="member subdivisions for fibre/IMK (default 4; matches MC4 fibre suite)")
-            p.add_argument("--plasticity", default="fibre", choices=["fibre", "fiber", "imk"], help="fibre=distributed forceBeamColumn (default); imk=concentrated ModIMK")
+            p.add_argument("--member-nseg", type=int, default=None, help="member subdivisions (default: 4 fibre / 1 imk)")
+            p.add_argument("--plasticity", default="imk", choices=["fibre", "fiber", "imk"], help="product default imk=ModIMK; fibre=distributed forceBeamColumn (ladder climb)")
+            p.add_argument("--early-abort-nc", type=int, default=2, help="abandon remaining records once N are NC (0=disable; product default 2)")
     args = ap.parse_args(argv)
     {"scale": cmd_scale, "run": cmd_run, "report": cmd_report}[args.cmd](args)
 

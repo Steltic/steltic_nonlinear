@@ -37,8 +37,8 @@ def ch16_gravity(pkg, ch16, live_psf=None, roof_live_psf=20.0):
 def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
     """Nonlinear model (same builder as the pushover) -> hinges registry + element lists for damping.
 
-    Default plasticity is fibre (distributed forceBeamColumn). Override via args / SNL_* env /
-    numerics.plasticity.
+    Product default for NLRHA CLI is ModIMK (imk); fibre via ladder climb / --plasticity fibre.
+    Override via args / SNL_* env / numerics.plasticity.
     """
     import os
     if member_nseg is not None:

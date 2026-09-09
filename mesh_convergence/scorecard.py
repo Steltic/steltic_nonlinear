@@ -18,7 +18,7 @@ def write_scorecard(
     doc = dict(
         case=case,
         analysis=analysis,
-        method="fibre",
+        method=(extra or {}).get("method") or ("modimk→pz→fibre" if (extra or {}).get("nlrha_method_ladder") else "fibre"),
         tol=ladder.get("tol"),
         tol_note="relative band on primary metrics (default 10%)",
         max_rungs=ladder.get("max_rungs"),
@@ -35,4 +35,19 @@ def write_scorecard(
     path = os.path.join(out_dir, "mesh_convergence_scorecard_%s.json" % analysis)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=2, default=str)
+    md = os.path.join(out_dir, "mesh_convergence_scorecard_%s.md" % analysis)
+    lines = [
+        "# Mesh-convergence scorecard — %s / %s" % (case, analysis),
+        "",
+        "- method: `%s`" % doc.get("method"),
+        "- status: `%s`" % doc.get("status"),
+        "- stop_level: %s (%s)" % (doc.get("stop_level"), doc.get("stop_rung")),
+        "- tol: %s" % doc.get("tol"),
+        "- max_rungs: %s" % doc.get("max_rungs"),
+    ]
+    if doc.get("extra"):
+        for k in ("message", "no_fibre_for_fc", "nlrha_method_ladder", "lock_stage"):
+            if k in doc["extra"] and doc["extra"][k] is not None:
+                lines.append("- %s: %s" % (k, doc["extra"][k]))
+    open(md, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     return path

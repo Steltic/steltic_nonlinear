@@ -113,7 +113,7 @@
       "fine_step",
       "arclength"
     ],
-    "note": "post_cap_ratio = fraction of the capping rotation a over which strength descends from Mc to c*My (0.15 ~ ASCE 41 vertical drop). Raising it to capture the descending branch is a modelling change: only with the user's consent, and it is disclosed in the report. tail_strategies is the solver escalation ladder tried automatically when the push stops before 0.8*Vmax. Default plasticity=fibre (forceBeamColumn + Lobatto); member_nseg=4 matches MC4 fibre suite. Use imk for concentrated ModIMK / L2 FBC path.",
+    "note": "post_cap_ratio = fraction of the capping rotation a over which strength descends from Mc to c*My (0.15 ~ ASCE 41 vertical drop). Raising it to capture the descending branch is a modelling change: only with the user's consent, and it is disclosed in the report. tail_strategies is the solver escalation ladder tried automatically when the push stops before 0.8*Vmax. Default plasticity=fibre (forceBeamColumn + Lobatto); member_nseg=4 matches MC4 fibre suite. Use imk for concentrated ModIMK / L2 FBC path. Product NLRHA starts ModIMK (imk) then PZ\u00d71 then fibre+mesh; ConcentratedPlasticity auto-ladder (L1/L2/L3) is NOT a product default. NSP/HR DDM remain fibre. PZ default rigid.",
     "plasticity": "fibre",
     "member_nseg": 4,
     "fibre_nip": 5,

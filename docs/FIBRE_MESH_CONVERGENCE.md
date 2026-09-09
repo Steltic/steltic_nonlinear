@@ -1,105 +1,76 @@
-# Fibre mesh-convergence (HR first)
+# Fibre mesh-convergence + NLRHA method ladder
 
 **Status:** productised on branch `fibre-mesh-convergence`  
-**Authoritative strategy:** `/workspace/ddm_exemplars/analysis/FIBRE_MESH_CONVERGENCE_STRATEGY.md`  
-**Stop band:** **10%** relative on primary metrics (Michael, 2026-09-09)
+**Authoritative:** `/workspace/ddm_exemplars/analysis/REPO_FINALIZE_FIBRE_MESH_v1.md`  
+**Defaults list:** [PRODUCT_DEFAULTS.md](PRODUCT_DEFAULTS.md)  
+**Stop band:** **10%** relative on primary metrics
 
-## Method
+## Product paths
 
-NSP (pushover), NLRHA, and DDM all use **fibre** elements by default:
+| Analysis | Product path |
+|----------|----------------|
+| **NSP** | Fibre + mesh M0→… stop at 10% (T1, Vy, Vpeak, δt) |
+| **HR DDM** | Fibre GMNIA + mesh 10% (λu / λG / φs·λu); **rigid end offsets** on by default (Liu continuity) |
+| **CFS DDM** | Tier 2 always (`analysis_fidelity≥2`); hard-fail otherwise unless `--force`; no shell |
+| **NLRHA** | **ModIMK → PZ×1 (scissors) → fibre + mesh 10%**; dual-gate A∧B; early abort on **2 NC** |
 
-| Analysis | Default | Mesh knobs |
-|----------|---------|------------|
-| NSP / NLRHA | `--plasticity fibre --member-nseg 4` | `nseg`, `SNL_FIBRE_NIP`, `SNL_FIBRE_NF_FLANGE`, `SNL_FIBRE_NF_WEB` |
-| DDM | already fibre GMNIA | `--nsub COL BEAM BRACE`, `--nip` |
+### NLRHA method ladder (rule 1)
 
-Concentrated ModIMK remains available: `--plasticity imk` (and L2 ConcentratedPlasticity FBC via hinge_params). Fibre path **drops scissors PZ** (rigid) and skips RBS remesh — disclose in reports.
+1. Start **ModIMK** with **rigid** PZ.  
+2. Try **PZ scissors once** (still ModIMK hinges) — not a multi-rung PERFORM climb.  
+3. If Gate A still &lt;10/11 → **fibre** + mesh 10% iterations.  
+4. If Gate A hits on **ModIMK** (or ModIMK+PZ): **stay that plasticity for Gate B FC** — do **not** switch to fibre for FC.  
+5. While running 11 records: once **2 are NC**, abandon the rest of that suite and move to the **next method / mesh size**.
 
-Newton / algo cascade for NLRHA is **unchanged** (do not reorder Broyden).
+ConcentratedPlasticity auto-ladder (L1/L2/L3) is **not** a product default.
 
-## Mesh ladder
-
-| Level | Intent | NSP/NLRHA | DDM |
-|-------|--------|-----------|-----|
-| M0 | coarse | nseg=2, nf 4×2 / 8×1 | nsub 2 2 2, nip 3 |
-| M1 | working default (MC4 fibre suite) | nseg=4, nip=5, nf 8×4 / 16×2 | nsub 4 4 4, nip 5 |
-| M2 | refine | nseg=8, same fibres | nsub 8 8 6 |
-| M3 | fine | nseg=12, denser fibres | nsub 12 12 8, nip 7 |
-
-Stop at the first level where **all** primary metrics vs the previous level are within **10%** relative. Cap 4 rungs → status `not_converged_within_cap` if still moving.
-
-### NLRHA dual-gate rule (Michael)
-
-NLRHA acceptance is **two independent gates**; complete only when **A ∧ B**:
+### NLRHA dual-gate (rule 5)
 
 | Gate | Criterion | Behaviour |
 |------|-----------|-----------|
-| **A — suite / 10/11** | ≥10 of 11 records Ch.16-accepted (≤1 unacceptable) | On first pass, **lock** suite EDPs (`mean_drift_max`, roof means, `n_ok` / `n_records` / `n_unacceptable`). **Stop** further full `--n 11` suite rungs. |
-| **B — FC** | `force_controlled_ok` / `worst_FC_DC ≤ 1.0`; if FC refined across mesh levels, also ≤**10%** relative Δ on `worst_FC_DC` | After A locks, **immediately** advance an **FC-only refine** path — do **not** re-run the full 11-record suite solely to chase FC. |
+| **A — suite / 10/11** | ≥10 of 11 Ch.16-accepted | Lock suite EDPs; **stop** further full `--n 11` |
+| **B — FC** | FC accepted; ≤10% Δ if refining | FC-only path (`--n 1`); no full suite redo |
 
-Status strings (Research / SNL):
+Complete only when **A ∧ B**. Statuses: `continue`, `gate_a_locked_fc_refine`, `gate_a_locked_fc_pending`, `nlrha_complete`, `not_converged_within_cap`.
 
-- `continue` — Gate A not met; keep full-suite mesh climb  
-- `gate_a_locked_fc_refine` — A locked; schedule FC-only refine (`schedule_full_suite=False`, `schedule_fc_refine=True`)  
-- `gate_a_locked_fc_pending` — A locked; B still failing and no further FC rungs  
-- `nlrha_complete` — A ∧ B  
-- `not_converged_within_cap` — Gate A never met within rung cap  
+Newton / algo cascade is **unchanged** (no Broyden reorder).
 
-### Primary metrics
+## Mesh rungs (M0–M3, cap 4)
 
-- **NSP:** T1, Vy, Vpeak, δt  
-- **NLRHA:** Gate A suite EDPs + Gate B `worst_FC_DC` / `force_controlled_ok`  
-- **DDM:** λu (λG if gravity-first), φs·λu  
+| Level | NSP/NLRHA fibre | DDM |
+|-------|-----------------|-----|
+| M0 | nseg=2, coarse fibres | nsub 2 2 2, nip 3 |
+| M1 | nseg=4, nf 8×4 / 16×2 | nsub 4 4 4, nip 5 |
+| M2 | nseg=8 | nsub 8 8 6 |
+| M3 | nseg=12, denser | nsub 12 12 8, nip 7 |
 
 ## CLI
 
 ```bash
-# Orchestrator entry (preferred)
 python -m snl mesh-converge /path/to/job \
   --analyses nsp nlrha ddm \
-  --out /path/to/job/mesh_convergence \
-  --tol 0.10 --max-rungs 4 \
+  --tol 0.10 --max-rungs 4 --early-abort-nc 2 \
   --steltic-engine "$STELTIC_ENGINE_DIR"
 
-# Module entry
-python -m mesh_convergence --package /path/to/job --analyses nsp --dry-run
-
-# Single-analysis fibre (defaults)
-python -m pushover run JOB --plasticity fibre --member-nseg 4
-python -m nlrha run JOB --plasticity fibre --member-nseg 4
-python -m steltic_ddm run JOB --nsub 4 4 4 --nip 5
+python -m mesh_convergence --package /path/to/job --analyses nlrha --dry-run
 ```
 
-Dry-run prints the rung plan and exercises the stop-rule / scorecard writers **without** OpenSees.
+Each analysis writes `mesh_convergence_scorecard_<analysis>.{json,md}` plus `mesh_convergence_summary.{json,md}`.
 
-Each analysis writes `mesh_convergence_scorecard_<analysis>.json` under `--out`, plus `mesh_convergence_summary.json`.
-
-## Env knobs (spawn-worker safe)
+## Env knobs
 
 ```
-SNL_PLASTICITY=fibre
+SNL_PLASTICITY=imk|fibre
 SNL_MEMBER_NSEG=4
 SNL_FIBRE_NIP=5
 SNL_FIBRE_NF_FLANGE=8,4
 SNL_FIBRE_NF_WEB=16,2
-SNL_FIBRE_RESIDUAL=none
 ```
 
 ## Tests
 
 ```bash
-python -m pytest tests/test_mesh_convergence.py -q
+python -m pytest tests/test_mesh_convergence.py tests/test_product_defaults.py -q
 ```
 
-Pure-Python stop-rule / rung comparison — no OpenSees required.
-
-## Still needs OpenSees smoke (MC4)
-
-After this branch lands locally:
-
-1. Dry-run scorecard path (done in CI/unit).  
-2. MC4 NSP fibre M0→… smoke on smallest machine budget.  
-3. MC4 NLRHA fibre ladder (or reuse prior L3 nseg=4 as M1 hint — still run M0 for the formal ladder).  
-4. Orbison / MC8 DDM nsub ladder when packs are ready.
-
-Do **not** resume MC8 L2 ConcentratedPlasticity.
+Pure-Python — no OpenSees required for stop-rule / ladder / fidelity / early-abort unit tests.

@@ -47,7 +47,7 @@ def from_nlrha(nlrha_dir: str) -> dict:
         last = stories[-1]
         roof_x = last.get("mean_X") or last.get("mean_x")
         roof_y = last.get("mean_Y") or last.get("mean_y")
-    fc_rows = acc.get("force_controlled_columns") or []
+    fc_rows = acc.get("force_controlled_columns") or pkg.get("force_controlled_columns") or []
     worst_fc = None
     for r in fc_rows:
         dc = r.get("DC") or r.get("D_over_C") or r.get("dc")

@@ -314,7 +314,8 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     import os
     num = prm.get("numerics") or {}
     if plasticity is None:
-        plasticity = num.get("plasticity") or os.environ.get("SNL_PLASTICITY") or "fibre"
+        # CLI/env overrides hinge_params numerics (product ladder may force imk).
+        plasticity = os.environ.get("SNL_PLASTICITY") or num.get("plasticity") or "fibre"
     plasticity = str(plasticity).lower()
     if plasticity in ("fiber", "distributed"):
         plasticity = "fibre"

@@ -36,7 +36,8 @@ def _worker(args):
     pres = loads.present_sets(nm)
     g = GMNIAModel(nm, cfg, nsub=tuple(opts["nsub"]), residual=opts["residual"], Fy=opts.get("Fy"),
                    hardening=opts["hardening"], fast=opts["fast"], nip=opts["nip"],
-                   out_of_plumb=(imp["dir"], imp["psi"]), bow=opts["bow"], bow_sign=imp["bow_sign"], brace_bow=opts["bow"])
+                   out_of_plumb=(imp["dir"], imp["psi"]), bow=opts["bow"], bow_sign=imp["bow_sign"], brace_bow=opts["bow"],
+                   rigid_end_offset=opts.get("rigid_end_offset", False))
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
         res = solver.sweep(g, combo, pres, dlam=opts["dlam"], max_steps=opts["max_steps"], verbose=True, time_limit=opts["time_limit"])
@@ -89,6 +90,23 @@ def run(args):
         kept = [c for c in kept if any(s in c[0] for s in args.only)]
     print(">> %d combinations from Steltic, %d selected%s" % (len(cases), len(kept), " [portal CFS-P]" if portal else ""))
 
+    # CFS DDM Tier-2 fidelity gate (product rule 2) — portal entry hard-fail <2 unless --force
+    if portal:
+        from .cfs_fidelity import cfs_ddm_fidelity_gate
+        fg = cfs_ddm_fidelity_gate(cfg, force=bool(args.force))
+        print(">> CFS fidelity:", fg["message"])
+        if not fg["ok"]:
+            print("!! CFS DDM fidelity gate FAILED --", fg.get("error") or fg["message"])
+            sys.exit(3)
+
+    # HR DDM: rigid end offsets ON by default (Liu continuity); portal CFS: off
+    if getattr(args, "rigid_end_offset", None) is not None:
+        rigid_off = args.rigid_end_offset
+    elif getattr(args, "no_rigid_end_offset", False):
+        rigid_off = False
+    else:
+        rigid_off = (False if portal else 0.05)
+
     # transfer gate
     if portal:
         gate = PA.transfer_gate_portal(nm, cfg, tol=args.gate_tol, nsub=tuple(args.nsub))
@@ -102,7 +120,8 @@ def run(args):
         print("!! transfer gate FAILED --", gate["hint"]); sys.exit(2)
 
     opts = dict(nsub=list(args.nsub), residual=args.residual, Fy=args.fy, hardening=args.hardening, fast=args.fast, nip=args.nip,
-                bow=args.bow, psi=args.psi, dlam=args.dlam, max_steps=args.max_steps, time_limit=args.time_limit)
+                bow=args.bow, psi=args.psi, dlam=args.dlam, max_steps=args.max_steps, time_limit=args.time_limit,
+                rigid_end_offset=rigid_off)
     # task list: (combo, imperfection case)
     tasks = []
     for c in kept:
@@ -195,7 +214,8 @@ def run(args):
         report_ddm.write_block(job, block)
     # model export (nominal, +X lean)
     try:
-        g = GMNIAModel(nm, cfg, nsub=tuple(args.nsub), residual=args.residual, out_of_plumb=("X", args.psi), bow=args.bow, brace_bow=args.bow, fast=args.fast)
+        g = GMNIAModel(nm, cfg, nsub=tuple(args.nsub), residual=args.residual, out_of_plumb=("X", args.psi), bow=args.bow, brace_bow=args.bow, fast=args.fast,
+                       rigid_end_offset=rigid_off)
         g.export_py(os.path.join(out_dir, "model_gmnia.py"), header="%s (out-of-plumb +X H/%d, L/%d bows, %s residual)" % (nm.name, round(1 / args.psi), round(1 / args.bow), args.residual))
     except Exception as ex:
         print("   model export skipped:", ex)
@@ -328,7 +348,10 @@ def main(argv=None):
     r.add_argument("--sensitivity", action="store_true")
     r.add_argument("--gate-tol", type=float, default=0.05)
     r.add_argument("--risk-category", default=None, choices=["I", "II", "III", "IV"], help="ASCE 7 Risk Category (default: from cfg / Ie)")
-    r.add_argument("--force", action="store_true", help="continue even if the transfer gate fails")
+    r.add_argument("--force", action="store_true", help="continue even if the transfer / CFS fidelity gate fails")
+    r.add_argument("--rigid-end-offset", type=float, default=None, metavar="FRAC",
+                   help="HR DDM: rigid beam end offset fraction of L (default 0.05 for HR; off for CFS portal)")
+    r.add_argument("--no-rigid-end-offset", action="store_true", help="disable rigid end offsets (Liu continuity stubs)")
     r.add_argument("--no-block", action="store_true", help="do not write ddm_analysis into calc_package.json")
     v = sub.add_parser("viewer", help="rebuild ddm_viewer_3d.html from ddm_results.json")
     v.add_argument("job_dir"); v.add_argument("--out", default=None); v.add_argument("--steltic-engine", default=None)
