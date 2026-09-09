@@ -7,3 +7,4 @@ build/
 dist/
 **/raw_results.pkl
 **/_demand_cache.json
+.env

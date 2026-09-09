@@ -19,7 +19,7 @@ python -m snl run Ex22_SMF.zip --params ex22_hinge_params.json --steltic-engine 
 
 The Grok Bot **Steltic Nonlinear (SNL)** is set up like every other Steltic bot: create the bot, paste the two prompts in
 `prompts/bootstrap_prompts.md` — Prompt 1 loads the skills (`Skill_querying_PACKAGED.md` from `steltic_grokbot` +
-`skills/Skill_SNL_PACKAGED.md` from here), Prompt 2 starts "Clone https://github.com/Steltic/steltic_nonlinear …" and
+`skills/Skill_SNL_PACKAGED.md` from here), Prompt 2 starts "Clone https://github.com/Steltic/Steltic_nonlinear …" and
 installs, proves the example and sets the per-job protocol. The bot then wraps the command in the engineering protocol: it retrieves the component parameters from ASCE/SEI 41-23 → ANSI/AISC 342-22
 through Query file manager, fills the job copy of `hinge_params.json`, runs, judges each result with its own rules
 (BPON levels for the Risk Category, Chapter 16 RC rules, the transfer gate and φ<sub>s</sub> class), and writes the
@@ -29,6 +29,14 @@ four-analyses narrative.
 > banner until a job copy filled from the standards is passed with `--params`); φ<sub>s</sub> is a literature value;
 > Chapter 16 requires design criteria (16.1.4) and independent review (16.5). Every result must be checked and sealed by a
 > licensed professional engineer.
+
+## Product defaults
+
+See [`docs/PRODUCT_DEFAULTS.md`](docs/PRODUCT_DEFAULTS.md) (rules 1–9) and [`docs/FIBRE_MESH_CONVERGENCE.md`](docs/FIBRE_MESH_CONVERGENCE.md).
+
+- **NSP / HR DDM:** fibre + mesh 10%
+- **NLRHA:** ModIMK → PZ×1 → fibre+mesh; dual-gate; early abort on 2 NC
+- **CFS DDM:** Tier 2 fidelity gate (no shell)
 
 ## Install
 
@@ -100,3 +108,14 @@ engines' own smoke tests pointed at the packaged examples (the DDM Ex18 ingest/g
 
 MIT (see `LICENSE`, `NOTICE.md`). No specification text is included; clause and table numbers are retrieval targets for
 Query file manager.
+
+## Fibre mesh-convergence
+
+Fibre is the default plasticity for NSP and NLRHA (`--plasticity fibre --member-nseg 4`).
+DDM remains fibre GMNIA. Run a mesh ladder with a **10%** relative stop band:
+
+```bash
+python -m snl mesh-converge <job> --analyses nsp nlrha ddm --tol 0.10
+```
+
+See [`docs/FIBRE_MESH_CONVERGENCE.md`](docs/FIBRE_MESH_CONVERGENCE.md).

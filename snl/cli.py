@@ -69,8 +69,15 @@ def cmd_run(a):
     for s in steps:
         if s == "pushover":
             cmd = [py, "-m", "pushover", "run", job] + site + params + (["--tail", a.tail] if a.tail else []) + (["--post-cap-ratio", str(a.post_cap_ratio)] if a.post_cap_ratio else [])
+            plast = a.plasticity if a.plasticity else "fibre"
+            nseg = a.member_nseg if a.member_nseg is not None else (4 if plast == "fibre" else 1)
+            cmd += ["--plasticity", plast, "--member-nseg", str(nseg)]
         elif s == "nlrha":
             cmd = [py, "-m", "nlrha", "run", job, "--parallel", str(a.parallel), "--dt", str(a.dt), "--integrator", a.integrator, "--n", str(a.n_records)] + site + params
+            # Product rule 1: NLRHA starts ModIMK; fibre via mesh-converge ladder
+            plast = a.plasticity if a.plasticity else "imk"
+            nseg = a.member_nseg if a.member_nseg is not None else (4 if plast in ("fibre", "fiber") else 1)
+            cmd += ["--plasticity", plast, "--member-nseg", str(nseg)]
             if a.risk_category: cmd += ["--risk-category", a.risk_category]
         else:
             if not env.get("STELTIC_ENGINE_DIR"):
@@ -125,9 +132,25 @@ def main(argv=None):
     r.add_argument("--n-records", type=int, default=11); r.add_argument("--site-class", default="D"); r.add_argument("--risk-category", choices=["I", "II", "III", "IV"])
     r.add_argument("--tail", choices=["auto", "fine_step", "arclength", "none"]); r.add_argument("--post-cap-ratio", type=float, help="tail-protocol rung 3 (disclosed modelling change)")
     r.add_argument("--no-block", action="store_true", help="DDM: do not write the ddm_analysis block into calc_package.json")
+    r.add_argument("--plasticity", default=None, choices=["fibre", "fiber", "imk"], help="override plasticity (defaults: NSP fibre, NLRHA imk)")
+    r.add_argument("--member-nseg", type=int, default=None, help="member subdivisions (default 4 fibre / 1 imk)")
+    mc = sub.add_parser("mesh-converge", help="fibre mesh-convergence ladder (NSP/NLRHA/DDM) with JSON scorecard")
+    mc.add_argument("package"); mc.add_argument("--analyses", nargs="+", default=["nsp", "nlrha", "ddm"], choices=["nsp", "nlrha", "ddm", "pushover"])
+    mc.add_argument("--out"); mc.add_argument("--steltic-engine"); mc.add_argument("--params")
+    mc.add_argument("--tol", type=float, default=0.10, help="relative stop band on primary metrics (default 0.10 = 10%%)")
+    mc.add_argument("--max-rungs", type=int, default=4); mc.add_argument("--site-class", default="D")
+    mc.add_argument("--risk-category", choices=["I", "II", "III", "IV"]); mc.add_argument("--n-records", type=int, default=11)
+    mc.add_argument("--parallel", type=int, default=1); mc.add_argument("--dt", type=float, default=0.01)
+    mc.add_argument("--dry-run", action="store_true", help="print rung plan + stop-rule only; no OpenSees")
+    mc.add_argument("--early-abort-nc", type=int, default=2, help="NLRHA: abandon suite after N NC records (product default 2)")
+    mc.add_argument("--rigid-end-offset", type=float, default=None, help="HR DDM rigid end offset fraction")
+    mc.add_argument("--no-rigid-end-offset", action="store_true")
     p = sub.add_parser("report"); p.add_argument("job")
     i = sub.add_parser("inspect"); i.add_argument("package"); i.add_argument("--out")
     a = ap.parse_args(argv)
+    if a.cmd == "mesh-converge":
+        from mesh_convergence.driver import main as mc_main
+        return mc_main(a)
     return {"run": cmd_run, "report": cmd_report, "inspect": cmd_inspect}[a.cmd](a)
 
 

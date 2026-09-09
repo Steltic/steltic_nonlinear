@@ -5,11 +5,32 @@ with the strong-axis rotational spring a ModIMKPeakOriented material (params fro
 DOF of the zeroLength rigid. The interior element keeps the ORIGINAL geomTransf (so P-Delta stays on for columns)
 and has its hinged-axis inertia scaled by (n+1)/n, the spring K0 = n*6EI/L (Ibarra & Krawinkler, n = 10).
 Nodes, fixes, masses and rigid diaphragms are replayed exactly as recorded in model_opensees.py.
+
+Optional panel zones (hinge_params panel_zones.mode): default "rigid" (unchanged). "scissors" inserts a
+joint-centerline rotational spring between the column joint node and a coincident FR-beam attachment node
+(zeroLength on all 6 DOFs: rigid translations/torsion/unused flexure + PZ spring on active rot DOF(s)).
+Do not use equalDOF to an RD slave here — it conflicts with rigidDiaphragm under Transformation.
+IMK end hinges stay on member ends; do not also apply a C5.4a PZ ductility modifier when scissors is on
+(double-counting). Not a full 8-bar Krawinkler rectangle.
+Optional RBS 7-seg (beam_flexure.rbs_segments=7 + rbs_geometry_*): FR beams remeshed into 7
+elasticBeamColumn segments with reduced flange props in RBS zones; ModIMK ZL hinges at RBS centres
+(offset a+b/2), not at every segment joint. Still ZL architecture by default.
+
+Optional L2 (numerics.element_form=concentrated_plasticity_fbc or
+beam_flexure.integration=ConcentratedPlasticity): FR hinged beams/cols become
+forceBeamColumn + ConcentratedPlasticity (Uniaxial ModIMK ends + Elastic mid).
+Scissors PZ retained; RBS uses elastic stubs + CP midspan at RBS centres when geometry fits.
+
+Default method (HR wave): plasticity="fibre" — forceBeamColumn + Lobatto fibre sections
+(see fibre_model.py). IMK / ConcentratedPlasticity remain available via --plasticity imk or
+numerics.element_form. Fibre path drops scissors PZ (rigid) and skips RBS remesh.
 """
 from __future__ import annotations
 import math
 import openseespy.opensees as ops
 from . import hinge_models as HM
+from . import rbs_remesh as RBS
+from . import fbc_concentrated as FBC
 
 G_IN = 386.4
 N_STIFF = 10.0
@@ -19,6 +40,10 @@ RIGID_T, RIGID_R = 1.0e9, 1.0e11
 HN_BASE = 20_000_000          # hinge node tags: HN_BASE + ele*10 + (1|2)
 ZL_BASE = 30_000_000          # zeroLength tags: ZL_BASE + ele*10 + (1|2)
 MAT_BASE = 40_000_000
+PZ_NODE_BASE = 50_000_000     # scissors beam-side node: PZ_NODE_BASE + joint_node
+PZ_ZL_BASE = 60_000_000       # scissors PZ zeroLength: PZ_ZL_BASE + joint_node
+SEG_NODE_BASE = 70_000_000     # intermediate mesh nodes: SEG_NODE_BASE + ele*100 + i
+SEG_ELE_BASE = 80_000_000      # sub-element tags (i>0): SEG_ELE_BASE + ele*100 + i
 
 
 def _dir_vec(p1, p2):
@@ -51,6 +76,60 @@ def strong_I_slot(pkg, e, kind):
     """Which elasticBeamColumn inertia argument (Iy or Iz) is the strong-axis one for this member.
     steltic add_column passes (Iy_weak, Ix_strong) -> 'Iz'; add_beam passes (Ix_strong, Iy_weak) -> 'Iy'."""
     return "Iz" if kind == "col" else "Iy"
+
+
+def _major_release_code(e, slot):
+    rel = e.get("release") or []
+    flag = "-releasey" if slot == "Iy" else "-releasez"
+    return int(rel[rel.index(flag) + 1]) if flag in rel else 0
+
+
+def _end_is_released(relz, end):
+    return (end == 1 and relz in (1, 3)) or (end == 2 and relz in (2, 3))
+
+
+def fr_joint_plan(pkg):
+    """FR moment-frame joints for scissors PZ: nodes with ≥1 unreleased column end and ≥1 unreleased beam end.
+
+    Returns {joint_node: {dof: {"col_section", "beam_sections": [...], "beam_ends": [(ele, end), ...]}}}.
+    Pin-released ends are excluded. One rotational spring per active strong-axis DOF (4 and/or 5).
+    """
+    from collections import defaultdict
+    from . import sections_db as SDB
+    cols_at = defaultdict(list)   # joint -> list of (sec, dof)
+    beams_at = defaultdict(list)  # joint -> list of (ele, end, sec, dof)
+    for e in pkg.model.elements:
+        if "etype" in e:
+            continue
+        kind = member_kind(pkg, e)
+        if kind not in ("col", "beam"):
+            continue
+        sec = pkg.schedule.get(e["tag"], {}).get("section")
+        if not sec:
+            continue
+        slot = strong_I_slot(pkg, e, kind)
+        relz = _major_release_code(e, slot)
+        dof = strong_rot_dof(pkg, e, kind)
+        for end, n in ((1, e["n1"]), (2, e["n2"])):
+            if _end_is_released(relz, end):
+                continue
+            if kind == "col":
+                cols_at[n].append((sec, dof))
+            else:
+                beams_at[n].append((e["tag"], end, sec, dof))
+    plan = {}
+    for n, beams in beams_at.items():
+        if n not in cols_at:
+            continue
+        best_col = max(cols_at[n], key=lambda sd: SDB.props(sd[0])["d"] * SDB.props(sd[0])["tw"])
+        col_sec = best_col[0]
+        by_dof = {}
+        for ele, end, sec, dof in beams:
+            slot = by_dof.setdefault(dof, {"col_section": col_sec, "beam_sections": [], "beam_ends": []})
+            slot["beam_sections"].append(sec)
+            slot["beam_ends"].append((ele, end))
+        plan[n] = by_dof
+    return plan
 
 
 def levels(pkg):
@@ -134,8 +213,144 @@ def column_gravity_axials(pkg, loads):
     return PG
 
 
-def build_nonlinear(pkg, prm, PG, verbose=True):
-    """Build the hinge model. Returns a registry describing every hinge (for recording/acceptance)."""
+
+def _build_rbs7_beam(pkg, e, prm, sec, spec, slot, dof, p1, p2, L, geo, beam_side, mat, hinges, stats):
+    """Remesh one FR SMF beam into 7 elastic segments + 2 ModIMK ZL at RBS centres.
+
+    Returns updated mat tag counter. Populates hinges/stats like the single-span path.
+    """
+    a, b, c = geo["a_in"], geo["b_in"], geo["c_in"]
+    RBS.segment_stations(L, a, b)  # validate fit
+    inode, seg_ele = RBS.remesh_tags(e["tag"])
+    I_strong = e[slot]
+    I_weak = e["Iz"] if slot == "Iy" else e["Iy"]
+    red = RBS.reduced_props(sec, c, e["A"], I_strong, I_weak, e["J"])
+
+    attach_i = beam_side[e["n1"]] if e["n1"] in beam_side else e["n1"]
+    attach_j = beam_side[e["n2"]] if e["n2"] in beam_side else e["n2"]
+
+    # Coincident hinge-split nodes at RBS centres (offset a+b/2 from each joint)
+    xyz_i = RBS.xyz_along(p1, p2, a + 0.5 * b, L)
+    xyz_j = RBS.xyz_along(p1, p2, L - (a + 0.5 * b), L)
+    n_out_i = inode(1)
+    n_in_i = HN_BASE + e["tag"] * 10 + 1
+    n_in_j = HN_BASE + e["tag"] * 10 + 2
+    n_out_j = inode(2)
+    for nt, xyz in ((n_out_i, xyz_i), (n_in_i, xyz_i), (n_in_j, xyz_j), (n_out_j, xyz_j)):
+        ops.node(nt, *xyz)
+
+    # Continuum nodes at s = a, a+b, L-(a+b), L-a
+    s_cont = (a, a + b, L - (a + b), L - a)
+    n_cont = []
+    for k, s in enumerate(s_cont):
+        nt = inode(3 + k)
+        ops.node(nt, *RBS.xyz_along(p1, p2, s, L))
+        n_cont.append(nt)
+    n1, n3, n4, n6 = n_cont  # names match station sketch
+
+    # seg endpoints: (idx, ni, nj, kind)
+    ends = [
+        (1, attach_i, n1, "full"),
+        (2, n1, n_out_i, "rbs"),
+        (3, n_in_i, n3, "rbs"),
+        (4, n3, n4, "full"),
+        (5, n4, n_in_j, "rbs"),
+        (6, n_out_j, n6, "rbs"),
+        (7, n6, attach_j, "full"),
+    ]
+    I_mid = I_strong * (N_STIFF + 1.0) / N_STIFF
+    seg_tags = []
+    for idx, ni, nj, kind in ends:
+        A, J = e["A"], e["J"]
+        Iy, Iz = e["Iy"], e["Iz"]
+        if kind == "rbs":
+            A, J = red["A"], red["J"]
+            if slot == "Iy":
+                Iy, Iz = red["I_strong"], red["I_weak"]
+            else:
+                Iz, Iy = red["I_strong"], red["I_weak"]
+        elif idx == 4:
+            if slot == "Iy":
+                Iy = I_mid
+            else:
+                Iz = I_mid
+        et = seg_ele(idx)
+        ops.element("elasticBeamColumn", et, ni, nj, A, e["E"], e["G"], J, Iy, Iz, e["transf"])
+        seg_tags.append(et)
+        stats.setdefault("elastic_ele_tags", []).append(et)
+
+    K0 = N_STIFF * 6.0 * e["E"] * I_strong / L
+    post = prm.get("numerics", {}).get("post_cap_ratio", 0.15)
+    other_rot = 4 if dof == 5 else 5
+    for end, n_a, n_b, joint in (
+        (1, n_out_i, n_in_i, e["n1"]),
+        (2, n_out_j, n_in_j, e["n2"]),
+    ):
+        mat += 1
+        HM.make_imk_material(mat, spec, K0, post_cap_ratio=post)
+        mats = {1: 1, 2: 1, 3: 1, other_rot: 2, 6: 2, dof: mat}
+        zl = ZL_BASE + e["tag"] * 10 + end
+        ops.element("zeroLength", zl, n_a, n_b, "-mat", *[mats[k] for k in (1, 2, 3, 4, 5, 6)],
+                    "-dir", 1, 2, 3, 4, 5, 6)
+        hinges[zl] = dict(ele=e["tag"], end=end, kind="beam", section=sec, dof=dof, K0=K0, mat=mat,
+                          node=joint, z=p1[2] if end == 1 else p2[2], spec=spec,
+                          rbs_offset_in=a + 0.5 * b)
+    stats["beam"] += 1
+    stats["rbs_remesh_beams"] = stats.get("rbs_remesh_beams", 0) + 1
+    stats.setdefault("rbs_formula", red.get("formula"))
+    stats.setdefault("rbs_seg_tags_sample", seg_tags[:3] + [seg_tags[-1]])
+    return mat
+
+
+def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=None,
+                    fibre_nip=5, fibre_nf_flange=(8, 4), fibre_nf_web=(16, 2), fibre_residual="none"):
+    """Build the nonlinear model. Returns (hinges, stats).
+
+    plasticity: "fibre" (default; distributed forceBeamColumn) or "imk" (concentrated ModIMK /
+    optional L2 ConcentratedPlasticity FBC / RBS remesh). Override via arg, numerics.plasticity,
+    or SNL_PLASTICITY.
+    member_nseg: fibre/IMK member subdivisions (default 4 for fibre, 1 for imk). SNL_MEMBER_NSEG.
+    """
+    import os
+    num = prm.get("numerics") or {}
+    if plasticity is None:
+        # CLI/env overrides hinge_params numerics (product ladder may force imk).
+        plasticity = os.environ.get("SNL_PLASTICITY") or num.get("plasticity") or "fibre"
+    plasticity = str(plasticity).lower()
+    if plasticity in ("fiber", "distributed"):
+        plasticity = "fibre"
+    if member_nseg is None:
+        member_nseg = num.get("member_nseg") or os.environ.get("SNL_MEMBER_NSEG")
+        if member_nseg is None:
+            member_nseg = 4 if plasticity == "fibre" else 1
+    member_nseg = int(member_nseg)
+    os.environ.setdefault("SNL_PLASTICITY", plasticity)
+    os.environ.setdefault("SNL_MEMBER_NSEG", str(member_nseg))
+    if plasticity == "fibre":
+        from . import fibre_model as FM
+        def _pair(env_key, default):
+            raw = os.environ.get(env_key)
+            if not raw:
+                return default
+            parts = [int(x.strip()) for x in raw.replace("x", ",").split(",") if x.strip()]
+            if len(parts) != 2:
+                raise ValueError("%s expects two ints, got %r" % (env_key, raw))
+            return tuple(parts)
+        nip = int(os.environ.get("SNL_FIBRE_NIP", fibre_nip) or fibre_nip)
+        nf_flange = _pair("SNL_FIBRE_NF_FLANGE", fibre_nf_flange)
+        nf_web = _pair("SNL_FIBRE_NF_WEB", fibre_nf_web)
+        residual = str(os.environ.get("SNL_FIBRE_RESIDUAL", fibre_residual) or fibre_residual)
+        # allow numerics overrides
+        if num.get("fibre_nip") is not None:
+            nip = int(num["fibre_nip"])
+        if num.get("fibre_nf_flange"):
+            nf_flange = tuple(num["fibre_nf_flange"])
+        if num.get("fibre_nf_web"):
+            nf_web = tuple(num["fibre_nf_web"])
+        if num.get("fibre_residual"):
+            residual = str(num["fibre_residual"])
+        return FM.build_fibre(pkg, prm, PG, verbose=verbose, nseg=max(1, member_nseg),
+                              nip=nip, nf_flange=nf_flange, nf_web=nf_web, residual=residual)
     m = pkg.model
     ops.wipe(); ops.model("basic", "-ndm", m.ndm, "-ndf", m.ndf)
     for t, xyz in m.nodes.items():
@@ -154,13 +369,27 @@ def build_nonlinear(pkg, prm, PG, verbose=True):
             ops.uniaxialMaterial(*a)
     ops.uniaxialMaterial("Elastic", 1, RIGID_T)
     ops.uniaxialMaterial("Elastic", 2, RIGID_R)
+    FBC._SOFT_READY = False  # recreate soft Uniaxial after wipe (L2 FBC)
     hinges = {}          # zl_tag -> dict(ele, end, kind, section, dof, K0, spec) ; braces: tag -> dict(kind='brace', ...)
     mat = MAT_BASE
-    stats = dict(col=0, beam=0, brace=0, brace_nonlinear=0, force_controlled=0, released_ends=0)
+    stats = dict(col=0, beam=0, brace=0, brace_nonlinear=0, force_controlled=0, released_ends=0,
+                 panel_zones=0, panel_zone_mode="rigid", rbs_remesh_beams=0, elastic_ele_tags=[],
+                 plasticity="imk", member_nseg=member_nseg)
+    pz_mode = HM.panel_zone_mode(prm)
+    stats["panel_zone_mode"] = pz_mode
+    beam_side = {}       # joint_node -> scissors FR-beam attachment node
+    pz_plan = {}
+    if pz_mode == "scissors":
+        pz_plan = fr_joint_plan(pkg)
+        for nj in pz_plan:
+            bn = PZ_NODE_BASE + nj
+            beam_side[nj] = bn
+            ops.node(bn, *m.nodes[nj])
+            ops.mass(bn, *([tiny] * 6))
     for e in m.elements:
         if "etype" in e:                                    # raw (non-elasticBeamColumn) element
             kind = member_kind(pkg, e); sec = pkg.schedule.get(e["tag"], {}).get("section")
-            if e["etype"] in ("Truss", "truss", "corotTruss") and kind == "brace" and sec:
+            if e["etype"] in ("Truss", "truss", "corotTruss") and kind == "brace" and sec and str(sec).upper() != "GHOST":
                 p1, p2 = m.nodes[e["n1"]], m.nodes[e["n2"]]; _, L = _dir_vec(p1, p2)
                 spec = HM.brace_spec(sec, L, prm)
                 mat += 1; HM.make_brace_material(mat, spec, prm)
@@ -199,6 +428,23 @@ def build_nonlinear(pkg, prm, PG, verbose=True):
         if spec.force_controlled:
             hinge_i = hinge_j = False; stats["force_controlled"] += 1
         stats["released_ends"] += (0 if hinge_i else 1) + (0 if hinge_j else 1)
+        # L2: ConcentratedPlasticity + forceBeamColumn (gated). Skips ZL / RBS7-ZL path.
+        if FBC.want_fbc(prm) and (hinge_i or hinge_j) and not spec.force_controlled:
+            mat = FBC.build_fbc_member(
+                pkg, e, prm, sec, spec, slot, dof, p1, p2, L, kind,
+                hinge_i, hinge_j, beam_side, mat, hinges, stats, verbose=verbose,
+            )
+            continue
+        geo = RBS.want_rbs_remesh(kind, sec, hinge_i, hinge_j, prm)
+        if geo is not None:
+            try:
+                mat = _build_rbs7_beam(pkg, e, prm, sec, spec, slot, dof, p1, p2, L, geo, beam_side, mat, hinges, stats)
+                continue
+            except Exception as ex:
+                # Fall through to single-span path if remesh cannot fit / fails
+                stats.setdefault("rbs_remesh_errors", []).append(dict(ele=e["tag"], section=sec, err=str(ex)))
+                if verbose:
+                    print("[nonlinear_model] RBS 7-seg fallback ele %s (%s): %s" % (e["tag"], sec, ex))
         # interior elastic element between hinge nodes (or original nodes where no hinge)
         ni, nj = e["n1"], e["n2"]
         if hinge_i:
@@ -210,6 +456,7 @@ def build_nonlinear(pkg, prm, PG, verbose=True):
             args[slot] = I * (N_STIFF + 1.0) / N_STIFF
         ops.element("elasticBeamColumn", e["tag"], ni, nj, args["A"], args["E"], args["G"], args["J"],
                     args["Iy"], args["Iz"], e["transf"], *rel)
+        stats.setdefault("elastic_ele_tags", []).append(e["tag"])
         K0 = N_STIFF * 6.0 * e["E"] * I / L
         for end, on, no, nn in ((1, hinge_i, e["n1"], ni), (2, hinge_j, e["n2"], nj)):
             if not on:
@@ -219,15 +466,47 @@ def build_nonlinear(pkg, prm, PG, verbose=True):
             other_rot = 4 if dof == 5 else 5
             mats = {1: 1, 2: 1, 3: 1, other_rot: 2, 6: 2, dof: mat}
             zl = ZL_BASE + e["tag"] * 10 + end
-            ops.element("zeroLength", zl, no, nn, "-mat", *[mats[k] for k in (1, 2, 3, 4, 5, 6)], "-dir", 1, 2, 3, 4, 5, 6)
+            # Scissors: FR beam ends attach to beam-side node; columns stay on the joint (column continuity).
+            attach = beam_side[no] if (kind == "beam" and no in beam_side) else no
+            ops.element("zeroLength", zl, attach, nn, "-mat", *[mats[k] for k in (1, 2, 3, 4, 5, 6)], "-dir", 1, 2, 3, 4, 5, 6)
             hinges[zl] = dict(ele=e["tag"], end=end, kind=kind, section=sec, dof=dof, K0=K0, mat=mat,
                               node=no, z=p1[2] if end == 1 else p2[2], spec=spec)
         stats[kind] += 1
+    # Scissors panel-zone springs at FR joints (after member hinges, before diaphragms).
+    # Use a single 6-DOF zeroLength (rigid on non-PZ DOFs + spring on active rot) — NOT equalDOF.
+    # equalDOF(nj, bn, ...) with nj already a rigidDiaphragm slave breaks Transformation modes/push
+    # (short spurious T1, collapsed base shear). Beam-side nodes stay out of RD slave lists; they
+    # inherit in-plane motion through the rigid translational DOFs of this zeroLength.
+    pz_registry = {}
+    if pz_mode == "scissors" and pz_plan:
+        for nj, by_dof in pz_plan.items():
+            bn = beam_side[nj]
+            active = sorted(by_dof)
+            # mats 1=RIGID_T, 2=RIGID_R already defined above
+            zl_mats = {1: 1, 2: 1, 3: 1, 4: 2, 5: 2, 6: 2}
+            mat_tags, dirs, specs = [], [], []
+            for dof in active:
+                info = by_dof[dof]
+                pz_spec = HM.panel_zone_spec(nj, dof, info["col_section"], info["beam_sections"], prm)
+                mat += 1
+                HM.make_panel_zone_material(mat, pz_spec)
+                zl_mats[dof] = mat
+                mat_tags.append(mat); dirs.append(dof); specs.append(pz_spec)
+            zl = PZ_ZL_BASE + nj
+            ops.element("zeroLength", zl, nj, bn,
+                        "-mat", *[zl_mats[k] for k in (1, 2, 3, 4, 5, 6)],
+                        "-dir", 1, 2, 3, 4, 5, 6)
+            pz_registry[zl] = dict(joint=nj, beam_node=bn, dofs=dirs, mats=mat_tags,
+                                   specs=[s.as_dict() for s in specs], kind="panel_zone")
+            stats["panel_zones"] += 1
+    stats["panel_zone_registry"] = pz_registry
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
     if verbose:
-        print("[nonlinear_model] hinges: %d  (cols %d, beams %d, brace elements %d of which nonlinear %d, force-controlled cols %d, released ends %d)"
-              % (len(hinges), stats["col"], stats["beam"], stats["brace"], stats["brace_nonlinear"], stats["force_controlled"], stats["released_ends"]))
+        print("[nonlinear_model] hinges: %d  (cols %d, beams %d, brace elements %d of which nonlinear %d, force-controlled cols %d, released ends %d, panel_zones %s=%d, rbs7=%d, fbc_cp=%d, elastic_eles=%d)"
+              % (len(hinges), stats["col"], stats["beam"], stats["brace"], stats["brace_nonlinear"], stats["force_controlled"], stats["released_ends"],
+                 stats["panel_zone_mode"], stats["panel_zones"], stats.get("rbs_remesh_beams", 0),
+                 stats.get("fbc_cp_members", 0), len(stats.get("elastic_ele_tags") or [])))
     return hinges, stats
 
 
@@ -361,8 +640,17 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
                 d = ops.eleResponse(t, "deformation"); f = ops.eleResponse(t, "axialForce")
                 pl.append(d[0] if d else 0.0); MM.append(f[0] if f else 0.0)     # TOTAL axial deformation (in); limits are total-deformation multiples
                 continue
+            h = hinges[t]
+            if h.get("form") == "fbc_cp":
+                ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
+                d = ops.eleResponse(h["ele"], "section", ip, "deformation")
+                f = ops.eleResponse(h["ele"], "section", ip, "force")
+                th = d[jc] if (d and len(d) > jc) else 0.0
+                M = f[jc] if (f and len(f) > jc) else 0.0
+                pl.append(th - M / K0[i]); MM.append(M)
+                continue
             d = ops.eleResponse(t, "deformation"); f = ops.eleResponse(t, "force")
-            j = hinges[t]["dof"] - 1
+            j = h["dof"] - 1
             th = d[j] if len(d) >= 6 else 0.0; M = f[j] if len(f) >= 6 else 0.0
             pl.append(th - M / K0[i]); MM.append(M)
         rec["hinge_pl"].append(pl); rec["hinge_M"].append(MM)

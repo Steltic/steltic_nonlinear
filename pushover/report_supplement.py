@@ -111,11 +111,15 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                    ("V_design_kip", "ELF design base shear V (kip)"), ("T_design_s", "Design period T (s)"), ("L_floor_psf", "Floor live load (psf)")):
         H.append("<tr><td>%s</td><td>%s</td><td>%s</td></tr>" % (lab, _f(getattr(b, k)), b.sources.get(k, "—")))
     H.append("</table>")
+    _pz = (prm.get("panel_zones") or {}).get("mode", "rigid")
+    _npz = hinge_stats.get("panel_zones", 0) if hinge_stats else 0
     H.append("<p>Model converted from <code>model_opensees.py</code>: %d nodes, %d elements → %d concentrated plastic hinges "
              "(%d columns, %d beams, %d force-controlled columns without hinge, %d released ends kept pinned). Column P-Δ transforms and "
-             "rigid diaphragms retained from the linear model; hinge springs K<sub>0</sub> = 10·6EI/L with interior stiffness ×11/10.</p>"
+             "rigid diaphragms retained from the linear model; hinge springs K<sub>0</sub> = 10·6EI/L with interior stiffness ×11/10; "
+             "panel zones <code>%s</code>%s.</p>"
              % (len(pkg.model.nodes), len(pkg.model.elements), sum(len(r["hinge_tags"]) for r in runs.values()) // max(len(runs), 1),
-                hinge_stats["col"], hinge_stats["beam"], hinge_stats["force_controlled"], hinge_stats["released_ends"]))
+                hinge_stats["col"], hinge_stats["beam"], hinge_stats["force_controlled"], hinge_stats["released_ends"],
+                _pz, (" (%d FR joints)" % _npz) if str(_pz).lower() == "scissors" else ""))
     H.append("<h3>Gravity load present during the push: %s</h3><table><tr><th>Level</th><th>z (in)</th><th>Q<sub>D</sub> (kip)</th>"
              "<th>0.25 Q<sub>L</sub> (kip)</th><th>Q<sub>G</sub> applied (kip)</th><th>column nodes</th><th>footprint (ft²)</th></tr>" % prm["gravity_for_pushover"]["expr"])
     for r in gravity_table:
@@ -210,11 +214,23 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
 
     # 4 verification list
     H.append("<h2>4. Items the Pushover Analyst must verify before this supplement is issued</h2><ol>")
+    pz_mode = (prm.get("panel_zones") or {}).get("mode", "rigid")
+    pz_mat = (prm.get("panel_zones") or {}).get("material", "elastic")
+    n_pz = (hinge_stats or {}).get("panel_zones", 0)
+    if str(pz_mode).lower() == "scissors":
+        pz_item = ("Panel zones: scissors-style joint rotational springs (mode=<code>scissors</code>, material=<code>%s</code>, "
+                   "%d FR joints) at the centreline between the column node and FR-beam attachment node; "
+                   "IMK end hinges retained. Not a full 8-bar Krawinkler model (no geometric rigid offsets). "
+                   "Do not also apply the C5.4a PZ ductility modifier. Bare frame, no composite slab — consider NIST GCR 17-917-46v2."
+                   % (pz_mat, n_pz))
+    else:
+        pz_item = ("Panel zones rigid, no composite-slab stiffness, bare centreline model — same idealisation as the linear package; "
+                   "set <code>panel_zones.mode=scissors</code> in hinge_params for opt-in flexible PZ (ATC-114); consider NIST GCR 17-917-46v2.")
     items = ["hinge_params.json is <code>verified=false</code> — retrieve ASCE 41-23 Ch. 9 → AISC 342-22 component tables (beams, columns with P<sub>G</sub>/P<sub>ye</sub>, braces) and overwrite the placeholders.",
              "Confirm ASCE 41-23 clause numbering for the NSP (7.4.3.x), target displacement (Eq. 7-28..7-32), C<sub>m</sub> (Table 7-4) and C<sub>0</sub> (Table 7-5 or Γ<sub>1</sub>φ<sub>r</sub>) — quoted here from ASCE 41-17 memory.",
              "Site class for C<sub>1</sub> assumed %s (a = %d); T<sub>L</sub> ignored in the spectrum; BSE-2N taken as 1.5 × design spectrum — confirm with the project hazard." % (prm["nsp"]["default_site_class"], prm["nsp"]["C1_site_factor_a"][prm["nsp"]["default_site_class"]]),
              "Gravity in the push distributed equally to column nodes per level (footprint from node extents); replace with tributary loads from model_static.py for irregular plans.",
-             "Panel zones rigid, no composite-slab stiffness, bare centreline model — same idealisation as the linear package; consider NIST GCR 17-917-46v2 panel-zone / slab guidance for SMF.",
+             pz_item,
              "Force-controlled actions (column axial, connection welds/bolts) reported as P/P<sub>ye</sub> only; run the Eq. 7-38 check with γχ factors.",
              "Higher-mode check: NSP must be supplemented by an LDP where higher modes are significant (story shear from a 90%-mass MRSA > 130% of the first-mode shear) — perform with the linear package's RS results."]
     H += ["<li>%s</li>" % i for i in items]

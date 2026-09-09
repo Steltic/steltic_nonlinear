@@ -20,7 +20,7 @@ Load **two** skills, exactly as for HR Steel App:
 Paste this into the bot:
 
 ```
-Clone https://github.com/Steltic/steltic_nonlinear onto your computer, next to the Steltic repository (the DDM step needs its steel_engine folder). Create a Python 3.12 venv (openseespy only ships wheels for 3.10–3.12) and `pip install -e .` in the repo — that installs the three engines (pushover, nlrha, steltic_ddm), the orchestrator (snl), openseespy, numpy, scipy and matplotlib; the P-695 ground-motion library ships in records/. Set STELTIC_ENGINE_DIR to the absolute path of steltic/steel_engine.
+Clone https://github.com/Steltic/Steltic_nonlinear onto your computer, next to the Steltic repository (the DDM step needs its steel_engine folder). Create a Python 3.12 venv (openseespy only ships wheels for 3.10–3.12) and `pip install -e .` in the repo — that installs the three engines (pushover, nlrha, steltic_ddm), the orchestrator (snl), openseespy, numpy, scipy and matplotlib; the P-695 ground-motion library ships in records/. Set STELTIC_ENGINE_DIR to the absolute path of steltic/steel_engine.
 
 Verify the install on the packaged example, no retrieval needed:
   python -m snl inspect examples/Ex22_SMF   -> 251 nodes / 558 elements / 6 diaphragms; SDS=1.0, SD1=0.6, R=8, Cd=5.5, Om0=3.0, Ie=1.5, system SMF
