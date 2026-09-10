@@ -17,6 +17,8 @@ from .stop_rule import (
     walk_ladder, evaluate_nlrha_dual_gate, DEFAULT_TOL, DEFAULT_MAX_RUNGS,
     STATUS_NLRHA_COMPLETE, STATUS_GATE_A_LOCKED_FC_REFINE,
     STATUS_GATE_A_LOCKED_FC_PENDING, gate_a_suite, gate_b_fc,
+    merge_fc_probe_with_suite, finalize_nlrha_score_status,
+    FC_FAIL_NOT_COMPUTED,
 )
 from .nlrha_ladder import (
     METHOD_STAGES, should_early_abort, lock_fc_plasticity, EARLY_ABORT_NC,
@@ -134,10 +136,13 @@ def run_nsp_or_ddm_ladder(analysis: str, package: str, out_root: str, *, args) -
 
 def _dry_nlrha_row(stage, i, nlrha_mode, locked_suite):
     """Synthetic metrics for dry-run product ladder."""
+    # Nonempty FC columns so Gate B can evaluate numeric DC (null/empty never pass).
+    _fc_cols = [dict(ele=1, section="W14X90", DC=1.1)]
     base = dict(mean_drift_max=0.03, roof_mean_X=0.02, roof_mean_Y=0.015,
                 worst_FC_DC=1.1, n_ok=11, n_records=11,
                 n_unacceptable=0, n_accepted=11, ACCEPTABLE=True,
-                force_controlled_ok=False, n_nc=0, early_aborted=False)
+                force_controlled_ok=False, n_nc=0, early_aborted=False,
+                force_controlled_columns=list(_fc_cols), n_fc_columns=1)
     sid = stage.get("id")
     if sid == "modimk":
         # Fail Gate A (like MC4 L0) — climb to PZ
@@ -162,6 +167,18 @@ def _dry_nlrha_row(stage, i, nlrha_mode, locked_suite):
                 dc = 1.15 * (0.92 ** max(0, i))
             row["worst_FC_DC"] = round(dc, 4)
             row["force_controlled_ok"] = row["worst_FC_DC"] <= 1.0
+            row["force_controlled_columns"] = [dict(ele=1, section="W14X90", DC=row["worst_FC_DC"])]
+            row["n_fc_columns"] = 1
+    # Keep FC column evidence in sync with worst_FC_DC for Gate B honesty.
+    dc = row.get("worst_FC_DC")
+    if dc is not None:
+        row["force_controlled_columns"] = [dict(ele=1, section="W14X90", DC=dc)]
+        row["n_fc_columns"] = 1
+        row["force_controlled_ok"] = bool(dc <= 1.0)
+    else:
+        row["force_controlled_columns"] = []
+        row["n_fc_columns"] = 0
+        row["force_controlled_ok"] = False
     row["_stage"] = dict(id=stage.get("id"), plasticity=stage.get("plasticity"),
                          panel_zone=stage.get("panel_zone"),
                          mesh_level=stage.get("mesh_level"), mode=stage.get("mode"))
@@ -244,6 +261,13 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
                           "n_ok", "n_records", "n_unacceptable", "n_accepted", "ACCEPTABLE"):
                     if k in locked_suite:
                         row[k] = locked_suite[k]
+                suite_fc = {
+                    "worst_FC_DC": locked_suite.get("worst_FC_DC"),
+                    "force_controlled_columns": locked_suite.get("force_controlled_columns") or [],
+                    "n_fc_columns": locked_suite.get("n_fc_columns"),
+                    "force_controlled_ok": locked_suite.get("force_controlled_ok"),
+                }
+                row = merge_fc_probe_with_suite(suite_fc, row)
             metric_rows.append(row)
             rung_meta.append(dict(stage=stage, knobs=kn, dry_run=True, mode=nlrha_mode,
                                   plasticity=plast, panel_zone=pz))
@@ -253,15 +277,36 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
             params = ["--params", os.path.abspath(params_path)] if params_path else []
             site = ["--site-class", args.site_class]
             n_for_run = 1 if nlrha_mode == "fc_refine" else int(args.n_records)
+            gov_rec_args = []
             if nlrha_mode == "fc_refine":
                 print(">> NLRHA FC refine: Gate A locked — not scheduling full --n 11 "
                       "(using --n %d); plasticity=%s (no fibre switch if ModIMK A)" % (
                           n_for_run, plast), flush=True)
+                # Prefer governing suite-index (1-based --records) from locked Gate A
+                # when known. FEMA record IDs are NOT valid --records values.
+                gov = (fc_settings or {}).get("governing_fc_suite_index")
+                if gov is None and locked_suite:
+                    gov = locked_suite.get("governing_fc_suite_index")
+                if gov is not None:
+                    try:
+                        gi = int(gov)
+                        if gi >= 1:
+                            gov_rec_args = ["--records", "%d-%d" % (gi, gi)]
+                            print(">> FC refine targeting governing suite index", gi,
+                                  "(column", (fc_settings or {}).get("governing_fc_ele"), ")",
+                                  flush=True)
+                    except (TypeError, ValueError):
+                        gov_rec_args = []
+                gov_ele = (fc_settings or {}).get("governing_fc_ele") or (
+                    ((locked_suite or {}).get("governing_fc") or {}).get("ele")
+                )
+                if gov_ele is not None:
+                    print(">> FC refine governing column ele=", gov_ele, flush=True)
             cmd = [py, "-m", "nlrha", "run", package, "--out", rung_dir,
                    "--plasticity", plast, "--member-nseg", str(kn.get("member_nseg", 4)),
                    "--parallel", str(args.parallel), "--dt", str(args.dt),
                    "--n", str(n_for_run),
-                   "--early-abort-nc", str(getattr(args, "early_abort_nc", EARLY_ABORT_NC))] + site + params
+                   "--early-abort-nc", str(getattr(args, "early_abort_nc", EARLY_ABORT_NC))] + site + params + gov_rec_args
             if args.risk_category:
                 cmd += ["--risk-category", args.risk_category]
             st = _run(cmd, log, env=env)
@@ -286,9 +331,23 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
                           "n_ok", "n_records", "n_unacceptable", "n_accepted", "ACCEPTABLE"):
                     if k in locked_suite:
                         row[k] = locked_suite[k]
+                # Never overwrite known suite worst_FC_DC with probe null; surface both.
+                suite_fc = {
+                    "worst_FC_DC": locked_suite.get("worst_FC_DC",
+                                                    (fc_settings or {}).get("suite_worst_FC_DC")),
+                    "force_controlled_columns": locked_suite.get("force_controlled_columns") or [],
+                    "n_fc_columns": locked_suite.get("n_fc_columns"),
+                    "force_controlled_ok": locked_suite.get("force_controlled_ok"),
+                }
+                row = merge_fc_probe_with_suite(suite_fc, row)
+                if row.get("fc_not_computed"):
+                    print(">> FC refine probe fc_not_computed — Gate B will fail "
+                          "(suite_worst_FC_DC=%s retained separately)" % suite_fc.get("worst_FC_DC"),
+                          flush=True)
             metric_rows.append(row)
             rung_meta.append(dict(stage=stage, knobs=kn, run=st, mode=nlrha_mode,
-                                  plasticity=plast, panel_zone=pz, early_aborted=early, n_nc=n_nc))
+                                  plasticity=plast, panel_zone=pz, early_aborted=early, n_nc=n_nc,
+                                  fc_not_computed=bool(row.get("fc_not_computed"))))
 
         # ---- decisions ----
         if nlrha_mode == "fc_refine":
@@ -319,9 +378,25 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
                     "mean_drift_max", "roof_mean_X", "roof_mean_Y",
                     "n_ok", "n_records", "n_unacceptable", "n_accepted", "ACCEPTABLE")
             }
+            # Preserve suite FC for Gate B refine honesty / governing demand.
+            locked_suite = dict(locked_suite)
+            for fk in ("worst_FC_DC", "force_controlled_ok", "force_controlled_columns",
+                       "n_fc_columns", "governing_fc"):
+                if fk in row:
+                    locked_suite[fk] = row.get(fk)
             lock_level = len(metric_rows) - 1
             lock_stage = stage
-            fc_settings = decision.get("fc_settings") or lock_fc_plasticity(stage)
+            fc_settings = dict(decision.get("fc_settings") or lock_fc_plasticity(stage))
+            fc_settings["suite_worst_FC_DC"] = locked_suite.get("worst_FC_DC")
+            gov = row.get("governing_fc") or {}
+            if isinstance(gov, dict):
+                if gov.get("ele") is not None:
+                    fc_settings["governing_fc_ele"] = gov.get("ele")
+                    locked_suite["governing_fc"] = gov
+                # Optional 1-based suite index for --records (not FEMA id).
+                if gov.get("suite_index") is not None:
+                    fc_settings["governing_fc_suite_index"] = int(gov["suite_index"])
+                    locked_suite["governing_fc_suite_index"] = int(gov["suite_index"])
             gb = gate_b_fc(row, prev_fc_metrics=None, tol=args.tol)
             if gb["passed"]:
                 print(">> NLRHA complete at method stage", tag, "(A ∧ B)", flush=True)
@@ -372,6 +447,12 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
             schedule_fc_refine=ladder.get("schedule_fc_refine"),
             early_abort_nc=EARLY_ABORT_NC,
             message=ladder.get("message"),
+            suite_worst_FC_DC=(locked_suite or {}).get("worst_FC_DC") if locked_suite else (
+                (fc_settings or {}).get("suite_worst_FC_DC")),
+            probe_worst_FC_DC=(metric_rows[-1].get("probe_worst_FC_DC")
+                               if metric_rows else None),
+            gate_b_fail_reason=(ladder.get("gate_b") or {}).get("fail_reason"),
+            michael_override=False,
         ),
     )
     print(">> scorecard", path, "status=", ladder["status"],

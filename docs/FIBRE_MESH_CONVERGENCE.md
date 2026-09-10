@@ -1,7 +1,8 @@
 # Fibre mesh-convergence + NLRHA method ladder
 
-**Status:** productised on branch `fibre-mesh-convergence`  
+**Status:** productised (`fibre-mesh-convergence` + Gate B null-FC honesty on `fix-gate-b-null-fc`)  
 **Authoritative:** `/workspace/ddm_exemplars/analysis/REPO_FINALIZE_FIBRE_MESH_v1.md`  
+**Next update brief:** `/workspace/ddm_exemplars/analysis/REPO_UPDATE_NEXT_FC_NULL_AND_GATES.md`  
 **Defaults list:** [PRODUCT_DEFAULTS.md](PRODUCT_DEFAULTS.md)  
 **Stop band:** **10%** relative on primary metrics
 
@@ -29,9 +30,24 @@ ConcentratedPlasticity auto-ladder (L1/L2/L3) is **not** a product default.
 | Gate | Criterion | Behaviour |
 |------|-----------|-----------|
 | **A — suite / 10/11** | ≥10 of 11 Ch.16-accepted | Lock suite EDPs; **stop** further full `--n 11` |
-| **B — FC** | FC accepted; ≤10% Δ if refining | FC-only path (`--n 1`); no full suite redo |
+| **B — FC** | Numeric `worst_FC_DC` ≤ 1.0 **and** nonempty `force_controlled_columns`; ≤10% Δ if refining | FC-only path (`--n 1`); no full suite redo. Prefer governing FC column / suite index from the locked Gate A suite. |
 
-Complete only when **A ∧ B**. Statuses: `continue`, `gate_a_locked_fc_refine`, `gate_a_locked_fc_pending`, `nlrha_complete`, `not_converged_within_cap`.
+Complete only when **A ∧ B**. Statuses: `continue`, `gate_a_locked_fc_refine`, `gate_a_locked_fc_pending`, `nlrha_complete`, `nlrha_partial_override`, `not_converged_within_cap`.
+
+#### Gate B fail modes
+
+| Reason | When |
+|--------|------|
+| `fc_exceeds_1` | Numeric `worst_FC_DC` > 1.0 |
+| `fc_not_computed` | Empty `force_controlled_columns` and/or no DC on an FC refine / Gate B eval |
+| `fc_refine_delta_gt_tol` | Relative Δ on `worst_FC_DC` vs previous FC level > tol (default 10%) |
+| `fc_null_forbidden` | Null DC (including null→null refine) — **never** within-tol |
+
+`force_controlled_ok=True` is **invalid** when no FC columns / no DC were computed (vacuous `all([])` must not pass). Scorecards surface **suite** FC (`suite_worst_FC_DC` from locked `--n 11`) separately from **probe** FC (`probe_worst_FC_DC` on refine rungs). Probe null must not overwrite a known suite DC.
+
+Michael override that locks a suite with **failed Gate A** stays `nlrha_partial_override` / PARTIAL — never silent `nlrha_complete`.
+
+Early abort (2 NC) still writes the partial suite package (acceptance + FC columns from completed records) before advancing method/mesh. ModIMK Gate A hit ⇒ FC refine stays ModIMK (no fibre).
 
 Newton / algo cascade is **unchanged** (no Broyden reorder).
 

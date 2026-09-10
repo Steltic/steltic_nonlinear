@@ -9,9 +9,12 @@ See docs/FIBRE_MESH_CONVERGENCE.md and docs/PRODUCT_DEFAULTS.md.
 from .stop_rule import (
     relative_delta, metrics_within_tol, evaluate_ladder_step, walk_ladder,
     evaluate_nlrha_dual_gate, gate_a_suite, gate_b_fc, fc_refine_delta,
+    merge_fc_probe_with_suite, finalize_nlrha_score_status,
     DEFAULT_TOL, DEFAULT_MAX_RUNGS,
     STATUS_CONTINUE, STATUS_CONVERGED, STATUS_CAP, STATUS_NLRHA_COMPLETE,
     STATUS_GATE_A_LOCKED_FC_REFINE, STATUS_GATE_A_LOCKED_FC_PENDING,
+    STATUS_PARTIAL_OVERRIDE,
+    FC_FAIL_EXCEEDS_1, FC_FAIL_NOT_COMPUTED, FC_FAIL_REFINE_DELTA, FC_FAIL_NULL_FORBIDDEN,
 )
 from .rungs import DEFAULT_RUNGS, rung_knobs
 from .nlrha_ladder import (
@@ -22,9 +25,12 @@ from .nlrha_ladder import (
 __all__ = [
     "relative_delta", "metrics_within_tol", "evaluate_ladder_step", "walk_ladder",
     "evaluate_nlrha_dual_gate", "gate_a_suite", "gate_b_fc", "fc_refine_delta",
+    "merge_fc_probe_with_suite", "finalize_nlrha_score_status",
     "DEFAULT_TOL", "DEFAULT_MAX_RUNGS", "DEFAULT_RUNGS", "rung_knobs",
     "STATUS_CONTINUE", "STATUS_CONVERGED", "STATUS_CAP", "STATUS_NLRHA_COMPLETE",
     "STATUS_GATE_A_LOCKED_FC_REFINE", "STATUS_GATE_A_LOCKED_FC_PENDING",
+    "STATUS_PARTIAL_OVERRIDE",
+    "FC_FAIL_EXCEEDS_1", "FC_FAIL_NOT_COMPUTED", "FC_FAIL_REFINE_DELTA", "FC_FAIL_NULL_FORBIDDEN",
     "should_early_abort", "count_nc", "lock_fc_plasticity", "plan_after_row",
     "evaluate_product_nlrha", "METHOD_STAGES", "EARLY_ABORT_NC",
 ]

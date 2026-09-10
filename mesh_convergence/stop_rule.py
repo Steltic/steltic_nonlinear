@@ -7,10 +7,12 @@ NLRHA dual-gate (Michael 2026-09-09):
   Gate A — suite / 10/11: ≥10 of 11 records Ch.16-accepted (≤1 unacceptable).
             When A first passes, lock suite EDPs; do not re-run the full 11-record
             ladder solely to chase Gate B.
-  Gate B — FC: force-controlled accepted (worst_FC_DC ≤ 1.0). If FC is refined
-            across mesh levels, also require ~10% relative Δ on worst_FC_DC vs the
-            previous FC refine level.
-  Complete only when A ∧ B.
+  Gate B — FC: force-controlled accepted (worst_FC_DC ≤ 1.0) with nonempty
+            force_controlled_columns. Null DC / empty FC columns never pass
+            (fc_null_forbidden / fc_not_computed). If FC is refined across mesh
+            levels, also require ~10% relative Δ on worst_FC_DC vs the previous
+            FC refine level (null→null is not within-tol).
+  Complete only when A ∧ B (never silent complete on Michael override + failed A).
 """
 from __future__ import annotations
 from typing import Any, Mapping, Optional, Sequence
@@ -41,6 +43,13 @@ STATUS_INSUFFICIENT = "insufficient_rungs"
 STATUS_GATE_A_LOCKED_FC_PENDING = "gate_a_locked_fc_pending"  # A locked, B failed, no more FC rungs
 STATUS_GATE_A_LOCKED_FC_REFINE = "gate_a_locked_fc_refine"    # A locked, advance FC-only refine (no full suite)
 STATUS_NLRHA_COMPLETE = "nlrha_complete"  # A ∧ B
+STATUS_PARTIAL_OVERRIDE = "nlrha_partial_override"  # override lock with A failed / B incomplete
+
+# Gate B fail reasons (surfaced on scorecards / CLI).
+FC_FAIL_EXCEEDS_1 = "fc_exceeds_1"
+FC_FAIL_NOT_COMPUTED = "fc_not_computed"
+FC_FAIL_REFINE_DELTA = "fc_refine_delta_gt_tol"
+FC_FAIL_NULL_FORBIDDEN = "fc_null_forbidden"
 
 PRIMARY_KEYS = {
     "nsp": NSP_KEYS,
@@ -181,6 +190,34 @@ def gate_a_suite(
     )
 
 
+def _fc_columns(metrics: Mapping[str, Any]) -> list:
+    """Return force_controlled_columns list from a metrics/row mapping (may be empty)."""
+    cols = metrics.get("force_controlled_columns")
+    if cols is None:
+        cols = metrics.get("fc_columns")
+    if cols is None:
+        n = metrics.get("n_fc_columns")
+        if n is not None:
+            try:
+                # Synthetic nonempty marker when only a count is stored.
+                return [{}] * int(n) if int(n) > 0 else []
+            except (TypeError, ValueError):
+                return []
+        return []
+    if isinstance(cols, (list, tuple)):
+        return list(cols)
+    return []
+
+
+def _coerce_dc(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
 def gate_b_fc(
     metrics: Mapping[str, Any],
     *,
@@ -190,34 +227,91 @@ def gate_b_fc(
 ) -> dict:
     """Gate B — FC: worst_FC_DC ≤ dc_limit; if refining, also ≤tol relative Δ vs prev.
 
-    When ``prev_fc_metrics`` is None (first FC observation at this lock / single level),
-    only the absolute acceptance check applies. When a previous FC refine level is
-    provided, both absolute acceptance AND relative Δ ≤ tol are required.
-    """
-    dc = metrics.get("worst_FC_DC")
-    try:
-        dc_f = float(dc) if dc is not None else None
-    except (TypeError, ValueError):
-        dc_f = None
+    Null / missing DC, or empty ``force_controlled_columns``, **never** passes.
+    ``force_controlled_ok=True`` is invalid when no FC columns / no DC were computed.
+    Null→null (and null vs numeric) are **not** within-tol mesh convergence.
 
-    # Prefer explicit package flag when present; else worst_FC_DC ≤ limit.
-    if "force_controlled_ok" in metrics and metrics.get("force_controlled_ok") is not None:
-        accepted = bool(metrics.get("force_controlled_ok"))
-        if accepted and dc_f is None:
-            pass  # flag alone is enough
-        elif dc_f is not None and not (dc_f <= dc_limit + 1e-15):
-            # DC present and over limit overrides a stale True flag
-            accepted = False
+    Fail reasons: ``fc_exceeds_1``, ``fc_not_computed``, ``fc_refine_delta_gt_tol``,
+    ``fc_null_forbidden``.
+    """
+    dc_f = _coerce_dc(metrics.get("worst_FC_DC"))
+    cols = _fc_columns(metrics)
+    n_fc = len(cols) if cols is not None else 0
+    # Explicit count wins when columns omitted but n_fc_columns provided.
+    if metrics.get("n_fc_columns") is not None:
+        try:
+            n_fc = max(n_fc, int(metrics["n_fc_columns"]))
+        except (TypeError, ValueError):
+            pass
+
+    fail_reason = None
+    accepted = False
+
+    # --- absolute acceptance: require numeric DC + nonempty FC evidence ---
+    if dc_f is None or n_fc <= 0:
+        accepted = False
+        if dc_f is None and n_fc <= 0:
+            fail_reason = FC_FAIL_NOT_COMPUTED
+        elif dc_f is None:
+            fail_reason = FC_FAIL_NULL_FORBIDDEN
+        else:
+            # numeric DC but no columns → still not a valid FC measurement for Gate B
+            fail_reason = FC_FAIL_NOT_COMPUTED
     else:
-        accepted = dc_f is not None and dc_f <= dc_limit + 1e-15
+        # Have numeric DC and FC columns.
+        flag = metrics.get("force_controlled_ok") if "force_controlled_ok" in metrics else None
+        if flag is True and dc_f <= dc_limit + 1e-15:
+            accepted = True
+        elif flag is False:
+            accepted = False
+            if not (dc_f <= dc_limit + 1e-15):
+                fail_reason = FC_FAIL_EXCEEDS_1
+        else:
+            # No usable flag (None) or stale True with over-limit DC — use DC.
+            accepted = dc_f <= dc_limit + 1e-15
+            if not accepted:
+                fail_reason = FC_FAIL_EXCEEDS_1
+
+        # Stale True flag with over-limit DC never accepts.
+        if dc_f > dc_limit + 1e-15:
+            accepted = False
+            fail_reason = FC_FAIL_EXCEEDS_1
+
+    # Vacuous True with no DC / no columns is always invalid (already handled above).
+    if metrics.get("force_controlled_ok") is True and (dc_f is None or n_fc <= 0):
+        accepted = False
+        if fail_reason is None:
+            fail_reason = FC_FAIL_NOT_COMPUTED if n_fc <= 0 else FC_FAIL_NULL_FORBIDDEN
+
     delta = None
     refine_ok = True
     if prev_fc_metrics is not None:
-        cmp = metrics_within_tol(prev_fc_metrics, metrics, NLRHA_FC_KEYS, tol=tol)
-        delta = cmp["deltas"].get("worst_FC_DC")
-        refine_ok = cmp["ok"]
+        prev_dc = _coerce_dc(prev_fc_metrics.get("worst_FC_DC"))
+        if prev_dc is None or dc_f is None:
+            # null→null or null vs numeric: never within-tol
+            refine_ok = False
+            delta = None
+            if fail_reason is None:
+                fail_reason = FC_FAIL_NULL_FORBIDDEN if (prev_dc is None and dc_f is None) else FC_FAIL_NOT_COMPUTED
+        else:
+            cmp = metrics_within_tol(
+                {"worst_FC_DC": prev_dc},
+                {"worst_FC_DC": dc_f},
+                NLRHA_FC_KEYS,
+                tol=tol,
+                skip_missing=False,
+            )
+            delta = cmp["deltas"].get("worst_FC_DC")
+            refine_ok = cmp["ok"]
+            if not refine_ok and fail_reason is None:
+                fail_reason = FC_FAIL_REFINE_DELTA
 
     passed = bool(accepted and refine_ok)
+    if passed:
+        fail_reason = None
+    elif fail_reason is None and not accepted:
+        fail_reason = FC_FAIL_EXCEEDS_1 if (dc_f is not None and dc_f > dc_limit) else FC_FAIL_NOT_COMPUTED
+
     return dict(
         gate="B",
         name="force_controlled",
@@ -225,11 +319,14 @@ def gate_b_fc(
         accepted=accepted,
         refine_ok=refine_ok,
         worst_FC_DC=dc_f,
+        n_fc_columns=n_fc,
         dc_limit=dc_limit,
         delta_vs_prev=delta,
         tol=tol,
         had_prev_refine=prev_fc_metrics is not None,
+        fail_reason=fail_reason,
     )
+
 
 
 def fc_refine_delta(
@@ -238,8 +335,143 @@ def fc_refine_delta(
     *,
     tol: float = DEFAULT_TOL,
 ) -> dict:
-    """~10% relative Δ check on FC primary (worst_FC_DC) between FC refine levels."""
-    return metrics_within_tol(prev_fc, curr_fc, NLRHA_FC_KEYS, tol=tol)
+    """~10% relative Δ check on FC primary (worst_FC_DC) between FC refine levels.
+
+    Null→null / null vs numeric never count as within-tol (``fc_null_forbidden``).
+    """
+    prev_dc = _coerce_dc(prev_fc.get("worst_FC_DC"))
+    curr_dc = _coerce_dc(curr_fc.get("worst_FC_DC"))
+    if prev_dc is None or curr_dc is None:
+        return dict(
+            ok=False,
+            deltas={"worst_FC_DC": None},
+            failures=["worst_FC_DC"],
+            tol=tol,
+            fail_reason=FC_FAIL_NULL_FORBIDDEN if (prev_dc is None and curr_dc is None) else FC_FAIL_NOT_COMPUTED,
+        )
+    out = metrics_within_tol(
+        {"worst_FC_DC": prev_dc},
+        {"worst_FC_DC": curr_dc},
+        NLRHA_FC_KEYS,
+        tol=tol,
+        skip_missing=False,
+    )
+    if not out["ok"]:
+        out = dict(out, fail_reason=FC_FAIL_REFINE_DELTA)
+    return out
+
+
+def merge_fc_probe_with_suite(
+    suite_fc: Mapping[str, Any],
+    probe: Mapping[str, Any],
+) -> dict:
+    """Merge FC-probe metrics onto suite lock without overwriting suite DC with null.
+
+    Probe null must not erase a known suite ``worst_FC_DC``. Returns a new dict
+    with ``suite_worst_FC_DC`` / ``probe_worst_FC_DC`` surfaced separately, and
+    ``fc_not_computed`` when the probe lacks a numeric DC.
+    """
+    suite_dc = _coerce_dc(suite_fc.get("worst_FC_DC"))
+    probe_dc = _coerce_dc(probe.get("worst_FC_DC"))
+    suite_cols = _fc_columns(suite_fc)
+    probe_cols = _fc_columns(probe)
+    out = dict(probe)
+    out["suite_worst_FC_DC"] = suite_dc
+    out["probe_worst_FC_DC"] = probe_dc
+    out["suite_n_fc_columns"] = len(suite_cols) if suite_fc.get("n_fc_columns") is None else suite_fc.get("n_fc_columns")
+    try:
+        if out["suite_n_fc_columns"] is not None:
+            out["suite_n_fc_columns"] = int(out["suite_n_fc_columns"])
+    except (TypeError, ValueError):
+        out["suite_n_fc_columns"] = len(suite_cols)
+    out["probe_n_fc_columns"] = len(probe_cols)
+    if probe.get("n_fc_columns") is not None:
+        try:
+            out["probe_n_fc_columns"] = int(probe["n_fc_columns"])
+        except (TypeError, ValueError):
+            pass
+    if probe_dc is None:
+        # Do not overwrite suite DC with probe null — keep suite for reference only;
+        # Gate B on the probe row must still see null so it fails fc_not_computed.
+        out["worst_FC_DC"] = None
+        out["force_controlled_ok"] = False
+        out["fc_not_computed"] = True
+        out["fc_fail_reason"] = FC_FAIL_NOT_COMPUTED
+        # Preserve suite columns count for scorecard honesty (not as probe evidence).
+        if "force_controlled_columns" not in out or not out.get("force_controlled_columns"):
+            out["force_controlled_columns"] = []
+            out["n_fc_columns"] = 0
+    else:
+        out["fc_not_computed"] = False
+        out["n_fc_columns"] = out["probe_n_fc_columns"]
+        if not out.get("force_controlled_columns") and probe_cols:
+            out["force_controlled_columns"] = probe_cols
+    return out
+
+
+def finalize_nlrha_score_status(
+    gate_a: Mapping[str, Any],
+    gate_b: Mapping[str, Any],
+    *,
+    michael_override: bool = False,
+    dual_status: Optional[str] = None,
+) -> dict:
+    """Honest dual-gate scorecard status.
+
+    ``nlrha_complete`` only when Gate A **and** Gate B both truly pass.
+    Override-locked suite with failed Gate A → PARTIAL / override flags —
+    never silent ``nlrha_complete``.
+    """
+    a_pass = bool(gate_a.get("passed"))
+    b_pass = bool(gate_b.get("passed"))
+    override = bool(michael_override or gate_a.get("overridden") or gate_a.get("michael_override"))
+    flags = {
+        "michael_override": override,
+        "gate_a_passed": a_pass,
+        "gate_b_passed": b_pass,
+        "partial": False,
+        "override_locked": override and not a_pass,
+    }
+    if a_pass and b_pass and not (override and not a_pass):
+        return dict(
+            status=STATUS_NLRHA_COMPLETE,
+            nlrha_complete=True,
+            flags=flags,
+            message="NLRHA complete: Gate A ∧ Gate B",
+        )
+    if override and not a_pass:
+        flags["partial"] = True
+        # Even if B somehow passed, override+failed A is never silent complete.
+        st = STATUS_PARTIAL_OVERRIDE
+        msg = (
+            "PARTIAL/override: Gate A failed formally; suite locked by Michael override — "
+            "not nlrha_complete"
+        )
+        if not b_pass:
+            msg += "; Gate B also not accepted (%s)" % (
+                gate_b.get("fail_reason") or "fc_pending"
+            )
+        return dict(status=st, nlrha_complete=False, flags=flags, message=msg)
+    if dual_status:
+        return dict(
+            status=dual_status,
+            nlrha_complete=False,
+            flags=flags,
+            message=None,
+        )
+    if a_pass and not b_pass:
+        return dict(
+            status=STATUS_GATE_A_LOCKED_FC_PENDING,
+            nlrha_complete=False,
+            flags=flags,
+            message="Gate A locked; Gate B pending/failed",
+        )
+    return dict(
+        status=STATUS_CONTINUE,
+        nlrha_complete=False,
+        flags=flags,
+        message="Gate A not met",
+    )
 
 
 def evaluate_nlrha_dual_gate(
@@ -314,6 +546,10 @@ def evaluate_nlrha_dual_gate(
                 prev_fc = {k: row.get(k) for k in NLRHA_FC_KEYS}
                 if "force_controlled_ok" in row:
                     prev_fc["force_controlled_ok"] = row.get("force_controlled_ok")
+                if "force_controlled_columns" in row:
+                    prev_fc["force_controlled_columns"] = row.get("force_controlled_columns")
+                if "n_fc_columns" in row:
+                    prev_fc["n_fc_columns"] = row.get("n_fc_columns")
                 step["gate_a_locked"] = True
                 step["locked_suite"] = locked_suite
                 gate_a_state = dict(ga, passed=True, lock_level=lock_level, locked_edps=locked_suite)
@@ -378,6 +614,10 @@ def evaluate_nlrha_dual_gate(
         prev_fc = {k: row.get(k) for k in NLRHA_FC_KEYS}
         if "force_controlled_ok" in row:
             prev_fc["force_controlled_ok"] = row.get("force_controlled_ok")
+        if "force_controlled_columns" in row:
+            prev_fc["force_controlled_columns"] = row.get("force_controlled_columns")
+        if "n_fc_columns" in row:
+            prev_fc["n_fc_columns"] = row.get("n_fc_columns")
 
     # ---- finished available rows ----
     at_cap = last_i >= max_rungs - 1 or len(metric_rows) >= max_rungs

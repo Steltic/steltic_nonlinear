@@ -9,7 +9,7 @@
 | **2** | **CFS DDM:** Tier 2 always (`analysis_fidelity=2`); hard-fail &lt;2 unless `--force`. No shell default. | `steltic_ddm.cfs_fidelity.cfs_ddm_fidelity_gate` on portal CFS DDM entry |
 | **3** | **HR DDM:** fibre + mesh 10% | `mesh-converge --analyses ddm`; fibre GMNIA + M0–M3 nsub ladder |
 | **4** | **NSP (HR):** fibre + mesh 10% | `pushover --plasticity fibre` (default); mesh-converge NSP |
-| **5** | **Dual-gate:** A∧B; after A no full 11-suite for FC | `evaluate_nlrha_dual_gate`; FC refine `--n 1` |
+| **5** | **Dual-gate:** A∧B; after A no full 11-suite for FC; null/empty FC never pass | `evaluate_nlrha_dual_gate` / `gate_b_fc`; FC refine `--n 1`; see [FIBRE_MESH_CONVERGENCE.md](FIBRE_MESH_CONVERGENCE.md) Gate B fail modes |
 | **6** | Keep Newton cascade; **no** Broyden reorder | `nlrha/run.py` unchanged cascade |
 | **7** | PZ default **rigid**; scissors/PZ = the one optional try in (1); **drop** ConcentratedPlasticity auto-ladder from product default | `panel_zones.mode=rigid`; PZ×1 only in NLRHA ladder; no L1/L2/L3 CP climb |
 | **8** | Max ~**4** rungs; JSON scorecards (+ short md summary) | `--max-rungs 4`; `mesh_convergence_scorecard_*.{json,md}` |
@@ -36,3 +36,7 @@ python -m steltic_ddm run JOB       # HR: rigid offsets on; CFS portal: Tier-2 g
 - CFS shell DDM
 - Broyden-first algorithm reorder
 - Merge policy: follow Michael’s current authorization
+
+## Gate B null-FC honesty
+
+See [FIBRE_MESH_CONVERGENCE.md](FIBRE_MESH_CONVERGENCE.md) and `/workspace/ddm_exemplars/analysis/REPO_UPDATE_NEXT_FC_NULL_AND_GATES.md`.

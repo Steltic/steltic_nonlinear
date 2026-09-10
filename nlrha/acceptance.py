@@ -145,7 +145,8 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         n_records=len(results), n_unacceptable=n_unacc, unacceptable_allowed=allowed, unacceptable_ok=(n_unacc <= allowed),
         mean_drift_ok=all(s["ok"] for s in story_rows), mean_drift_max=float(np.nanmax(mean_drift)) if len(acc_runs) else None,
         deformation_ok=all(r["DC_CP"] <= 1.0 for r in rows), valid_range_ok=all(r["DC_valid"] <= 1.0 for r in rows),
-        force_controlled_ok=all(r["DC"] <= 1.0 for r in col_table),
+        force_controlled_ok=(bool(col_table) and all(r["DC"] <= 1.0 for r in col_table)),
+        worst_FC_DC=(max((r["DC"] for r in col_table), default=None)),
         residual_applicable=tall240, residual_ok=(None if not tall240 else bool(np.max(mean_resid) <= ch16["residual_drift"]["limit"])))
     verdict["overall"] = verdict["unacceptable_ok"] and verdict["mean_drift_ok"] and verdict["deformation_ok"] and verdict["force_controlled_ok"] and (verdict["residual_ok"] in (None, True))
     return dict(limits=lim, per_record=per, story=story_rows, mean_residual=(mean_resid.tolist() if mean_resid is not None else None),

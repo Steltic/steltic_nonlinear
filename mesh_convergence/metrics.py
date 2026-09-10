@@ -34,20 +34,49 @@ def from_nsp(pushover_dir: str, direction: str = "X", hazard: str = "BSE-2N") ->
     return dict(T1=T1, Vy=Vy, Vpeak=Vpeak, delta_t=delta_t, direction=direction, hazard=hazard)
 
 
+def governing_fc_column(fc_rows) -> dict | None:
+    """Return the governing (max DC) force-controlled column row, or None."""
+    best = None
+    for r in fc_rows or []:
+        dc = r.get("DC") or r.get("D_over_C") or r.get("dc")
+        if dc is None:
+            continue
+        try:
+            dcf = float(dc)
+        except (TypeError, ValueError):
+            continue
+        if best is None or dcf > best["_dc"]:
+            best = dict(r, _dc=dcf)
+    if best is None:
+        return None
+    best["DC"] = best.pop("_dc")
+    return best
+
+
 def from_nlrha(nlrha_dir: str) -> dict:
     path = os.path.join(nlrha_dir, "nlrha_package.json")
     if not os.path.exists(path):
         return dict(error="missing nlrha_package.json", path=path)
     pkg = _load(path)
     acc = pkg.get("acceptance") or pkg.get("acc") or {}
+    # Flat report packages (no nested acceptance) still carry verdict / FC at top level.
     v = acc.get("verdict") or pkg.get("verdict") or {}
-    stories = acc.get("story_drifts") or acc.get("stories") or []
+    stories = (
+        acc.get("story_drifts") or acc.get("stories") or acc.get("story")
+        or pkg.get("story_drifts") or pkg.get("story") or []
+    )
     roof_x = roof_y = None
     if stories:
         last = stories[-1]
         roof_x = last.get("mean_X") or last.get("mean_x")
         roof_y = last.get("mean_Y") or last.get("mean_y")
-    fc_rows = acc.get("force_controlled_columns") or pkg.get("force_controlled_columns") or []
+    fc_rows = (
+        acc.get("force_controlled_columns")
+        or pkg.get("force_controlled_columns")
+        or []
+    )
+    if not isinstance(fc_rows, list):
+        fc_rows = []
     worst_fc = None
     for r in fc_rows:
         dc = r.get("DC") or r.get("D_over_C") or r.get("dc")
@@ -55,9 +84,16 @@ def from_nlrha(nlrha_dir: str) -> dict:
             continue
         worst_fc = float(dc) if worst_fc is None else max(worst_fc, float(dc))
     if worst_fc is None:
-        worst_fc = v.get("worst_FC_DC") or acc.get("worst_FC_DC")
+        worst_fc = v.get("worst_FC_DC") or acc.get("worst_FC_DC") or pkg.get("worst_FC_DC")
+        try:
+            worst_fc = float(worst_fc) if worst_fc is not None else None
+        except (TypeError, ValueError):
+            worst_fc = None
     n_ok = sum(1 for r in (pkg.get("results") or []) if r.get("converged"))
-    n_rec = v.get("n_records") or len(pkg.get("results") or [])
+    # Flat packages may store per_record instead of results.
+    if not n_ok and pkg.get("per_record"):
+        n_ok = sum(1 for r in pkg["per_record"] if r.get("converged"))
+    n_rec = v.get("n_records") or len(pkg.get("results") or []) or len(pkg.get("per_record") or [])
     try:
         n_rec_i = int(n_rec) if n_rec is not None else None
     except (TypeError, ValueError):
@@ -71,20 +107,31 @@ def from_nlrha(nlrha_dir: str) -> dict:
     n_accepted = None
     if n_rec_i is not None and n_un_i is not None:
         n_accepted = n_rec_i - n_un_i
+    n_fc = len(fc_rows)
     fc_ok = v.get("force_controlled_ok")
-    if fc_ok is None and worst_fc is not None:
+    # Vacuous True with empty FC columns / null DC is invalid for Gate B.
+    if n_fc <= 0 or worst_fc is None:
+        fc_ok = False
+    elif fc_ok is None:
         fc_ok = float(worst_fc) <= 1.0
+    elif fc_ok is True and not (float(worst_fc) <= 1.0):
+        fc_ok = False
+    gov = governing_fc_column(fc_rows)
     return dict(
         mean_drift_max=v.get("mean_drift_max"),
         roof_mean_X=roof_x,
         roof_mean_Y=roof_y,
         worst_FC_DC=worst_fc,
         force_controlled_ok=fc_ok,
+        force_controlled_columns=fc_rows,
+        n_fc_columns=n_fc,
+        governing_fc=({k: gov[k] for k in gov if k != "_dc"} if gov else None),
         n_ok=n_ok,
         n_records=n_rec_i,
         n_unacceptable=n_un_i,
         n_accepted=n_accepted,
         ACCEPTABLE=bool(v.get("overall")) if "overall" in v else v.get("ACCEPTABLE"),
+        early_aborted=bool((acc.get("meta") or pkg.get("meta") or {}).get("early_aborted")),
     )
 
 
