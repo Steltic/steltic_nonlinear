@@ -165,6 +165,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
               gravity=dict(table=grav_table, split=grav_split), per_record=acc["per_record"], story=acc["story"], deformation_groups=acc["deformation_groups"],
               force_controlled_columns=acc["force_controlled_columns"], verdict=acc["verdict"], limits=acc["limits"],
               acceptance=acc, meta=acc.get("meta") or {},
+              per_record_fc=acc.get("per_record_fc") or [],
+              governing_fc_records=acc.get("governing_fc_records") or [],
               results=[{"converged": r.get("converged"), "label": r.get("label"), "record": r.get("record"),
                         "reason": r.get("reason")} for r in results])
     with open(os.path.join(outdir, "nlrha_package.json"), "w", encoding="utf-8") as f:

@@ -8,6 +8,7 @@ from mesh_convergence.stop_rule import (
     STATUS_GATE_A_LOCKED_FC_REFINE, STATUS_GATE_A_LOCKED_FC_PENDING,
     STATUS_PARTIAL_OVERRIDE,
     FC_FAIL_EXCEEDS_1, FC_FAIL_NOT_COMPUTED, FC_FAIL_REFINE_DELTA, FC_FAIL_NULL_FORBIDDEN,
+    FC_FAIL_REFINE_RECORD_UNACCEPTABLE,
 )
 from mesh_convergence.rungs import DEFAULT_RUNGS, rung_knobs
 
@@ -494,3 +495,135 @@ def test_modimk_gate_a_fc_stays_imk_after_null_rules():
     d = plan_after_row(stage, metrics)
     assert d["gate_a_passed"] and d["fc_settings"]["no_fibre_for_fc"] is True
     assert lock_fc_plasticity(stage)["plasticity"] == "imk"
+
+
+# ---------------------------------------------------------------------------
+# Gate B governing-record FC refine (Michael 2026-09-10)
+# ---------------------------------------------------------------------------
+
+def test_select_governing_fc_records_prefers_accepted_max_dc():
+    """Governing refine candidates = accepted first, then max per-record FC DC."""
+    from mesh_convergence.metrics import select_governing_fc_records, governing_fc_column
+    pkg = {
+        "force_controlled_columns": [
+            {"ele": 131, "section": "W14X132", "DC": 1.225},
+            {"ele": 9, "section": "W14X90", "DC": 1.03},
+        ],
+        "governing_fc_records": [
+            {"suite_index": 10, "record": 12151, "ele": 131, "DC": 1.40, "unacceptable": True, "converged": True},
+            {"suite_index": 4, "record": 12081, "ele": 131, "DC": 1.35, "unacceptable": False, "converged": True},
+            {"suite_index": 5, "record": 12122, "ele": 131, "DC": 1.34, "unacceptable": False, "converged": True},
+            {"suite_index": 1, "record": 12061, "ele": 131, "DC": 1.39, "unacceptable": True, "converged": True},
+        ],
+    }
+    # Pre-sorted list is returned as-is after normalize; re-sort via per_record_fc path:
+    pkg2 = {
+        "force_controlled_columns": pkg["force_controlled_columns"],
+        "per_record_fc": [
+            {"suite_index": 10, "record": 12151, "governing_ele": 131, "governing_ele_DC": 1.40,
+             "unacceptable": True, "converged": True},
+            {"suite_index": 4, "record": 12081, "governing_ele": 131, "governing_ele_DC": 1.35,
+             "unacceptable": False, "converged": True},
+            {"suite_index": 5, "record": 12122, "governing_ele": 131, "governing_ele_DC": 1.34,
+             "unacceptable": False, "converged": True},
+            {"suite_index": 1, "record": 12061, "governing_ele": 131, "governing_ele_DC": 1.39,
+             "unacceptable": True, "converged": True},
+        ],
+    }
+    cands = select_governing_fc_records(pkg2)
+    assert cands, "expected governing candidates"
+    assert cands[0]["suite_index"] == 4  # best accepted
+    assert cands[0]["unacceptable"] is False
+    assert cands[1]["suite_index"] == 5
+    # Unacceptable may appear later
+    assert any(c["suite_index"] == 10 for c in cands)
+    gov = governing_fc_column(pkg["force_controlled_columns"])
+    assert gov["ele"] == 131 and abs(gov["DC"] - 1.225) < 1e-9
+
+
+def test_select_governing_fc_records_empty_without_index():
+    """No suite_index / per_record_fc → empty (never invent first-motion index)."""
+    from mesh_convergence.metrics import select_governing_fc_records
+    assert select_governing_fc_records({"force_controlled_columns": [{"ele": 1, "DC": 1.2}]}) == []
+    assert select_governing_fc_records({}) == []
+    assert select_governing_fc_records(None) == []
+
+
+def test_gate_b_unacceptable_refine_record_does_not_vacuous_pass():
+    """Ch.16-unacceptable refine record must not pass Gate B even with stale True flags."""
+    from mesh_convergence.stop_rule import FC_FAIL_REFINE_RECORD_UNACCEPTABLE
+    bad = gate_b_fc(dict(
+        worst_FC_DC=None, force_controlled_ok=True, force_controlled_columns=[],
+        n_fc_columns=0, fc_refine_record_unacceptable=True,
+    ))
+    assert bad["passed"] is False
+    assert bad["accepted"] is False
+    assert bad["fail_reason"] == FC_FAIL_REFINE_RECORD_UNACCEPTABLE
+
+    # Even with numeric DC, the unacceptable flag blocks pass
+    bad2 = gate_b_fc(dict(
+        worst_FC_DC=0.9, force_controlled_ok=True,
+        force_controlled_columns=[{"DC": 0.9}], n_fc_columns=1,
+        fc_fail_reason=FC_FAIL_REFINE_RECORD_UNACCEPTABLE,
+    ))
+    assert bad2["passed"] is False
+    assert bad2["fail_reason"] == FC_FAIL_REFINE_RECORD_UNACCEPTABLE
+
+
+def test_dual_gate_unacceptable_refine_never_nlrha_complete():
+    """A locked + unacceptable refine probe → not nlrha_complete."""
+    rows = [
+        _suite_row(n_unacc=0, worst_fc=1.2),
+        dict(
+            mean_drift_max=0.02, roof_mean_X=0.01, roof_mean_Y=0.01,
+            n_ok=1, n_records=11, n_unacceptable=0, n_accepted=11, ACCEPTABLE=True,
+            worst_FC_DC=None, force_controlled_ok=True, force_controlled_columns=[],
+            n_fc_columns=0, fc_refine_record_unacceptable=True,
+        ),
+    ]
+    out = evaluate_nlrha_dual_gate(rows, tol=0.10, max_rungs=4)
+    assert out["status"] != STATUS_NLRHA_COMPLETE
+    assert out["gate_b"]["passed"] is False
+    assert out["gate_b"]["fail_reason"] == "fc_refine_record_unacceptable"
+
+
+def test_gate_b_still_fails_on_null_fc_with_governing_rule():
+    """Governing-record rule does not weaken null/empty FC fail."""
+    r = gate_b_fc(dict(
+        worst_FC_DC=None, n_fc_columns=0, force_controlled_columns=[],
+        governing_fc_suite_index=4,
+    ))
+    assert r["passed"] is False
+    assert r["fail_reason"] in ("fc_not_computed", "fc_null_forbidden")
+
+
+def test_from_nlrha_exposes_governing_suite_index():
+    import json, tempfile, os
+    from mesh_convergence.metrics import from_nlrha
+    with tempfile.TemporaryDirectory() as td:
+        pkg = {
+            "verdict": {"n_records": 11, "n_unacceptable": 1, "force_controlled_ok": False,
+                        "mean_drift_max": 0.03, "overall": False, "worst_FC_DC": 1.2},
+            "force_controlled_columns": [
+                {"ele": 131, "DC": 1.2, "suite_index": 4, "governing_record": 12081},
+            ],
+            "per_record_fc": [
+                {"suite_index": 4, "record": 12081, "governing_ele": 131, "governing_ele_DC": 1.35,
+                 "unacceptable": False, "converged": True},
+                {"suite_index": 10, "record": 12151, "governing_ele": 131, "governing_ele_DC": 1.40,
+                 "unacceptable": True, "converged": True},
+            ],
+            "governing_fc_records": [
+                {"suite_index": 4, "record": 12081, "ele": 131, "DC": 1.35,
+                 "unacceptable": False, "converged": True},
+                {"suite_index": 10, "record": 12151, "ele": 131, "DC": 1.40,
+                 "unacceptable": True, "converged": True},
+            ],
+            "per_record": [{"converged": True}] * 11,
+            "story": [{"mean_X": 0.02, "mean_Y": 0.01}],
+        }
+        open(os.path.join(td, "nlrha_package.json"), "w").write(json.dumps(pkg))
+        row = from_nlrha(td)
+        assert row["governing_fc_suite_index"] == 4
+        assert row["governing_fc"]["suite_index"] == 4
+        assert row["governing_fc_records"][0]["suite_index"] == 4

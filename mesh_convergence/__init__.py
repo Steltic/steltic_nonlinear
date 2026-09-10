@@ -15,8 +15,10 @@ from .stop_rule import (
     STATUS_GATE_A_LOCKED_FC_REFINE, STATUS_GATE_A_LOCKED_FC_PENDING,
     STATUS_PARTIAL_OVERRIDE,
     FC_FAIL_EXCEEDS_1, FC_FAIL_NOT_COMPUTED, FC_FAIL_REFINE_DELTA, FC_FAIL_NULL_FORBIDDEN,
+    FC_FAIL_REFINE_RECORD_UNACCEPTABLE,
 )
 from .rungs import DEFAULT_RUNGS, rung_knobs
+from .metrics import select_governing_fc_records, governing_fc_column
 from .nlrha_ladder import (
     should_early_abort, count_nc, lock_fc_plasticity, plan_after_row,
     evaluate_product_nlrha, METHOD_STAGES, EARLY_ABORT_NC,
@@ -31,6 +33,8 @@ __all__ = [
     "STATUS_GATE_A_LOCKED_FC_REFINE", "STATUS_GATE_A_LOCKED_FC_PENDING",
     "STATUS_PARTIAL_OVERRIDE",
     "FC_FAIL_EXCEEDS_1", "FC_FAIL_NOT_COMPUTED", "FC_FAIL_REFINE_DELTA", "FC_FAIL_NULL_FORBIDDEN",
+    "FC_FAIL_REFINE_RECORD_UNACCEPTABLE",
     "should_early_abort", "count_nc", "lock_fc_plasticity", "plan_after_row",
     "evaluate_product_nlrha", "METHOD_STAGES", "EARLY_ABORT_NC",
+    "select_governing_fc_records", "governing_fc_column",
 ]

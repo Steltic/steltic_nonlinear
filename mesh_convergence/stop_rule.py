@@ -50,6 +50,7 @@ FC_FAIL_EXCEEDS_1 = "fc_exceeds_1"
 FC_FAIL_NOT_COMPUTED = "fc_not_computed"
 FC_FAIL_REFINE_DELTA = "fc_refine_delta_gt_tol"
 FC_FAIL_NULL_FORBIDDEN = "fc_null_forbidden"
+FC_FAIL_REFINE_RECORD_UNACCEPTABLE = "fc_refine_record_unacceptable"
 
 PRIMARY_KEYS = {
     "nsp": NSP_KEYS,
@@ -246,6 +247,23 @@ def gate_b_fc(
 
     fail_reason = None
     accepted = False
+
+    # Refine record Ch.16-unacceptable at finer mesh → never vacuous-pass.
+    if metrics.get("fc_refine_record_unacceptable") or metrics.get("fc_fail_reason") == FC_FAIL_REFINE_RECORD_UNACCEPTABLE:
+        return dict(
+            gate="B",
+            name="force_controlled",
+            passed=False,
+            accepted=False,
+            refine_ok=False,
+            worst_FC_DC=_coerce_dc(metrics.get("worst_FC_DC")),
+            n_fc_columns=n_fc,
+            dc_limit=dc_limit,
+            delta_vs_prev=None,
+            tol=tol,
+            had_prev_refine=prev_fc_metrics is not None,
+            fail_reason=FC_FAIL_REFINE_RECORD_UNACCEPTABLE,
+        )
 
     # --- absolute acceptance: require numeric DC + nonempty FC evidence ---
     if dc_f is None or n_fc <= 0:

@@ -18,7 +18,7 @@ from .stop_rule import (
     STATUS_NLRHA_COMPLETE, STATUS_GATE_A_LOCKED_FC_REFINE,
     STATUS_GATE_A_LOCKED_FC_PENDING, gate_a_suite, gate_b_fc,
     merge_fc_probe_with_suite, finalize_nlrha_score_status,
-    FC_FAIL_NOT_COMPUTED,
+    FC_FAIL_NOT_COMPUTED, FC_FAIL_REFINE_RECORD_UNACCEPTABLE,
 )
 from .nlrha_ladder import (
     METHOD_STAGES, should_early_abort, lock_fc_plasticity, EARLY_ABORT_NC,
@@ -179,6 +179,20 @@ def _dry_nlrha_row(stage, i, nlrha_mode, locked_suite):
         row["force_controlled_columns"] = []
         row["n_fc_columns"] = 0
         row["force_controlled_ok"] = False
+    # Synthetic governing FC record (suite index 4) for dry-run Gate B refine path.
+    gov = dict(ele=1, section="W14X90", DC=row.get("worst_FC_DC"), suite_index=4,
+               governing_record=12081, governing_record_DC=row.get("worst_FC_DC"))
+    row["governing_fc"] = gov
+    row["governing_fc_suite_index"] = 4
+    row["governing_fc_records"] = [
+        dict(suite_index=4, record=12081, ele=1, DC=row.get("worst_FC_DC"),
+             unacceptable=False, converged=True),
+        dict(suite_index=5, record=12122, ele=1, DC=(row.get("worst_FC_DC") or 1.0) * 0.99,
+             unacceptable=False, converged=True),
+    ]
+    if row.get("force_controlled_columns"):
+        row["force_controlled_columns"][0] = dict(
+            row["force_controlled_columns"][0], suite_index=4, governing_record=12081)
     row["_stage"] = dict(id=stage.get("id"), plasticity=stage.get("plasticity"),
                          panel_zone=stage.get("panel_zone"),
                          mesh_level=stage.get("mesh_level"), mode=stage.get("mode"))
@@ -276,32 +290,88 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
             params_path = _write_temp_params(args.params, pz, rung_dir, tag)
             params = ["--params", os.path.abspath(params_path)] if params_path else []
             site = ["--site-class", args.site_class]
-            n_for_run = 1 if nlrha_mode == "fc_refine" else int(args.n_records)
+            n_suite = int(args.n_records)
+            if locked_suite and locked_suite.get("n_records"):
+                try:
+                    n_suite = int(locked_suite["n_records"])
+                except (TypeError, ValueError):
+                    pass
+            # FC refine: keep the locked suite's --n so --only-records indices match
+            # Gate A ordering. Never arbitrary first-motion --n 1 without a governing index.
+            n_for_run = n_suite if nlrha_mode == "fc_refine" else int(args.n_records)
             gov_rec_args = []
+            skip_fc_run = False
             if nlrha_mode == "fc_refine":
-                print(">> NLRHA FC refine: Gate A locked — not scheduling full --n 11 "
-                      "(using --n %d); plasticity=%s (no fibre switch if ModIMK A)" % (
-                          n_for_run, plast), flush=True)
-                # Prefer governing suite-index (1-based --records) from locked Gate A
-                # when known. FEMA record IDs are NOT valid --records values.
-                gov = (fc_settings or {}).get("governing_fc_suite_index")
+                cands = list((fc_settings or {}).get("governing_fc_candidates") or [])
+                if not cands and locked_suite:
+                    cands = list(locked_suite.get("governing_fc_candidates")
+                                 or locked_suite.get("governing_fc_records") or [])
+                if not cands:
+                    cands = (MX.select_governing_fc_records(fc_settings or {})
+                    or MX.select_governing_fc_records(locked_suite or {}))
+                cand_i = int((fc_settings or {}).get("governing_fc_candidate_i") or 0)
+                gov = None
+                if cands and 0 <= cand_i < len(cands):
+                    gov = cands[cand_i].get("suite_index")
+                    if fc_settings is not None:
+                        fc_settings["governing_fc_suite_index"] = gov
+                        fc_settings["governing_fc_candidates"] = cands
+                if gov is None:
+                    gov = (fc_settings or {}).get("governing_fc_suite_index")
                 if gov is None and locked_suite:
                     gov = locked_suite.get("governing_fc_suite_index")
+                print(">> NLRHA FC refine: Gate A locked — governing record(s) only "
+                      "(not full 11; not arbitrary --n 1); suite --n %d; plasticity=%s" % (
+                          n_for_run, plast), flush=True)
                 if gov is not None:
                     try:
                         gi = int(gov)
                         if gi >= 1:
-                            gov_rec_args = ["--records", "%d-%d" % (gi, gi)]
+                            gov_rec_args = ["--only-records", str(gi)]
                             print(">> FC refine targeting governing suite index", gi,
-                                  "(column", (fc_settings or {}).get("governing_fc_ele"), ")",
+                                  "(candidate %d/%d; column %s)" % (
+                                      cand_i + 1, max(len(cands), 1),
+                                      (fc_settings or {}).get("governing_fc_ele")),
                                   flush=True)
                     except (TypeError, ValueError):
                         gov_rec_args = []
+                if not gov_rec_args:
+                    print(">> FC refine: no governing suite index identified — "
+                          "failing fc_not_computed (refusing arbitrary first motion)",
+                          flush=True)
+                    skip_fc_run = True
                 gov_ele = (fc_settings or {}).get("governing_fc_ele") or (
                     ((locked_suite or {}).get("governing_fc") or {}).get("ele")
                 )
                 if gov_ele is not None:
                     print(">> FC refine governing column ele=", gov_ele, flush=True)
+            if skip_fc_run:
+                row = dict(
+                    worst_FC_DC=None, force_controlled_ok=False,
+                    force_controlled_columns=[], n_fc_columns=0,
+                    fc_not_computed=True, fc_fail_reason=FC_FAIL_NOT_COMPUTED,
+                    n_nc=0, early_aborted=False, _run=dict(skipped=True),
+                    _stage=dict(id=tag, plasticity=plast, panel_zone=pz,
+                                mesh_level=stage.get("mesh_level"), mode=nlrha_mode),
+                )
+                if locked_suite:
+                    for k in ("mean_drift_max", "roof_mean_X", "roof_mean_Y",
+                              "n_ok", "n_records", "n_unacceptable", "n_accepted", "ACCEPTABLE"):
+                        if k in locked_suite:
+                            row[k] = locked_suite[k]
+                    suite_fc = {
+                        "worst_FC_DC": locked_suite.get("worst_FC_DC"),
+                        "force_controlled_columns": locked_suite.get("force_controlled_columns") or [],
+                        "n_fc_columns": locked_suite.get("n_fc_columns"),
+                        "force_controlled_ok": locked_suite.get("force_controlled_ok"),
+                    }
+                    row = merge_fc_probe_with_suite(suite_fc, row)
+                metric_rows.append(row)
+                rung_meta.append(dict(stage=stage, knobs=kn, run=dict(skipped=True),
+                                      mode=nlrha_mode, plasticity=plast, panel_zone=pz,
+                                      fc_not_computed=True))
+                print(">>", "FC refine aborted: governing record unknown", flush=True)
+                break
             cmd = [py, "-m", "nlrha", "run", package, "--out", rung_dir,
                    "--plasticity", plast, "--member-nseg", str(kn.get("member_nseg", 4)),
                    "--parallel", str(args.parallel), "--dt", str(args.dt),
@@ -344,10 +414,44 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
                     print(">> FC refine probe fc_not_computed — Gate B will fail "
                           "(suite_worst_FC_DC=%s retained separately)" % suite_fc.get("worst_FC_DC"),
                           flush=True)
+                # If the refine motion is Ch.16-unacceptable at the finer mesh, do not
+                # vacuous-pass — try next governing candidate or fail clearly.
+                probe_unacc = False
+                try:
+                    pkg2 = json.load(open(pkg_path)) if os.path.isfile(pkg_path) else {}
+                    per = (pkg2.get("acceptance") or {}).get("per_record") or pkg2.get("per_record") or []
+                    if per and all(p.get("unacceptable") or not p.get("converged") for p in per):
+                        probe_unacc = True
+                    elif per and len(per) == 1 and (per[0].get("unacceptable") or not per[0].get("converged")):
+                        probe_unacc = True
+                except Exception:
+                    probe_unacc = False
+                if probe_unacc:
+                    row["fc_refine_record_unacceptable"] = True
+                    row["fc_fail_reason"] = FC_FAIL_REFINE_RECORD_UNACCEPTABLE
+                    row["force_controlled_ok"] = False
+                    print(">> FC refine record Ch.16-unacceptable at finer mesh — "
+                          "not vacuous-passing Gate B", flush=True)
+                    cands = list((fc_settings or {}).get("governing_fc_candidates") or [])
+                    cand_i = int((fc_settings or {}).get("governing_fc_candidate_i") or 0)
+                    if cands and cand_i + 1 < len(cands):
+                        fc_settings["governing_fc_candidate_i"] = cand_i + 1
+                        nxt = cands[cand_i + 1]
+                        fc_settings["governing_fc_suite_index"] = nxt.get("suite_index")
+                        print(">> trying next governing FC candidate suite index",
+                              nxt.get("suite_index"), flush=True)
+                        metric_rows.append(row)
+                        rung_meta.append(dict(stage=stage, knobs=kn, run=st, mode=nlrha_mode,
+                                              plasticity=plast, panel_zone=pz,
+                                              early_aborted=early, n_nc=n_nc,
+                                              fc_refine_record_unacceptable=True))
+                        # Re-run same mesh stage with next candidate (do not advance mesh yet)
+                        continue
             metric_rows.append(row)
             rung_meta.append(dict(stage=stage, knobs=kn, run=st, mode=nlrha_mode,
                                   plasticity=plast, panel_zone=pz, early_aborted=early, n_nc=n_nc,
-                                  fc_not_computed=bool(row.get("fc_not_computed"))))
+                                  fc_not_computed=bool(row.get("fc_not_computed")),
+                                  fc_refine_record_unacceptable=bool(row.get("fc_refine_record_unacceptable"))))
 
         # ---- decisions ----
         if nlrha_mode == "fc_refine":
@@ -381,22 +485,51 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
             # Preserve suite FC for Gate B refine honesty / governing demand.
             locked_suite = dict(locked_suite)
             for fk in ("worst_FC_DC", "force_controlled_ok", "force_controlled_columns",
-                       "n_fc_columns", "governing_fc"):
+                       "n_fc_columns", "governing_fc", "governing_fc_records",
+                       "governing_fc_suite_index", "per_record_fc"):
                 if fk in row:
                     locked_suite[fk] = row.get(fk)
             lock_level = len(metric_rows) - 1
             lock_stage = stage
             fc_settings = dict(decision.get("fc_settings") or lock_fc_plasticity(stage))
             fc_settings["suite_worst_FC_DC"] = locked_suite.get("worst_FC_DC")
+            # Governing FC record(s): motion(s) behind suite-worst FC D/C (not first --n 1).
+            cands = (
+                MX.select_governing_fc_records(row)
+                or MX.select_governing_fc_records(locked_suite)
+                or list(row.get("governing_fc_records") or [])
+            )
+            # Also try reading the just-written suite package if candidates still missing.
+            if not cands:
+                try:
+                    suite_pkg_path = os.path.join(rung_dir, "nlrha_package.json")
+                    if os.path.isfile(suite_pkg_path):
+                        cands = MX.select_governing_fc_records(json.load(open(suite_pkg_path)))
+                except Exception:
+                    cands = []
+            if cands:
+                fc_settings["governing_fc_candidates"] = cands
+                fc_settings["governing_fc_candidate_i"] = 0
+                fc_settings["governing_fc_suite_index"] = int(cands[0]["suite_index"])
+                locked_suite["governing_fc_candidates"] = cands
+                locked_suite["governing_fc_suite_index"] = int(cands[0]["suite_index"])
+                locked_suite["governing_fc_records"] = cands
+                print(">> governing FC refine candidates (suite indices):",
+                      [c.get("suite_index") for c in cands[:5]],
+                      ("..." if len(cands) > 5 else ""),
+                      "primary=", cands[0].get("suite_index"),
+                      "ele=", cands[0].get("ele"),
+                      flush=True)
             gov = row.get("governing_fc") or {}
             if isinstance(gov, dict):
                 if gov.get("ele") is not None:
                     fc_settings["governing_fc_ele"] = gov.get("ele")
                     locked_suite["governing_fc"] = gov
-                # Optional 1-based suite index for --records (not FEMA id).
-                if gov.get("suite_index") is not None:
+                if gov.get("suite_index") is not None and "governing_fc_suite_index" not in fc_settings:
                     fc_settings["governing_fc_suite_index"] = int(gov["suite_index"])
                     locked_suite["governing_fc_suite_index"] = int(gov["suite_index"])
+            if cands and isinstance(gov, dict) and gov.get("ele") is None:
+                fc_settings["governing_fc_ele"] = cands[0].get("ele")
             gb = gate_b_fc(row, prev_fc_metrics=None, tol=args.tol)
             if gb["passed"]:
                 print(">> NLRHA complete at method stage", tag, "(A ∧ B)", flush=True)
