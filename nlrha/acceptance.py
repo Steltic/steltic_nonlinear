@@ -46,6 +46,74 @@ def column_Pn(section, L_in, Fy=50.0, K=1.0):
     return Fcr * p["A"], KLr
 
 
+
+def _per_record_fc_and_governing(results, per, col_table, grav_split, SMS, Ie, ch16):
+    """Per-record FC D/C on suite force-controlled columns + ordered governing refine candidates.
+
+    Governing FC refine records = motions behind the suite-worst FC column, ranked by
+    per-record D/C on that column. Accepted (converged, not Ch.16-unacceptable) first.
+    """
+    if not col_table:
+        return [], []
+    fc = ch16["force_controlled"]
+    denom = grav_split["sum_D"] + grav_split["sum_Lexp"]
+    frac_D = grav_split["sum_D"] / denom if denom else 0.0
+    by_ele = {r["ele"]: r for r in col_table}
+    gov_ele = max(col_table, key=lambda r: r["DC"])["ele"]
+    per_record_fc = []
+    candidates = []
+    for i, (r, p) in enumerate(zip(results, per)):
+        suite_index = i + 1
+        peak = r.get("peak_colN") or {}
+        cols_out = []
+        worst = None
+        for ele, srow in by_ele.items():
+            Qu = peak.get(ele)
+            if Qu is None:
+                continue
+            Qu = float(Qu)
+            Qns = srow["Qns"]
+            D = Qns * frac_D
+            L16 = (Qns - D) / ch16["gravity"]["combination_factor"]
+            dem = (1.2 + 0.12 * SMS) * D + 0.5 * L16 + fc["gamma"] * Ie * max(Qu - Qns, 0.0)
+            phiBRn = srow["phiBRn"]
+            DC = (dem / phiBRn) if phiBRn else None
+            cols_out.append(dict(ele=ele, Qu=Qu, DC=DC))
+            if DC is not None:
+                worst = DC if worst is None else max(worst, DC)
+        gov_dc = next((c["DC"] for c in cols_out if c["ele"] == gov_ele), None)
+        gov_qu = peak.get(gov_ele)
+        entry = dict(
+            suite_index=suite_index,
+            record=r.get("record") if r.get("record") is not None else p.get("record"),
+            label=r.get("label") or p.get("label"),
+            converged=bool(r.get("converged")),
+            unacceptable=bool(p.get("unacceptable")),
+            columns=cols_out,
+            worst_DC=worst,
+            governing_ele=gov_ele,
+            governing_ele_Qu=(float(gov_qu) if gov_qu is not None else None),
+            governing_ele_DC=gov_dc,
+        )
+        per_record_fc.append(entry)
+        if gov_dc is not None:
+            candidates.append(dict(
+                suite_index=suite_index,
+                record=entry["record"],
+                label=entry["label"],
+                ele=gov_ele,
+                DC=float(gov_dc),
+                Qu=entry["governing_ele_Qu"],
+                unacceptable=entry["unacceptable"],
+                converged=entry["converged"],
+            ))
+    candidates.sort(key=lambda c: (
+        0 if (c.get("converged") and not c.get("unacceptable")) else 1,
+        -float(c["DC"]),
+    ))
+    return per_record_fc, candidates
+
+
 def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1.0, rc="I_II"):
     """results: list of run_record outputs. Returns the 16.4 scorecard."""
     ok_runs = [r for r in results if r["converged"]]
@@ -141,12 +209,27 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         if k not in best or r["DC"] > best[k]["DC"]:
             best[k] = r
     col_table = sorted(best.values(), key=lambda r: (r["z_in"], r["section"]))
+    per_record_fc, governing_fc_records = _per_record_fc_and_governing(
+        results, per, col_table, grav_split, SMS, Ie, ch16)
+    if governing_fc_records:
+        primary = next(
+            (c for c in governing_fc_records if c.get("converged") and not c.get("unacceptable")),
+            governing_fc_records[0],
+        )
+        # Annotate suite-governing column with the preferred refine suite index.
+        gov_row = max(col_table, key=lambda r: r["DC"]) if col_table else None
+        if gov_row is not None:
+            gov_row["suite_index"] = primary["suite_index"]
+            gov_row["governing_record"] = primary.get("record")
+            gov_row["governing_record_DC"] = primary.get("DC")
     verdict = dict(
         n_records=len(results), n_unacceptable=n_unacc, unacceptable_allowed=allowed, unacceptable_ok=(n_unacc <= allowed),
         mean_drift_ok=all(s["ok"] for s in story_rows), mean_drift_max=float(np.nanmax(mean_drift)) if len(acc_runs) else None,
         deformation_ok=all(r["DC_CP"] <= 1.0 for r in rows), valid_range_ok=all(r["DC_valid"] <= 1.0 for r in rows),
-        force_controlled_ok=all(r["DC"] <= 1.0 for r in col_table),
+        force_controlled_ok=(bool(col_table) and all(r["DC"] <= 1.0 for r in col_table)),
+        worst_FC_DC=(max((r["DC"] for r in col_table), default=None)),
         residual_applicable=tall240, residual_ok=(None if not tall240 else bool(np.max(mean_resid) <= ch16["residual_drift"]["limit"])))
     verdict["overall"] = verdict["unacceptable_ok"] and verdict["mean_drift_ok"] and verdict["deformation_ok"] and verdict["force_controlled_ok"] and (verdict["residual_ok"] in (None, True))
     return dict(limits=lim, per_record=per, story=story_rows, mean_residual=(mean_resid.tolist() if mean_resid is not None else None),
-                deformation_groups=rows, force_controlled_columns=col_table, verdict=verdict, hn_in=hn)
+                deformation_groups=rows, force_controlled_columns=col_table, verdict=verdict, hn_in=hn,
+                per_record_fc=per_record_fc, governing_fc_records=governing_fc_records)

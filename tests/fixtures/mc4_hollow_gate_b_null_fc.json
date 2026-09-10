@@ -1,0 +1,59 @@
+{
+  "name": "mc4_hollow_gate_b_null_fc",
+  "description": "M0 DC=1.225; M1/M2 probe DC=None / empty FC columns \u2014 must not reach nlrha_complete",
+  "metric_rows": [
+    {
+      "mean_drift_max": 0.0316,
+      "roof_mean_X": null,
+      "roof_mean_Y": null,
+      "worst_FC_DC": 1.225,
+      "force_controlled_ok": false,
+      "force_controlled_columns": [
+        {
+          "ele": 131,
+          "section": "W14X53",
+          "DC": 1.225
+        }
+      ],
+      "n_fc_columns": 1,
+      "n_ok": 0,
+      "n_records": 11,
+      "n_unacceptable": 0,
+      "n_accepted": 11,
+      "ACCEPTABLE": false,
+      "_rung": "M0"
+    },
+    {
+      "mean_drift_max": 0.0316,
+      "worst_FC_DC": null,
+      "force_controlled_ok": true,
+      "force_controlled_columns": [],
+      "n_fc_columns": 0,
+      "n_ok": 0,
+      "n_records": 1,
+      "n_unacceptable": 1,
+      "n_accepted": 0,
+      "ACCEPTABLE": false,
+      "_rung": "M1_fc",
+      "_mode": "fc_refine"
+    },
+    {
+      "mean_drift_max": 0.0316,
+      "worst_FC_DC": null,
+      "force_controlled_ok": true,
+      "force_controlled_columns": [],
+      "n_fc_columns": 0,
+      "n_ok": 1,
+      "n_records": 1,
+      "n_unacceptable": 1,
+      "n_accepted": 0,
+      "ACCEPTABLE": false,
+      "_rung": "M2_fc",
+      "_mode": "fc_refine"
+    }
+  ],
+  "expect": {
+    "status_ne": "nlrha_complete",
+    "gate_b_passed": false
+  }
+}

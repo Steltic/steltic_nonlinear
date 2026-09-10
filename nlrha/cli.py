@@ -1,7 +1,7 @@
 """cli.py -- Non Linear Dynamic Bot tool.
 
     python -m nlrha scale   <steltic package>  [--site-class D] [--n 11] [--out DIR]      # select + scale only (fast)
-    python -m nlrha run     <steltic package>  [--pushover-dir DIR] [--n 11] [--dt 0.01] [--records 1-11] [--out DIR]
+    python -m nlrha run     <steltic package>  [--pushover-dir DIR] [--n 11] [--dt 0.01] [--records 1-11] [--only-records 4] [--out DIR]
                                                [--xi 0.025] [--params hinge_params.json] [--free-vib 5]
 Outputs (default <job>/nlrha/): nlrha_report.html, nlrha_package.json, gm_scaling.json, per-record peaks in the package.
 """
@@ -89,7 +89,13 @@ def cmd_run(args):
     idx, recs = GM.library(args.records_set)
     gm, chosen = GM.select_and_scale(recs, pkg.basis.SDS, pkg.basis.SD1, TL, lo, hi, n_select=args.n)
     sel = range(1, len(chosen) + 1)
-    if args.records:
+    only = getattr(args, "only_records", None)
+    if only:
+        sel = [int(x) for x in str(only).replace(" ", "").split(",") if x]
+        bad = [i for i in sel if i < 1 or i > len(chosen)]
+        if bad:
+            sys.exit("--only-records out of range for --n %d suite: %s" % (args.n, bad))
+    elif args.records:
         a, b = args.records.split("-"); sel = range(int(a), int(b) + 1)
     sample_brace = next((t for t, e in ((e["tag"], e) for e in pkg.model.elements) if pkg.schedule.get(t, {}).get("member") == "brace"), None)
     results = []
@@ -165,6 +171,7 @@ def main(argv=None):
             p.add_argument("--pushover-dir")
         if name == "run":
             p.add_argument("--pushover-dir"); p.add_argument("--dt", type=float, default=0.02); p.add_argument("--records")
+            p.add_argument("--only-records", help="comma-separated 1-based suite indices to run (e.g. 4 or 4,5); preferred for Gate B FC refine")
             p.add_argument("--xi", type=float, default=0.025); p.add_argument("--free-vib", type=float, default=5.0)
             p.add_argument("--parallel", type=int, default=1, help="worker processes (one OpenSees instance each)")
             p.add_argument("--integrator", default="hht", choices=["hht", "newmark"], help="HHT alpha=0.9 (default; damps spurious high modes) or Newmark average acceleration")

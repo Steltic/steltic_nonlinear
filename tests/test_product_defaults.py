@@ -64,11 +64,13 @@ def test_plan_gate_a_lock_schedules_fc_no_fibre():
 def test_gate_a_lock_fc_only_dual_gate():
     rows = [
         dict(mean_drift_max=0.04, roof_mean_X=0.02, roof_mean_Y=0.015,
-             worst_FC_DC=1.3, force_controlled_ok=False,
+             worst_FC_DC=1.3, force_controlled_ok=False, n_fc_columns=1,
+             force_controlled_columns=[{"DC": 1.3}],
              n_ok=11, n_records=11, n_unacceptable=6, n_accepted=5, ACCEPTABLE=False,
              _stage=dict(id="modimk", plasticity="imk", panel_zone="rigid")),
         dict(mean_drift_max=0.031, roof_mean_X=0.02, roof_mean_Y=0.015,
-             worst_FC_DC=1.12, force_controlled_ok=False,
+             worst_FC_DC=1.12, force_controlled_ok=False, n_fc_columns=1,
+             force_controlled_columns=[{"DC": 1.12}],
              n_ok=11, n_records=11, n_unacceptable=0, n_accepted=11, ACCEPTABLE=True,
              _stage=dict(id="modimk", plasticity="imk", panel_zone="rigid")),
     ]
