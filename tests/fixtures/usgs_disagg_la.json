@@ -1,0 +1,296 @@
+{
+ "1.000": {
+  "url": "https://earthquake.usgs.gov/ws/nshmp/conus-2023.R2/dynamic/disagg/-118.25/34.05/260/2475?imt=SA1P0",
+  "fetched": "2026-09-14T12:47:09",
+  "model": "conus-2023.R2",
+  "imt": "SA1P0",
+  "T_imt": 1.0,
+  "T_star": 1.0,
+  "return_period": 2475,
+  "vs30": 260,
+  "iml_g": 1.4782112,
+  "exceedance_rate": 0.0004040404,
+  "mean": {
+   "M": 7.31,
+   "R_km": 12.72,
+   "eps": 1.12
+  },
+  "mode_mr": {
+   "M": 7.7,
+   "R_km": 11.12,
+   "eps": 0.69,
+   "contribution_pct": 20.9
+  },
+  "mode_mre": {
+   "M": 7.7,
+   "R_km": 11.02,
+   "eps": 0.75,
+   "contribution_pct": 10.1
+  },
+  "sources": [
+   {
+    "name": "Puente Hills (Los Angeles) (1)",
+    "contribution_pct": 22.06,
+    "R_km": 4.671544,
+    "M": 7.3698099,
+    "eps": 0.58548618,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Compton (2)",
+    "contribution_pct": 19.63,
+    "R_km": 14.482047,
+    "M": 7.6206586,
+    "eps": 0.67323763,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Elysian Park (upper) (1)",
+    "contribution_pct": 10.58,
+    "R_km": 5.3953661,
+    "M": 7.005039,
+    "eps": 1.094171,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Raymond (2)",
+    "contribution_pct": 6.26,
+    "R_km": 8.757138,
+    "M": 7.0742313,
+    "eps": 1.431917,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Newport - Inglewood (8)",
+    "contribution_pct": 3.99,
+    "R_km": 11.702407,
+    "M": 7.6169253,
+    "eps": 0.8521327,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Compton (3)",
+    "contribution_pct": 3.71,
+    "R_km": 14.615889,
+    "M": 7.1590536,
+    "eps": 1.0580484,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "San Andreas (Mojave,  south) (8)",
+    "contribution_pct": 3.39,
+    "R_km": 55.54579,
+    "M": 7.943466,
+    "eps": 2.2296204,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Puente Hills (Santa Fe Springs) (1)",
+    "contribution_pct": 3.24,
+    "R_km": 12.821695,
+    "M": 7.2172474,
+    "eps": 1.1987982,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Hollywood (0)",
+    "contribution_pct": 2.97,
+    "R_km": 8.3406468,
+    "M": 7.3534417,
+    "eps": 1.2008952,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Sierra Madre (5)",
+    "contribution_pct": 2.26,
+    "R_km": 19.908022,
+    "M": 7.7400229,
+    "eps": 1.6679218,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Raymond (1)",
+    "contribution_pct": 1.55,
+    "R_km": 12.802878,
+    "M": 7.3169096,
+    "eps": 1.564067,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "San Pedro Escarpment (0)",
+    "contribution_pct": 1.15,
+    "R_km": 12.568327,
+    "M": 7.5451343,
+    "eps": 0.5652989,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Whittier (7)",
+    "contribution_pct": 1.11,
+    "R_km": 19.684729,
+    "M": 7.3817862,
+    "eps": 1.9677223,
+    "source": "FaultSystem"
+   }
+  ]
+ },
+ "0.300": {
+  "url": "https://earthquake.usgs.gov/ws/nshmp/conus-2023.R2/dynamic/disagg/-118.25/34.05/260/2475?imt=SA0P3",
+  "fetched": "2026-09-14T12:47:28",
+  "model": "conus-2023.R2",
+  "imt": "SA0P3",
+  "T_imt": 0.3,
+  "T_star": 0.3,
+  "return_period": 2475,
+  "vs30": 260,
+  "iml_g": 2.2365498,
+  "exceedance_rate": 0.0004040404,
+  "mean": {
+   "M": 7,
+   "R_km": 12.88,
+   "eps": 1.33
+  },
+  "mode_mr": {
+   "M": 7.7,
+   "R_km": 11.4,
+   "eps": 0.8,
+   "contribution_pct": 14.89
+  },
+  "mode_mre": {
+   "M": 7.7,
+   "R_km": 10.92,
+   "eps": 0.81,
+   "contribution_pct": 5.49
+  },
+  "sources": [
+   {
+    "name": "Puente Hills (Los Angeles) (1)",
+    "contribution_pct": 16.18,
+    "R_km": 4.671544,
+    "M": 7.3252711,
+    "eps": 0.70610702,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Compton (2)",
+    "contribution_pct": 15.07,
+    "R_km": 14.482047,
+    "M": 7.6012798,
+    "eps": 0.74244553,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Elysian Park (upper) (1)",
+    "contribution_pct": 8.78,
+    "R_km": 5.3953661,
+    "M": 6.9518467,
+    "eps": 1.1493812,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Raymond (2)",
+    "contribution_pct": 5.63,
+    "R_km": 8.757138,
+    "M": 6.9755896,
+    "eps": 1.475217,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Compton (3)",
+    "contribution_pct": 3.53,
+    "R_km": 14.615889,
+    "M": 7.1421792,
+    "eps": 1.0133805,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Puente Hills (Santa Fe Springs) (1)",
+    "contribution_pct": 3.25,
+    "R_km": 12.821695,
+    "M": 7.0603481,
+    "eps": 1.2272117,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Newport - Inglewood (8)",
+    "contribution_pct": 3.06,
+    "R_km": 11.702407,
+    "M": 7.5707197,
+    "eps": 0.95307075,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "San Andreas (Mojave,  south) (8)",
+    "contribution_pct": 2.96,
+    "R_km": 55.54579,
+    "M": 7.9260543,
+    "eps": 2.2004949,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Hollywood (0)",
+    "contribution_pct": 2.31,
+    "R_km": 8.3406468,
+    "M": 7.2870503,
+    "eps": 1.2831685,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Sierra Madre (5)",
+    "contribution_pct": 1.89,
+    "R_km": 19.908022,
+    "M": 7.6677477,
+    "eps": 1.6712075,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Raymond (1)",
+    "contribution_pct": 1.39,
+    "R_km": 12.802878,
+    "M": 7.2278717,
+    "eps": 1.5967465,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Whittier (7)",
+    "contribution_pct": 1.22,
+    "R_km": 19.684729,
+    "M": 7.2243054,
+    "eps": 1.9563451,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "Palos Verdes (13)",
+    "contribution_pct": 1.2,
+    "R_km": 27.121873,
+    "M": 7.303242,
+    "eps": 2.0910602,
+    "source": "FaultSystem"
+   },
+   {
+    "name": "PointSourceFinite: -118.250, 34.099",
+    "contribution_pct": 1.08,
+    "R_km": 6.8297265,
+    "M": 5.7388211,
+    "eps": 1.7502225,
+    "source": "Grid"
+   },
+   {
+    "name": "PointSourceFinite: -118.250, 34.117",
+    "contribution_pct": 1.06,
+    "R_km": 8.0739425,
+    "M": 5.7935968,
+    "eps": 1.8533654,
+    "source": "Grid"
+   },
+   {
+    "name": "Compton (1)",
+    "contribution_pct": 1.01,
+    "R_km": 18.143651,
+    "M": 7.0845049,
+    "eps": 1.5152733,
+    "source": "FaultSystem"
+   }
+  ]
+ }
+}

@@ -93,21 +93,44 @@ def period_range(T1x, T1y, T90, factor_upper=2.0):
 
 
 # --------------------------------------------------------------------------- selection + scaling
-def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=None, verbose=True):
+def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=None, verbose=True,
+                     target=None, deagg=None, pulse_fraction=0.0, sf_bounds=None, sets=None):
     """Amplitude scaling per 16.2.3.2: one factor per pair (both components), such that the suite mean of the
     maximum-direction spectra generally matches or exceeds the target and is >= 90% of it at every period in
     [T_lower, T_upper]. Selection: the n pairs whose RotD100 shape best fits the target (smallest log-ratio
-    dispersion over the range) -- a spectral-shape criterion consistent with 16.2.2's 'spectral shape similar'."""
+    dispersion over the range) -- a spectral-shape criterion consistent with 16.2.2's 'spectral shape similar'.
+
+    Site-specific extras (nlrha/site_hazard.py): `target` = (periods, sa, label) replaces the code spectrum
+    (multi-period MCE_R or a conditional spectrum); `deagg` adds a soft M / R consistency penalty to the ranking
+    (16.2.2); `pulse_fraction` reserves that share of the suite for records flagged pulse=True in their index;
+    `sf_bounds` = (lo, hi) drops records whose shape-fit factor falls outside it before the suite is formed."""
     periods = periods if periods is not None else np.geomspace(max(0.05, 0.5 * T_lower), 1.2 * T_upper, 40)
     inrange = (periods >= T_lower) & (periods <= T_upper)
-    tgt = target_mcer(periods, SDS, SD1, TL)
+    if target is None:
+        tgt = target_mcer(periods, SDS, SD1, TL); target_label = "MCE_R = 1.5 x design spectrum (16.2.1.1 / 11.4.6)"
+    else:
+        from . import site_hazard as SH
+        tp, ts, target_label = target
+        tgt = SH.interp_spectrum(tp, ts, periods)
     for r in recs:
         r["rotd100"] = rotd100(r["a1"], r["a2"], r["dt"], periods)
         r["sa1"] = sdof_peak(r["a1"], r["dt"], periods); r["sa2"] = sdof_peak(r["a2"], r["dt"], periods)
         lr = np.log(tgt[inrange] / r["rotd100"][inrange])
         r["sf_shape"] = float(np.exp(lr.mean()))             # geometric-mean fit of the record to the target
         r["shape_misfit"] = float(lr.std())
-    chosen = sorted(recs, key=lambda r: r["shape_misfit"])[:n_select]
+        r["consistency_penalty"] = 0.0
+        if deagg is not None:
+            from . import site_hazard as SH
+            r["consistency_penalty"] = SH.consistency_penalty(r, deagg)
+        r["rank_score"] = r["shape_misfit"] + r["consistency_penalty"]
+    pool = [r for r in recs if not sf_bounds or (sf_bounds[0] <= r["sf_shape"] <= sf_bounds[1])] or list(recs)
+    ranked = sorted(pool, key=lambda r: r["rank_score"])
+    n_pulse = int(round(pulse_fraction * n_select)) if pulse_fraction else 0
+    pulses = [r for r in ranked if r.get("pulse")][:n_pulse]
+    chosen = pulses + [r for r in ranked if r not in pulses][:n_select - len(pulses)]
+    pulse_note = None
+    if n_pulse and len(pulses) < n_pulse:
+        pulse_note = "16.2.2: %d pulse-type records wanted for the near-fault share, only %d flagged pulse=True in the library" % (n_pulse, len(pulses))
     # start from individual shape-fit factors, then a common multiplier so that mean >= 0.9 target everywhere and >= target on average
     for r in chosen:
         r["sf"] = r["sf_shape"]
@@ -144,13 +167,17 @@ def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=
             devx = float(np.max(np.abs(mx[inrange] / mall[inrange] - 1))); devy = float(np.max(np.abs(my[inrange] / mall[inrange] - 1)))
         else:
             break
-    out = dict(periods=periods.tolist(), target=tgt.tolist(), T_lower=T_lower, T_upper=T_upper,
+    out = dict(periods=periods.tolist(), target=tgt.tolist(), target_label=target_label, T_lower=T_lower, T_upper=T_upper,
                suite_mean_rotd100=mean.tolist(), min_ratio_in_range=float(ratio.min()), mean_ratio_in_range=float(ratio.mean()),
                passes_90pct=bool(ratio.min() >= 0.90 - 1e-6), orientation_dev_x=devx, orientation_dev_y=devy,
                orientation_ok=(max(devx, devy) <= 0.10), common_multiplier=k,
-               selected=[dict(id=r["id"], earthquake=r["earthquake"], station=r["station"], M=r["M"], r_rup_km=r["r_rup_km"],
-                              site_class=r["site_class"], dt=r["dt"], duration_s=r["duration_s"], sf=r["sf"], shape_misfit=r["shape_misfit"],
-                              x_comp=r["x_comp"], comp1=r["comp1"], comp2=r["comp2"], pga_g=r["pga_g"],
+               sets=sets or [dict(set="FEMA P-695 far-field set (22 pairs)", n=len(recs))], n_library=len(recs), n_pool=len(pool),
+               deagg=({"M": (deagg.get("mean") or {}).get("M"), "R_km": (deagg.get("mean") or {}).get("R_km"), "eps": (deagg.get("mean") or {}).get("eps")} if deagg else None),
+               pulse_fraction=pulse_fraction, n_pulse=len(pulses), pulse_note=pulse_note, sf_bounds=list(sf_bounds) if sf_bounds else None,
+               selected=[dict(id=r["id"], earthquake=r.get("earthquake"), station=r.get("station"), M=r.get("M"), r_rup_km=r.get("r_rup_km"),
+                              site_class=r.get("site_class"), dt=r["dt"], duration_s=r["duration_s"], sf=r["sf"], shape_misfit=r["shape_misfit"],
+                              consistency_penalty=r.get("consistency_penalty", 0.0), pulse=bool(r.get("pulse")), year=r.get("year"),
+                              x_comp=r["x_comp"], comp1=r["comp1"], comp2=r["comp2"], pga_g=r.get("pga_g"), set_dir=r.get("set_dir"),
                               rotd100_scaled=(r["sf"] * r["rotd100"]).tolist()) for r in chosen])
     if verbose:
         print("[gm] %d pairs selected; period range %.2f-%.2f s; suite mean/target min %.3f mean %.3f (>=0.90: %s); "

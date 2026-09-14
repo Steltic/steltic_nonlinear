@@ -74,6 +74,11 @@ def cmd_run(a):
             cmd += ["--plasticity", plast, "--member-nseg", str(nseg)]
         elif s == "nlrha":
             cmd = [py, "-m", "nlrha", "run", job, "--parallel", str(a.parallel), "--dt", str(a.dt), "--integrator", a.integrator, "--n", str(a.n_records)] + site + params
+            if a.records_set: cmd += ["--records-set"] + list(a.records_set)
+            if a.target and a.target != "code": cmd += ["--target", a.target]
+            if a.site_hazard: cmd += ["--site-hazard", os.path.abspath(a.site_hazard)]
+            if a.pulse_fraction is not None: cmd += ["--pulse-fraction", str(a.pulse_fraction)]
+            if a.sf_bounds: cmd += ["--sf-bounds", a.sf_bounds]
             # Product rule 1: NLRHA starts ModIMK; fibre via mesh-converge ladder
             plast = a.plasticity if a.plasticity else "imk"
             nseg = a.member_nseg if a.member_nseg is not None else (4 if plast in ("fibre", "fiber") else 1)
@@ -95,6 +100,14 @@ def cmd_run(a):
     except Exception as ex:                                            # noqa: BLE001
         status["four_analyses_error"] = repr(ex); print("!! four_analyses failed:", ex)
     _hub(job)
+    # the 16.1.4 design criteria draft, refreshed from whatever the run produced (cheap; no physics)
+    if not a.no_criteria:
+        try:
+            from nlrha import design_criteria as DC
+            docx, htmlp = DC.write(job, project=a.project, engineer=a.engineer, reviewer=a.reviewer, params_path=(os.path.abspath(a.params) if a.params else None), risk_category=a.risk_category)
+            status["design_criteria"] = [docx, htmlp]; print(">> design criteria (16.1.4):", docx)
+        except Exception as ex:                                        # noqa: BLE001
+            status["design_criteria_error"] = repr(ex); print("!! design criteria failed:", ex)
     status["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     json.dump(status, open(os.path.join(job, "snl_run.json"), "w"), indent=1)
     bad = [s for s, v in status["steps"].items() if v.get("returncode") not in (0, None)]
@@ -134,6 +147,22 @@ def main(argv=None):
     r.add_argument("--no-block", action="store_true", help="DDM: do not write the ddm_analysis block into calc_package.json")
     r.add_argument("--plasticity", default=None, choices=["fibre", "fiber", "imk"], help="override plasticity (defaults: NSP fibre, NLRHA imk)")
     r.add_argument("--member-nseg", type=int, default=None, help="member subdivisions (default 4 fibre / 1 imk)")
+    r.add_argument("--records-set", nargs="*", default=None, help="NLRHA record set folder(s): indexed sets and/or user folders of PEER .AT2 / CSV pairs (default: the shipped P-695 far-field set)")
+    r.add_argument("--target", default="code", choices=["code", "mcer", "cs"], help="NLRHA scaling target (mcer / cs need `nlrha hazard` first)")
+    r.add_argument("--site-hazard", help="site_hazard.json from `nlrha hazard` (default <job>/nlrha/site_hazard.json)")
+    r.add_argument("--pulse-fraction", type=float, default=None, help="share of the suite reserved for pulse-type records")
+    r.add_argument("--sf-bounds", help="NLRHA: keep records whose shape-fit scale factor lies in lo-hi, e.g. 0.25-4")
+    r.add_argument("--no-criteria", action="store_true", help="do not write the 16.1.4 design criteria draft at the end of the run")
+    r.add_argument("--project", help="project name for the design criteria document"); r.add_argument("--engineer"); r.add_argument("--reviewer")
+    fb = sub.add_parser("feedback", help="the three re-design loops back to HR Steel: plan (and optionally run) one, or promote a verified candidate")
+    fb.add_argument("job"); fb.add_argument("--loop", choices=["drift", "resize", "mechanism"], help="which loop to plan / run")
+    fb.add_argument("--run", action="store_true", help="send the brief to HR Steel and verify (needs --steltic-url)")
+    fb.add_argument("--steltic-url", default=os.environ.get("STELTIC_URL", ""), help="HR Steel server (default $STELTIC_URL)")
+    fb.add_argument("--building", help="HR Steel job name of the design of record (default: the job folder name)")
+    fb.add_argument("--verify", default="full", choices=["full", "quick", "none"]); fb.add_argument("--parallel", type=int, default=2)
+    fb.add_argument("--option", action="append", default=[], help="threshold override key=value (see snl/feedback.py DEFAULTS)")
+    fb.add_argument("--promote", help="loop id whose verified candidate becomes the design of record")
+    fb.add_argument("--steltic-engine", help="path to steltic/steel_engine for the DDM re-check (or STELTIC_ENGINE_DIR)")
     mc = sub.add_parser("mesh-converge", help="fibre mesh-convergence ladder (NSP/NLRHA/DDM) with JSON scorecard")
     mc.add_argument("package"); mc.add_argument("--analyses", nargs="+", default=["nsp", "nlrha", "ddm"], choices=["nsp", "nlrha", "ddm", "pushover"])
     mc.add_argument("--out"); mc.add_argument("--steltic-engine"); mc.add_argument("--params")
@@ -151,7 +180,38 @@ def main(argv=None):
     if a.cmd == "mesh-converge":
         from mesh_convergence.driver import main as mc_main
         return mc_main(a)
-    return {"run": cmd_run, "report": cmd_report, "inspect": cmd_inspect}[a.cmd](a)
+    return {"run": cmd_run, "report": cmd_report, "inspect": cmd_inspect, "feedback": cmd_feedback}[a.cmd](a)
+
+
+def cmd_feedback(a):
+    from . import feedback as F, loop as L
+    job = os.path.abspath(a.job)
+    if a.promote:
+        st = L.promote(job, a.promote, a.steltic_url, base_building=a.building, on_log=lambda s_: print(">>", s_))
+        print(">> design of record:", st["status"], st.get("archived")); return 0
+    opts = {}
+    for kv in a.option:
+        k, v = kv.split("=", 1); opts[k] = float(v)
+    jd = F.read_job(job)
+    print(json.dumps(F.status(jd), indent=1))
+    kinds = [a.loop] if a.loop else list(F.LOOPS)
+    for k in kinds:
+        p = F.plan(jd, k, opts)
+        print("\n== %s: %s" % (k, "ELIGIBLE" if p["eligible"] else "not eligible -- " + "; ".join(p["reasons"])))
+        if k == "drift": print(json.dumps(p["numbers"], indent=None))
+        if k == "resize": print("\n".join("  %-24s %-9s %-9s %s" % (r["id"], r["verdict"], r["proposed"] or "", r["reason"][:80]) for r in p["rows"]))
+        if k == "mechanism": print("  storeys:", [(s_["level"], s_["col_yielded"]) for s_ in p["storeys"]], " panel zone:", bool(p["panel_zone"]))
+        print("\n" + p["brief"])
+    if a.run:
+        if not a.loop:
+            sys.exit("--run needs --loop")
+        lp = L.Loop(job, a.loop, options=opts, verify=a.verify, hr_url=a.steltic_url, base_building=a.building, engine_dir=a.steltic_engine,
+                    parallel=a.parallel, on_event=lambda ev: print("  [%s] %s" % (ev.get("type"), ev.get("text") or ev.get("status") or (ev.get("step") or {}).get("name", ""))))
+        lp.start(); lp.join()
+        st = lp.state
+        print(">> loop %s: %s (%s)" % (lp.id, st["status"], (st.get("comparison") or {}).get("verdict_text") or st.get("error")))
+        return 0 if st.get("passed") else 1
+    return 0
 
 
 if __name__ == "__main__":

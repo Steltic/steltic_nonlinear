@@ -51,6 +51,11 @@ python -m snl report  examples/Ex22_SMF                 # rebuild the four-analy
 
 ## Command line
 
+    python -m nlrha hazard <package> --lat .. --lon ..   # site hazard -> nlrha/site_hazard.json
+    python -m nlrha library <folder>                    # index a folder of .AT2 / CSV pairs
+    python -m nlrha criteria <package>                  # 16.1.4 design criteria (docx + html)
+    python -m snl feedback <job> [--loop ...] [--run]   # the three loops back to HR Steel
+
 ```
 python -m snl run <package.zip | folder> [--out DIR] [--steltic-engine DIR] [--params job_hinge_params.json]
                   [--only pushover nlrha ddm] [--skip ...] [--parallel 2]
@@ -66,6 +71,35 @@ not stop the others. The individual engines remain callable on their own (`pytho
 … / report …`, `python -m steltic_ddm run … / report … / viewer …`) with the options documented in `docs/README_pushover.md`,
 `docs/README_nlrha.md` and `docs/README_ddm.md`. Typical times for a 250–700-member building on two cores: pushover 5–15 min,
 NLRHA 30–90 min (dt 0.01 s), DDM 30–70 min.
+
+## Site-specific ground motions (16.2)
+
+`python -m nlrha hazard <package> --lat 34.05 --lon -118.25 --site-class D [--cs-period 1.0 0.3] [--t1 1.1]` pulls the
+ASCE 7-22 multi-period MCE<sub>R</sub> spectrum from the USGS design-maps service and the mean M / R / ε (with the
+contributing faults) from the USGS NSHM disaggregation at the conditioning period, builds conditional (mean) spectra
+(Baker 2011 form, Baker & Jayaram 2008 correlation), screens the site for near-fault sources and the pulse share that
+implies, and writes `nlrha/site_hazard.json` + `site_hazard.html`. `nlrha run --target mcer|cs` then selects and
+scales against the site-specific target, ranking records by spectral shape **and** M / R consistency with the
+disaggregation (16.2.2), reserving the pulse share for records flagged `pulse` in their index. The library grows
+beyond the shipped FEMA P-695 far-field set with `--records-set <folder> ...`: folders of PEER `.AT2` pairs (NGA-West2
+downloads with their `_SearchResults.csv`) or two-column CSVs are indexed on the fly (`python -m nlrha library <folder>`).
+See `docs/README_nlrha.md`.
+
+## Design criteria document (16.1.4)
+
+`python -m nlrha criteria <package> [--project ...] [--engineer ...] [--reviewer ...]` — and every `snl run` — drafts
+the Section 16.1.4 design criteria document from the package, `ch16_params.json`, the hinge parameters, the site
+hazard, the selected suite and any results on file: scope, governing documents, hazard, ground motions, modelling,
+acceptance criteria, the linear basis (16.1.2, including any drift relief), the 16.5 review scope, open items, the
+retrieval log. Written as `design_criteria_16_1_4.docx` (for mark-up; no python-docx needed) and `.html`.
+
+## Feedback loops back to HR Steel
+
+Once the Chapter 16 run is complete, the **Feedback** tab (hub) or `python -m snl feedback <job>` offers three
+re-design loops — design drift to the measured response (16.1.2 relief, RC I–III), resize by system role, mechanism
+shaping through SCWB and panel zones — each with a reviewed change set, the brief HR Steel's agent applies, a
+verification with the same analyses, and one button to make a verified candidate the design of record. See
+`docs/README_feedback.md`.
 
 ## The comparison sheet
 
@@ -98,7 +132,9 @@ be shipped alone; `tests/test_snl.py` asserts they match.
 
 ## Tests
 
-`python -m pytest tests -q` from the repo root (about a minute; needs openseespy). `test_snl.py` covers packaging, the
+`python -m pytest tests -q` from the repo root (a few minutes; needs openseespy). `test_feedback.py`, `test_loop.py`
+(against `tests/fake_hr.py`, a stand-in HR Steel server), `test_site_hazard.py` (canned USGS responses, no network) and
+`test_design_criteria.py` cover the feedback loops, the site-specific hazard and the 16.1.4 document. `test_snl.py` covers packaging, the
 identical viewer cores, zip unpacking, `snl report`, the `snl run` step selection with stubbed engines, and the
 four-analyses sheet regenerated from both examples; `test_pushover.py`, `test_nlrha.py` and `test_ddm.py` are the three
 engines' own smoke tests pointed at the packaged examples (the DDM Ex18 ingest/gate test needs `STELTIC_ENGINE_DIR`);

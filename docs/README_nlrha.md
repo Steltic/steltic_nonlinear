@@ -70,12 +70,44 @@ module strip inside each embedded viewer switches the tab. The `⧉` chip in a s
 
 `records/p695_farfield/` — the 22 far-field pairs (44 horizontal components) of FEMA P-695 Appendix A as
 distributed by the ATC-63 project (PEER NGA .AT2, unscaled), with `index.json` built from Tables A-4A…A-4D.
-Any other set can be used with the same `index.json` layout.
+Any other set can be used with the same `index.json` layout, and `--records-set` takes several folders: a folder
+without `index.json` is indexed on the fly (`python -m nlrha library <folder>`) from PEER `.AT2` pairs (H1/H2, 000/090,
+E/N … stems) or two-column time / acceleration CSVs, reading the NGA-West2 `_SearchResults.csv` (M, R<sub>rup</sub>,
+V<sub>s30</sub>, mechanism, pulse flag) when it sits in the folder.
+
+## Site-specific hazard and targets (16.2.1 / 16.2.2)
+
+`python -m nlrha hazard <package> --lat .. --lon .. [--site-class D] [--vs30 ..] [--return-period 2475] [--cs-period T* ...] [--t1 ..]`
+
+- USGS ASCE 7-22 service: S<sub>S</sub>, S<sub>1</sub>, S<sub>MS</sub>, S<sub>M1</sub>, S<sub>DS</sub>, S<sub>D1</sub>, T<sub>L</sub>,
+  SDC and the multi-period MCE<sub>R</sub> / design spectra (maximum direction) — the package's S<sub>DS</sub> / S<sub>D1</sub> are
+  compared and a mismatch is flagged.
+- USGS NSHM (`conus-2023.R2`) disaggregation at the IMT nearest each conditioning period: mean and modal M, R,
+  ε<sub>0</sub>, the IML, and the contributing sources with their distances.
+- Conditional spectra: CMS(T) = MCE<sub>R</sub>(T) · exp(σ(T) ε (ρ(T, T*) − 1)) with Baker & Jayaram (2008) ρ and a
+  documented NGA-West2-representative σ<sub>ln</sub>(T) curve (`--sigma` overrides it; at T* the CS equals the MCE<sub>R</sub>
+  whatever σ is). Several `--cs-period` values give several spectra; the envelope is checked against the MCE<sub>R</sub>
+  over the period range (16.2.1.2) and reported.
+- Near-fault screen (11.4.1 distances, sources with ≥ 5 % contribution) → the pulse-type share of the suite (16.2.2).
+- Offline: `--offline --design-json <saved fetch_design> --deagg-json <saved {T*: fetch_disagg}>`.
+
+Then `nlrha run --target mcer` (site-specific Method 1) or `--target cs [--cs-period T*]` (Method 2): selection ranks
+by spectral-shape misfit plus a soft M / R consistency penalty against the disaggregation mean, reserves
+`--pulse-fraction` of the suite for `pulse` records, keeps only records inside `--sf-bounds lo-hi` if given, and applies
+the 16.2.3.2 / 16.2.4 rules unchanged against the chosen target. The report names the target, the sets and the
+disaggregation it was ranked against.
+
+## Design criteria document (16.1.4)
+
+`python -m nlrha criteria <package> [--project ..] [--engineer ..] [--reviewer ..] [--params ..]` writes
+`design_criteria_16_1_4.docx` and `.html` (also at the end of every `snl run`). See the README.
 
 ## Limitations (roadmap)
 
 - Cyclic deterioration off (Λ = 0); braces are phenomenological trusses (no fracture); panel zones default rigid (opt-in `panel_zones.mode=scissors` in the shared hinge_params — same builder as pushover); bare frame.
-- Selection by spectral shape against a code spectrum — not a hazard-consistent (M, R) selection (16.2.2).
+- Without `nlrha hazard`, selection is by spectral shape against the code spectrum; with it, M / R consistency is a
+  soft ranking against the disaggregation mean and the pulse share rests on the library's metadata — the tectonic
+  regime and pulse classification of user records are not verified by the tool.
 - No-live-load gravity case (16.3.2) not run automatically; accidental torsion (16.3.4), vertical motion (16.1.3),
   foundations (16.3.6), spectral matching (16.2.3.3) not implemented.
 - Force-controlled check uses AISC 360 E3 computed in-tool (Fy = 50, K = 1); connections not checked.

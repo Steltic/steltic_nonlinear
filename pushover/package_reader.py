@@ -72,7 +72,11 @@ def locate(path: str | os.PathLike) -> Path:
         with zipfile.ZipFile(p) as z:
             z.extractall(out)
         p = out
-    hits = sorted(p.rglob("model_opensees.py"))
+    if (p / "model_opensees.py").is_file():
+        return p                                        # the package root itself -- never a nested copy below it
+    # otherwise the shallowest hit (a zip wrapped in one top folder); feedback/<loop>/candidate/ or
+    # archive/<stamp>/ copies deeper in the tree must never shadow the package the caller named
+    hits = sorted(p.rglob("model_opensees.py"), key=lambda h: (len(h.parts), str(h)))
     if not hits:
         raise FileNotFoundError(f"no model_opensees.py under {p} -- is this a Steltic design package?")
     return hits[0].parent

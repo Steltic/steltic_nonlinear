@@ -33,7 +33,7 @@ def fig_scaling(gm):
     for r in gm["selected"]:
         ax.plot(T, r["rotd100_scaled"], color="#9db3cc", lw=0.8)
     ax.plot(T, mean, color="#1a3d7c", lw=2.2, label="suite mean of scaled RotD100 (%d pairs)" % len(gm["selected"]))
-    ax.plot(T, tgt, color="#b3261e", lw=2, label="target MCE$_R$ (16.2.1.1 / 11.4.6)")
+    ax.plot(T, tgt, color="#b3261e", lw=2, label="target: " + (gm.get("target_label") or "MCE$_R$ (16.2.1.1 / 11.4.6)")[:60])
     ax.plot(T, 0.9 * tgt, color="#b3261e", lw=1, ls="--", label="0.9 × target (16.2.3.2 floor)")
     ax.axvspan(gm["T_lower"], gm["T_upper"], color="#f0ad4e", alpha=0.15, label="period range 16.2.3.1: %.2f–%.2f s" % (gm["T_lower"], gm["T_upper"]))
     ax.set_xscale("log"); ax.set_yscale("log"); ax.set_xlabel("period (s)"); ax.set_ylabel("Sa (g), 5% damped"); ax.grid(alpha=.3, which="both")
@@ -101,11 +101,22 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append("<h2>3. Ground motions (16.2)</h2>")
     H.append('<figure><img src="%s"><figcaption>Selected pairs (grey), suite mean of the maximum-direction spectra (blue) vs the MCE<sub>R</sub> target and its 90%% floor over the scaling range. Suite mean / target: min %.3f, mean %.3f %s. Orientation check 16.2.4 (±10%%): X %.2f, Y %.2f %s.</figcaption></figure>'
              % (fig_scaling(gm), gm["min_ratio_in_range"], gm["mean_ratio_in_range"], _tag(gm["passes_90pct"]), gm["orientation_dev_x"], gm["orientation_dev_y"], _tag(gm["orientation_ok"])))
-    H.append("<table><tr><th>#</th><th>Earthquake · station</th><th>M</th><th>R<sub>rup</sub> km</th><th>Site</th><th>dt (s)</th><th>duration (s)</th><th>scale factor</th><th>comp → X</th><th>shape misfit σ<sub>ln</sub></th></tr>")
+    H.append("<table><tr><th>#</th><th>Earthquake · station</th><th>M</th><th>R<sub>rup</sub> km</th><th>Site</th><th>dt (s)</th><th>duration (s)</th><th>scale factor</th><th>comp → X</th><th>shape misfit σ<sub>ln</sub></th><th>pulse</th></tr>")
+    _f = lambda v, fmt: (fmt % v) if isinstance(v, (int, float)) else "—"
     for i, r in enumerate(gm["selected"]):
-        H.append("<tr><td>%d</td><td>%s · %s</td><td>%.1f</td><td>%.1f</td><td>%s</td><td>%.4g</td><td>%.1f</td><td>%.2f</td><td>%s</td><td>%.2f</td></tr>"
-                 % (i + 1, r["earthquake"], r["station"], r["M"], r["r_rup_km"], r["site_class"], r["dt"], r["duration_s"], r["sf"], r["comp1" if r["x_comp"] == 1 else "comp2"], r["shape_misfit"]))
-    H.append("</table><p>Record set: FEMA P-695 far-field set (22 pairs, PEER NGA as distributed by ATC-63). Selection by spectral-shape fit to the target over the scaling range; one amplitude factor per pair; no spectral matching. Site class of the target: from the package (S<sub>DS</sub>, S<sub>D1</sub>), not a site-specific study — 16.2.2 consistency of M / R / tectonic regime with the controlling hazard is <b>not</b> verified by this prototype (open item).</p>")
+        H.append("<tr><td>%d</td><td>%s · %s</td><td>%s</td><td>%s</td><td>%s</td><td>%.4g</td><td>%.1f</td><td>%.2f</td><td>%s</td><td>%.2f</td><td>%s</td></tr>"
+                 % (i + 1, r.get("earthquake") or r["id"], r.get("station") or "", _f(r.get("M"), "%.1f"), _f(r.get("r_rup_km"), "%.1f"), r.get("site_class") or "—", r["dt"], r["duration_s"], r["sf"], r["comp1" if r["x_comp"] == 1 else "comp2"], r["shape_misfit"], "yes" if r.get("pulse") else ""))
+    sets = "; ".join("%s (%s pairs)" % (x.get("set"), x.get("n")) for x in gm.get("sets") or []) or "FEMA P-695 far-field set (22 pairs, PEER NGA as distributed by ATC-63)"
+    if gm.get("deagg"):
+        d = gm["deagg"]
+        site_note = ("Target: %s. Selection ranked by spectral-shape fit plus a 16.2.2 consistency penalty on M and R against the disaggregation mean (M %.2f, R %.0f km, ε %.2f); %d records from a library of %d."
+                     % (gm.get("target_label"), d.get("M") or 0, d.get("R_km") or 0, d.get("eps") or 0, len(gm["selected"]), gm.get("n_library", 0)))
+        if gm.get("pulse_fraction"):
+            site_note += " Near-fault share: %.0f%% of the suite reserved for pulse-type records (%d selected)%s." % (100 * gm["pulse_fraction"], gm.get("n_pulse", 0), (" — " + gm["pulse_note"]) if gm.get("pulse_note") else "")
+    else:
+        site_note = ("Target: %s. Selection by spectral-shape fit to the target over the scaling range; site class of the target from the package (S<sub>DS</sub>, S<sub>D1</sub>), not a site-specific study — 16.2.2 consistency of M / R / tectonic regime with the controlling hazard is <b>not</b> verified (open item; run <code>nlrha hazard</code> and <code>--target mcer|cs</code>)."
+                     % (gm.get("target_label") or "MCE_R = 1.5 x design spectrum"))
+    H.append("</table><p>Record set: %s. One amplitude factor per pair; no spectral matching. %s</p>" % (sets, site_note))
 
     H.append("<h2>4. Response per record</h2><table><tr><th>Record</th><th>SF</th><th>converged</th><th>peak story drift</th><th>peak roof X / Y (in)</th><th>residual drift</th><th>unacceptable?</th><th>steps · s</th></tr>")
     for p in acc["per_record"]:
@@ -151,7 +162,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
         H.append("</table>")
     H.append("<h2>7. Open items before this supplement is issued</h2><ol>")
     for it in ("Component backbones are unverified placeholders (steltic_pushover/hinge_params.json) — retrieve ASCE 41-23 / AISC 342-22 through Query file manager; add cyclic deterioration (16.3.1).",
-               "Ground-motion selection uses spectral-shape fit to a code spectrum; 16.2.2 consistency with the site's controlling M, R and tectonic regime needs the project hazard (or a site-specific Method 2 spectrum).",
+               ("Ground-motion selection uses spectral-shape fit to a code spectrum; 16.2.2 consistency with the site's controlling M, R and tectonic regime needs the project hazard (or a site-specific Method 2 spectrum)." if not gm.get("deagg")
+                else "Ground motions were ranked against the site disaggregation (16.2.2) and scaled to a site-specific target; the tectonic-regime match and any pulse-type share rest on the library's metadata — confirm them against the project hazard report."),
                "Gravity is spread equally over each level's column nodes; the no-live-load case (16.3.2) is run only when the exception does not apply — %s here." % ("required" if grav_split["no_live_case_needed"] else "not required"),
                "Accidental torsion is not applied (16.3.4 — only where a Type 1 irregularity exists); inherent eccentricity is whatever the diaphragm master/mass placement in the package gives.",
                "Force-controlled check uses AISC 360 E3 nominal strength computed here (Fy = 50, K = 1, weak axis) — a design value the bot must retrieve, and connections/base plates are not checked.",

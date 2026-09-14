@@ -163,7 +163,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     for i, (k, z, master, nA, nB) in enumerate(lv):
         uA = np.array([ops.nodeDisp(nA, 1), ops.nodeDisp(nA, 2)]); uB = np.array([ops.nodeDisp(nB, 1), ops.nodeDisp(nB, 2)])
         resid[i] = max(np.max(np.abs(uA - prev[0])), np.max(np.abs(uB - prev[1]))) / H[i]; prev = np.array([uA, uB])
-    out = dict(record=rec["id"], label="%s %s (%d)" % (rec["earthquake"], rec["station"], rec["year"]), sf=sf, x_comp=rec["x_comp"],
+    out = dict(record=rec["id"], label="%s %s (%s)" % (rec.get("earthquake") or rec["id"], rec.get("station") or "", rec.get("year") or "?"), sf=sf, x_comp=rec["x_comp"],
                converged=converged, reason=reason, steps=step, fails=fails, seconds=time.time() - t0, t_window=(t_start, t_sig), T1x=modal["T1x"], T1y=modal["T1y"],
                damping=damp, peak_story_drift=peak_drift.tolist(), peak_roof_in=peak_roof.tolist(), residual_drift=resid.tolist(),
                peak_def=peak_def, signed_def=signed_def, peak_colN=peak_colN, hist_t=hist_t, hist_roof=hist_roof, brace_hist=brace_hist,

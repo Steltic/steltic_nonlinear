@@ -4,12 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "steltic-nonlinear"
-version = "0.1.0"
+version = "0.2.0"
 description = "Steltic_nonlinear (SNL): Pushover (ASCE 41 NSP), NLRHA (ASCE 7-22 Ch. 16) and DDM (GMNIA system capacity) on a Steltic steel design package, with 3-D viewers and the four-analyses comparison"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = {text = "MIT"}
 dependencies = ["openseespy>=3.5", "numpy>=1.24", "scipy>=1.10", "matplotlib>=3.7"]
+
+[project.optional-dependencies]
+# the Feedback tab server the Steltic hub embeds (snl.loop_server); the CLI needs none of these
+hub = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 
 [project.scripts]
 snl = "snl.cli:main"
@@ -19,7 +23,7 @@ mesh-converge = "mesh_convergence.driver:cli_main"
 packages = ["snl", "pushover", "nlrha", "steltic_ddm", "records", "mesh_convergence"]
 
 [tool.setuptools.package-data]
-snl = ["four_analyses.css"]
+snl = ["four_analyses.css", "loop_ui/*"]
 pushover = ["aisc_shapes.csv", "hinge_params.json", "viewer_core.html", "vendor/*"]
 nlrha = ["ch16_params.json", "viewer_core.html", "vendor/*"]
 steltic_ddm = ["data/*", "viewer_core.html", "vendor/*"]
