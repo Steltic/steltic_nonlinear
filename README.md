@@ -30,6 +30,8 @@ four-analyses narrative.
 > Chapter 16 requires design criteria (16.1.4) and independent review (16.5). Every result must be checked and sealed by a
 > licensed professional engineer.
 
+## For videos and demonstrations see [stelticai.com](https://stelticai.com)
+
 ## Product defaults
 
 See [`docs/PRODUCT_DEFAULTS.md`](docs/PRODUCT_DEFAULTS.md) (rules 1–9) and [`docs/FIBRE_MESH_CONVERGENCE.md`](docs/FIBRE_MESH_CONVERGENCE.md).
