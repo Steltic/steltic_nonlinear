@@ -50,9 +50,32 @@ def new_id(job, kind):
     return os.path.basename(d)
 
 
+def replace_file(tmp, dst, tries=60):
+    """os.replace that tolerates Windows: while another thread holds the target open for reading (the tab polling
+    state.json), MoveFileEx fails with PermissionError (WinError 5 / 32). Readers hold the file for milliseconds, so
+    retry briefly instead of losing the write -- on POSIX the first attempt always succeeds."""
+    for i in range(tries):
+        try:
+            os.replace(tmp, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.01)
+
+
 def load_state(job, loop_id):
     p = os.path.join(loop_dir(job, loop_id), "state.json")
-    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
+    if not os.path.exists(p):
+        return None
+    for i in range(20):                                    # a replace may be in flight on Windows
+        try:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+        except (PermissionError, json.JSONDecodeError):
+            if i == 19:
+                raise
+            time.sleep(0.01)
 
 
 def list_loops(job):
@@ -137,7 +160,9 @@ class Loop(threading.Thread):
     # ------------------------------------------------------------------ bookkeeping
     def _save(self):
         p = os.path.join(self.dir, "state.json"); tmp = p + ".tmp"
-        json.dump(self.state, open(tmp, "w", encoding="utf-8"), indent=1, default=str); os.replace(tmp, p)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self.state, f, indent=1, default=str)
+        replace_file(tmp, p)
 
     def _log(self, text):
         self.state["log"].append(dict(t=now(), text=str(text)))
@@ -624,5 +649,8 @@ def promote(job, loop_id, hr_url, base_building=None, on_log=None):
     except Exception as ex:                                                # noqa: BLE001
         log("four-analyses sheet not rebuilt: %s" % ex)
     st["status"] = "promoted"; st["promoted_at"] = now(); st["archived"] = dict(hr=archived, hub="archive/" + stamp)
-    json.dump(st, open(os.path.join(loop_dir(job, loop_id), "state.json"), "w", encoding="utf-8"), indent=1, default=str)
+    sp = os.path.join(loop_dir(job, loop_id), "state.json")
+    with open(sp + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(st, f, indent=1, default=str)
+    replace_file(sp + ".tmp", sp)
     return st
