@@ -201,3 +201,17 @@ def test_ddm_like_for_like_flags():
     f = L.ddm_like_for_like(opts)
     assert f[:4] == ["--nsub", "2", "2", "4"] and f[f.index("--residual") + 1] == "lehigh" and "--no-rigid-end-offset" in f
     assert L.ddm_like_for_like({}) == [] and "--rigid-end-offset" in L.ddm_like_for_like({"rigid_end_offset": 0.05})
+
+
+def test_state_write_survives_windows_replace_race(monkeypatch):
+    """On Windows os.replace raises PermissionError while the tab holds state.json open; the writer must retry, not lose the write."""
+    job = _job(); lp = L.Loop(job, "mechanism", verify="none", hr_url="http://127.0.0.1:9", base_building="Ex22_SMF")
+    real = os.replace; calls = {"n": 0}
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise PermissionError(5, "Access is denied")
+        return real(src, dst)
+    monkeypatch.setattr(os, "replace", flaky)
+    lp.state["status"] = "probe"; lp._save()
+    assert calls["n"] == 3 and L.load_state(job, lp.id)["status"] == "probe"
