@@ -62,19 +62,42 @@ class FakeLLM(BaseHTTPRequestHandler):
 
 
 class FakeRAG(BaseHTTPRequestHandler):
+    """The Query file manager's rag_server as the Review sees it: /healthz names the documents the corpus holds
+    (`docs`), a query for one that is absent answers the server's own "not in the corpus" note, a query with no
+    document searches everything that is present."""
     queries = []
+    docs = ["ASCE7", "ASCE_41_23", "AISC_342_22"]
 
     def log_message(self, *a):
         pass
 
+    def do_GET(self):
+        out = json.dumps({"ok": True, "spec_index": True, "indexed_docs": FakeRAG.docs, "converted": FakeRAG.docs}).encode("utf-8")
+        self.send_response(200 if self.path.endswith("/healthz") else 404); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         FakeRAG.queries.append(body)
-        hits = []
-        if body.get("clause") == "16.4.1.2" or "drift" in (body.get("query") or ""):
+        coll = body.get("collection") or ""
+        stem = {"engineering_standards_ASCE7": "ASCE7", "engineering_standards_ASCE_41_23": "ASCE_41_23", "engineering_standards_AISC_342_22": "AISC_342_22"}.get(coll, coll)
+        hits, note = [], ""
+        q = body.get("query") or ""
+        if stem and stem not in FakeRAG.docs:
+            note = "%s is not in the corpus yet -- convert it on the Convert tab (canonical stem %s) and rebuild the index" % (stem, stem)
+        elif (body.get("clause") == "16.4.1.2" or "drift" in q) and (not stem or stem == "ASCE7") and "ASCE7" in FakeRAG.docs:
             hits = [{"text": "16.4.1.2 Story Drift. The mean story drift ratio shall not exceed two times the limits of Table 12.12-1.",
                      "doc": "ASCE7", "section_id": "16.4.1.2", "title": "Story Drift", "printed_label": "149", "score": 12.5, "authoritative": True}]
-        out = json.dumps({"results": hits, "collection": body.get("collection"), "count": len(hits), "matched": "exact_section" if hits else ""}).encode("utf-8")
+        elif "target displacement" in q and (not stem or stem == "ASCE_41_23") and not body.get("clause"):
+            hits = [{"text": "7.4.3.3.2 Target Displacement. The target displacement shall be calculated in accordance with Eq. (7-28).",
+                     "doc": "ASCE_41_23", "section_id": "7.4.3.3.2", "title": "Target Displacement", "printed_label": "112", "score": 9.1, "authoritative": True}]
+        elif "drift" in q and not stem and "ASCE7" not in FakeRAG.docs:
+            hits = [{"text": "7.5.3.2 ... the story drift at the target displacement ...", "doc": "ASCE_41_23", "section_id": "7.5.3.2", "title": "Acceptance",
+                     "printed_label": "130", "score": 4.0, "authoritative": True}]
+        out = {"results": hits, "collection": coll, "count": len(hits), "matched": "exact_section" if hits else ""}
+        if note:
+            out["note"] = note
+        out = json.dumps(out).encode("utf-8")
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(out))); self.end_headers()
         self.wfile.write(out)
 
@@ -120,6 +143,10 @@ def test_review_streams_events_grounds_a_clause_and_writes_the_files():
         assert tool["name"] == "search_engineering_standards" and "16.4.1.2" in tool["title"] and tool["step"] == 1
         assert next(e for e in events if e["type"] == "tool_result")["summary"].startswith("1 passage")
         assert FakeRAG.queries[0]["collection"] == "engineering_standards_ASCE7" and FakeRAG.queries[0]["clause"] == "16.4.1.2"
+        corpus = next(e for e in events if e["type"] == "milestone" and e["text"].startswith("standards corpus"))
+        assert "ASCE 7-22 (ASCE7)" in corpus["text"] and "ABSENT: ASCE 7-22" not in corpus["text"]
+        assert "DOCUMENTS IN THE CORPUS -- present: ASCE 7-22 (ASCE7)" in FakeLLM.calls[0]["messages"][0]["content"]
+        assert "How to search" in FakeLLM.calls[0]["messages"][0]["content"]
         usage = [e for e in events if e["type"] == "usage"]
         assert usage[-1]["cum_in"] == 3100 and usage[-1]["cum_out"] == 100
         # the evidence went to the model, with the focus
@@ -151,7 +178,9 @@ def test_mock_model_writes_the_review_offline_and_still_searches():
         os.environ.pop("STELTIC_LLM_BASE_URL", None)
         buf = io.StringIO()
         r = review.run(job, emit=review.Emitter(buf))
-        assert r["ok"] and len(r["searches"]) == 3 and len(FakeRAG.queries) == 3
+        # three searches; the first hits as asked, the other two climb the whole ladder (4 rungs each) before they miss
+        assert r["ok"] and len(r["searches"]) == 3 and len(FakeRAG.queries) == 9
+        assert [s["via"] for s in r["searches"]] == ["as-asked", "exhausted", "exhausted"] and all(s["counted"] for s in r["searches"])
         md = r["review_md"]
         assert "model MOCK" in md and "ACCEPTABLE" in md and "1.46%" in md and "2.00%" in md
         assert "[ASCE 7-22 §16.4.1.2, p. 149]" in md                       # found in the corpus
@@ -163,6 +192,90 @@ def test_mock_model_writes_the_review_offline_and_still_searches():
         R.close()
         for k in ("STELTIC_LLM_MODEL", "RAG_API_URL"):
             os.environ.pop(k, None)
+
+
+def _rag_env(R):
+    os.environ["RAG_API_URL"] = R.url + "/query"
+    rag._status_cache = None
+
+
+def test_corpus_status_names_what_is_present_and_absent():
+    FakeRAG.docs = ["ASCE_41_23", "AISC_342_22", "ASCE_7_22", "IS_875_3"]
+    R = _Server(FakeRAG)
+    try:
+        _rag_env(R)
+        st = rag.status(force=True)
+        assert st["ok"] and st["known"] and st["spec_index"] is True
+        cm = rag.corpus_map(st)
+        assert cm["present"] == {"ASCE41": "ASCE_41_23", "A342": "AISC_342_22", "ASCE7": "ASCE_7_22"}   # a stem variant still counts
+        assert cm["absent"] == ["A341", "A360", "A358"] and cm["other"] == ["IS_875_3"]
+        line = rag.describe_corpus(cm)
+        assert "ASCE 7-22 (ASCE_7_22)" in line and "ABSENT: AISC 341-22 (stem AISC_341_22)" in line and "IS_875_3" in line
+        assert rag.resolve("engineering_standards_ASCE_41_23") == "ASCE41" and rag.resolve("asce-7") == "ASCE7" and rag.resolve("nope") is None
+    finally:
+        R.close(); FakeRAG.docs = ["ASCE7", "ASCE_41_23", "AISC_342_22"]; os.environ.pop("RAG_API_URL", None); rag._status_cache = None
+
+
+def test_a_document_the_corpus_lacks_is_a_gap_not_a_miss_and_costs_no_budget():
+    FakeRAG.docs = ["ASCE_41_23", "AISC_342_22"]                   # the user's PC on 2026-09-20: no ASCE 7
+    FakeRAG.queries.clear()
+    R = _Server(FakeRAG)
+    try:
+        _rag_env(R)
+        res = rag.search("mean story drift ratio limit", "ASCE7", clause="16.4.1.2")
+        assert res["ok"] and res["counted"] is False and res["missing_document"] == "ASCE7"
+        assert "CORPUS GAP" in res["note"] and "stem ASCE7" in res["note"] and "Present: ASCE41 (ASCE_41_23), A342 (AISC_342_22)" in res["note"]
+        assert "Do not search ASCE7 again" in res["note"]
+        # one wide search across the documents that ARE here, never the absent document itself
+        assert [q["collection"] for q in FakeRAG.queries] == [""] and res["via"] == "any-document"
+        assert res["results"][0]["source"] == "ASCE_41_23" and "from ASCE_41_23" in res["note"]
+        txt = rag.render(res)
+        assert txt.startswith("(answered by: any-document)") and "CORPUS GAP" in txt
+        # the review: the model is told, and the budget is not spent on the gap
+        FakeRAG.queries.clear()
+        job = _job()
+        os.environ["STELTIC_LLM_MODEL"] = "MOCK"
+        buf = io.StringIO()
+        r = review.run(job, emit=review.Emitter(buf), max_searches=2)
+        assert r["ok"] and len(r["searches"]) == 3 and all(s["counted"] is False and s["missing_document"] == "ASCE7" for s in r["searches"])
+        assert all("budget" not in (s["note"] or "") for s in r["searches"])   # three uncounted calls against a budget of two
+        events = [json.loads(l) for l in buf.getvalue().splitlines() if l.startswith("{")]
+        corpus = next(e for e in events if e["type"] == "milestone" and e["text"].startswith("standards corpus"))
+        assert "ABSENT: ASCE 7-22 (stem ASCE7)" in corpus["text"] and "present: ASCE 41-23 (ASCE_41_23), AISC 342-22 (AISC_342_22)" in corpus["text"]
+        assert any("absent on this PC" in l and l.startswith("standards corpus: ASCE 7-22") for l in buf.getvalue().splitlines() if not l.startswith("{"))
+        results = [e for e in events if e["type"] == "tool_result"]
+        assert all("ASCE7 is not in the corpus (not counted)" in e["summary"] for e in results)
+        assert r["review_md"].count("(UNVERIFIED)") >= 3                  # nothing from another document is passed off as ASCE 7
+    finally:
+        R.close(); FakeRAG.docs = ["ASCE7", "ASCE_41_23", "AISC_342_22"]
+        for k in ("RAG_API_URL", "STELTIC_LLM_MODEL"):
+            os.environ.pop(k, None)
+        rag._status_cache = None
+
+
+def test_a_miss_climbs_the_ladder_before_it_is_a_miss():
+    FakeRAG.queries.clear()
+    R = _Server(FakeRAG)
+    try:
+        _rag_env(R)
+        # rung 1 (clause 9.9.9 on ASCE 41) misses; rung 2 without the filter finds the target-displacement passage
+        res = rag.search("target displacement", "ASCE41", clause="9.9.9")
+        assert res["results"] and res["counted"] and res["via"].startswith("no-filter")
+        assert [(q["collection"], q.get("clause", "")) for q in FakeRAG.queries] == [("engineering_standards_ASCE_41_23", "9.9.9"), ("engineering_standards_ASCE_41_23", "")]
+        assert rag.render(res).startswith("(answered by: no-filter")
+        # asked of the wrong document: rung 5 answers from the one that holds it, and says so
+        FakeRAG.queries.clear()
+        res = rag.search("target displacement", "A342")
+        assert res["results"] and res["via"] == "any-document" and "answered by ASCE_41_23, NOT by A342" in res["note"]
+        assert [q["collection"] for q in FakeRAG.queries] == ["engineering_standards_AISC_342_22", ""]
+        # nothing anywhere: the ladder is reported, the model is told what to do
+        FakeRAG.queries.clear()
+        res = rag.search("gremlins", "ASCE41", clause="1.2.3")
+        assert res["results"] == [] and res["via"] == "exhausted" and "NOT FOUND after 4 attempts" in res["note"]
+        assert [a["how"] for a in res["attempts"]] == ["as-asked", "no-filter", "exact-id 1.2.3", "any-document"]
+        assert rag.render(res).startswith("NO PASSAGES. (tried: exhausted)")
+    finally:
+        R.close(); os.environ.pop("RAG_API_URL", None); rag._status_cache = None
 
 
 def test_no_standards_server_is_said_not_hidden():

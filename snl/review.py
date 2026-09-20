@@ -24,9 +24,12 @@ TOOLS = [{
     "function": {
         "name": "search_engineering_standards",
         "description": ("Search the licensed standards corpus (ASCE 7-22, ASCE 41-23, AISC 342-22, AISC 341-22, AISC 360-22, AISC 358-22) "
-                        "for the clause, table or equation you are about to cite. Ask one thing per call; give the clause id when you "
-                        "know it (e.g. clause '16.4.1.2'). Cite only what a passage supports; a clause the search cannot find is "
-                        "cited from memory and marked UNVERIFIED."),
+                        "for the clause, table or equation you are about to cite. ONE thing per call. Give the exact id in `clause` when "
+                        "you know it (16.4.1.2, 12.12-1, 16.4-1): the server does an exact section/equation/table lookup first, then full "
+                        "text. `query` in the standard's own words, short. Search only documents the corpus holds (see DOCUMENTS IN THE "
+                        "CORPUS); a miss is escalated for you (filters dropped, exact id, other documents) and the result says which "
+                        "document answered. Cite only what a passage supports; a clause the search cannot find is cited from memory and "
+                        "marked (UNVERIFIED)."),
         "parameters": {
             "type": "object",
             "properties": {
@@ -57,6 +60,12 @@ Rules:
 - Before you cite a clause, table or equation, look it up with search_engineering_standards (at most the number of searches you are told) and cite it as [ASCE 7-22 §16.4.1.2, p. 149] with the page the passage gives. A clause you could not find: cite it from memory and append (UNVERIFIED).
 - Ratios and percentages are written with their basis (e.g. "mean drift 1.46% vs 2.00% = 2 x 1.0% Table 12.12-1, RC IV").
 - Be specific and short. No preamble, no closing pleasantries. Write in English.
+
+How to search (the retrieval policy the design agents follow):
+- One clause, table or equation per call. Put its exact id in `clause` (16.4.1.2, 12.12-1, 16.4-1, Table 12.12-1); the server tries an exact section / equation / table lookup first, then full text. `query` is short and in the standard's own words ("mean story drift ratio limit"), not a sentence of your own.
+- Search only the documents listed under DOCUMENTS IN THE CORPUS. A document listed as ABSENT was never converted on this PC: do not search it (such a call is answered with a corpus-gap note, is not counted, and is wasted); cite it from memory, marked (UNVERIFIED), and say in section 8 that it was unavailable.
+- A miss is escalated for you: the clause filter dropped, the id as an exact lookup, then every other document. When the result says it was answered by another document, cite THAT document, not the one you asked for.
+- NO PASSAGES after the ladder means the wording is not in the indexed text: re-word once in the standard's own terms or ask for the parent section, then cite from memory, (UNVERIFIED). Never invent a clause number, equation id or page.
 """
 
 
@@ -249,18 +258,43 @@ def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int
     em.log("evidence gathered from %s: %d kB, analyses: %s" % (os.path.basename(job), len(json.dumps(ev, default=str)) // 1000, ", ".join(have) or "none"))
     searches: list = []
     budget = max(0, int(max_searches)) if (use_standards and rag.configured()) else 0   # no server: no tool offered, the review says so
+    corpus_line = ""
+    if budget:
+        # what the corpus actually holds, before the first search: the model is told, and a search for a
+        # document that is not here is answered as a gap without spending the budget
+        st = rag.status(force=True)
+        cm = rag.corpus_map(st)
+        corpus_line = rag.describe_corpus(cm)
+        if not st.get("ok") and st.get("note"):
+            em.event(type="warning", text="standards server: %s -- searches may fail; clauses then come from memory, marked UNVERIFIED" % st["note"])
+        em.event(type="milestone", text="standards corpus -- " + corpus_line)
+        if cm.get("known") and cm.get("absent"):
+            em.log("standards corpus: %s absent on this PC -- the model is told not to search %s; convert on the Query file manager's Convert tab (stems %s), then Rebuild index"
+                   % (", ".join(rag.TITLES[k] for k in cm["absent"]), "them" if len(cm["absent"]) > 1 else "it", ", ".join(rag.STEMS[k] for k in cm["absent"])))
+    spent = {"n": 0}                                             # searches that reached a document the corpus holds
 
     def do_search(args: dict) -> str:
         n = len(searches) + 1
         em.event(type="tool", name="search_engineering_standards", step=n, title=_tool_title(args))
-        if n > budget:
-            res = {"ok": False, "results": [], "note": "search budget of %d used up -- cite the remaining clauses from memory, marked UNVERIFIED" % budget, "ms": 0}
+        if spent["n"] >= budget:
+            res = {"ok": False, "results": [], "counted": False, "via": "", "note": "search budget of %d used up -- cite the remaining clauses from memory, marked UNVERIFIED" % budget, "ms": 0}
         else:
             res = rag.search(args.get("query") or "", args.get("document") or "ASCE7", int(args.get("top_k") or 5), args.get("clause") or "", args.get("chapter") or "")
+            if res.get("counted", True):
+                spent["n"] += 1
         searches.append({"n": n, "args": args, "hits": len(res.get("results") or []), "note": res.get("note"), "ms": res.get("ms"),
+                         "via": res.get("via"), "counted": bool(res.get("counted", True)), "missing_document": res.get("missing_document"),
+                         "attempts": res.get("attempts"),
                          "results": [{k: h.get(k) for k in ("source", "section", "title", "page", "score")} for h in (res.get("results") or [])],
                          "passages": [h.get("text") for h in (res.get("results") or [])]})
-        summ = ("%d passage(s)" % len(res.get("results") or [])) + ((" -- " + str(res.get("note")))[:160] if res.get("note") else "")
+        nres = len(res.get("results") or [])
+        summ = "%d passage(s)" % nres
+        if res.get("via") and res["via"] not in ("", "as-asked"):
+            summ += " via " + str(res["via"]).split(" (")[0]
+        if res.get("missing_document"):
+            summ += " -- %s is not in the corpus (not counted)" % res["missing_document"]
+        elif res.get("note") and (not nres or res.get("via") == "any-document"):
+            summ += (" -- " + str(res["note"]))[:160]
         em.event(type="tool_result", step=n, summary=summ, ms=res.get("ms") or 0)
         return rag.render(res)
 
@@ -270,7 +304,12 @@ def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int
         usage = {}
     else:
         em.event(type="status", text="asking %s (up to %d standards searches)" % (conn["model"], budget))
-        messages = [{"role": "system", "content": SYSTEM + ("\nYou may make at most %d searches." % budget if budget else "\nThe standards search is unavailable for this run: cite from memory and mark every clause (UNVERIFIED).")},
+        sys_msg = SYSTEM
+        if budget:
+            sys_msg += "\nDOCUMENTS IN THE CORPUS -- " + corpus_line + "\nYou may make at most %d searches (a search for an ABSENT document is not counted, and is wasted)." % budget
+        else:
+            sys_msg += "\nThe standards search is unavailable for this run: cite from memory and mark every clause (UNVERIFIED)."
+        messages = [{"role": "system", "content": sys_msg},
                     {"role": "user", "content": _evidence_message(ev, focus)}]
         md = ""
         usage = {}
@@ -332,7 +371,8 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
                           ("16.4.2.2", {"query": "force-controlled actions gamma 1.3 Eq. 16.4-1", "document": "ASCE7", "clause": "16.4.2.2"})):
             txt = search(args)
             m = re.search(r"\[1\] (\S+) (\S+)(?: p\. (\S+))?", txt)
-            cite[key] = ("[ASCE 7-22 §%s%s]" % (key, (", p. " + m.group(3)) if m and m.group(3) else "")) if "NO PASSAGES" not in txt else "[ASCE 7-22 §%s] (UNVERIFIED)" % key
+            grounded = "NO PASSAGES" not in txt and "CORPUS GAP" not in txt and "(answered by: any-document" not in txt
+            cite[key] = ("[ASCE 7-22 §%s%s]" % (key, (", p. " + m.group(3)) if m and m.group(3) else "")) if grounded else "[ASCE 7-22 §%s] (UNVERIFIED)" % key
     else:
         cite = {k: "[ASCE 7-22 §%s] (UNVERIFIED)" % k for k in ("16.4.1.2", "16.4.1.1", "16.4.2.2")}
     v = (nl.get("verdict") or {}); L = nl.get("limits") or {}
