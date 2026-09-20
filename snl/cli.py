@@ -4,6 +4,8 @@
                                             [--only pushover nlrha ddm] [--skip ...] [--parallel 2] [--dt 0.01] ...
     python -m snl report <job folder>            # rebuild four_analyses.html + snl_summary.json from existing outputs
     python -m snl inspect <package.zip | folder> # read the design basis (the Pushover Analyst's reader)
+    python -m snl review <job folder> [--focus "..."] [--no-standards] [--max-searches 8]
+                                                 # the model's engineer's review of the run, grounded in the standards (snl/review.py)
 
 One command takes the Steltic output package (the Download .zip or the job folder) and runs the three nonlinear
 analyses in sequence -- Pushover (ASCE 41 NSP), NLRHA (ASCE 7-22 Chapter 16) and DDM (GMNIA system capacity) --
@@ -176,10 +178,17 @@ def main(argv=None):
     mc.add_argument("--no-rigid-end-offset", action="store_true")
     p = sub.add_parser("report"); p.add_argument("job")
     i = sub.add_parser("inspect"); i.add_argument("package"); i.add_argument("--out")
+    rv = sub.add_parser("review", help="the model reads what the run measured, looks the governing clauses up in the standards (RAG_API_URL) and writes review.md / review.html")
+    rv.add_argument("job"); rv.add_argument("--focus", default="", help="what the engineer wants the review to concentrate on")
+    rv.add_argument("--no-standards", action="store_true", help="do not query the standards server; clauses come from the model's memory, marked UNVERIFIED")
+    rv.add_argument("--max-searches", type=int, default=8, help="standards searches the model may make (default 8)")
     a = ap.parse_args(argv)
     if a.cmd == "mesh-converge":
         from mesh_convergence.driver import main as mc_main
         return mc_main(a)
+    if a.cmd == "review":
+        from .review import cmd_review
+        return cmd_review(a)
     return {"run": cmd_run, "report": cmd_report, "inspect": cmd_inspect, "feedback": cmd_feedback}[a.cmd](a)
 
 

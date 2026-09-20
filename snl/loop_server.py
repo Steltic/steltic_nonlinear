@@ -30,6 +30,17 @@ app = FastAPI(title="Nonlinear (SNL) -- feedback loops")
 app.mount("/static", StaticFiles(directory=str(UI)), name="static")
 
 
+@app.middleware("http")
+async def _no_stale_assets(request, call_next):
+    """Every Steltic module page loads /static/app.js by the same absolute path and the browser caches per
+    origin (127.0.0.1:<port>): an asset served on a port another module used earlier would be the wrong
+    module's script. Revalidate on every load."""
+    resp = await call_next(request)
+    if "cache-control" not in resp.headers:
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 def clean_name(s):
     s = re.sub(r"[^A-Za-z0-9_-]", "", (s or "").strip())
     return s or "Project"

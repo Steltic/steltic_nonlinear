@@ -248,12 +248,17 @@ class Loop(threading.Thread):
         self._set("hr_running")
         transcript = open(os.path.join(self.dir, "hr_transcript.txt"), "w", encoding="utf-8")
         text_buf = []
+        reason_buf = []                       # the model's reasoning stream, shown in its own box like the hub does
         def on_ev(ev):
             t = ev.get("type")
             if t == "token":
                 text_buf.append(str(ev.get("text", ""))); transcript.write(str(ev.get("text", "")))
                 if sum(len(x) for x in text_buf) > 400:
                     self.on_event(dict(type="hr_text", id=self.id, text="".join(text_buf))); text_buf.clear()
+            elif t == "reasoning":
+                reason_buf.append(str(ev.get("text", "")))
+                if sum(len(x) for x in reason_buf) > 400:
+                    self.on_event(dict(type="hr_reason", id=self.id, text="".join(reason_buf))); reason_buf.clear()
             elif t == "tool":
                 self.state["hr"]["tools"] += 1
                 self._log("HR step %s: %s" % (ev.get("step", "?"), ev.get("title") or ev.get("name")))
@@ -272,6 +277,8 @@ class Loop(threading.Thread):
         outcome = HR.run(self.hr_url, self.candidate, plan["brief"], on_event=on_ev, should_stop=self.stopped, resume=True)
         if text_buf:
             self.on_event(dict(type="hr_text", id=self.id, text="".join(text_buf)))
+        if reason_buf:
+            self.on_event(dict(type="hr_reason", id=self.id, text="".join(reason_buf)))
         transcript.close()
         self.state["hr"].update(outcome=outcome["outcome"], reason=outcome["reason"])
         if outcome["outcome"] == "stopped":

@@ -5,7 +5,7 @@ const qs = new URLSearchParams(location.search);
 const S = {
   project: (qs.get('project') || 'Project').replace(/[^A-Za-z0-9_-]/g, '') || 'Project',
   me: null, proj: null, step: 1, kind: null, plan: null, opts: {}, edits: {}, verify: 'full', parallel: null,
-  run: null, runState: null, es: null, lastSeq: 0, log: [], hrText: '', include: {},
+  run: null, runState: null, es: null, lastSeq: 0, log: [], hrText: '', hrReason: '', include: {},
 };
 const $ = (s, r = document) => r.querySelector(s);
 const enc = encodeURIComponent;
@@ -217,7 +217,7 @@ async function go_() {
   try {
     const r = await api(`${P()}/loop`, { method: 'POST', body: { kind: S.kind, options: S.opts, edits: S.edits, verify: S.verify, parallel: S.parallel } });
     toast(`loop ${r.id} started — HR Steel candidate ${r.candidate}`, 'ok');
-    S.run = r.id; S.log = []; S.hrText = ''; S.lastSeq = 0; S.step = 3;
+    S.run = r.id; S.log = []; S.hrText = ''; S.hrReason = ''; S.lastSeq = 0; S.step = 3;
     await refresh(); await loadRun(); attachEvents(); render();
   } catch (e) { toast(e.message, 'bad'); }
 }
@@ -232,6 +232,7 @@ function attachEvents() {
     if (e.id && e.id !== S.run) return;
     if (e.type === 'log') { S.log.push(e.text); if (S.log.length > 600) S.log.shift(); appendLog(e.text); }
     else if (e.type === 'hr_text') { S.hrText += e.text; const h = $('#hrtext'); if (h) { h.textContent = S.hrText.slice(-6000); h.scrollTop = h.scrollHeight; } }
+    else if (e.type === 'hr_reason') { S.hrReason += e.text; const h = $('#hrreason'); if (h) { h.textContent = S.hrReason.slice(-6000); h.scrollTop = h.scrollHeight; const w = $('#hrreasonwrap'); if (w) w.hidden = false; } }
     else if (e.type === 'step' || e.type === 'status' || e.type === 'promoted') { await loadRun(); await refresh(); if (S.step === 3) render(); }
     else if (e.type === 'idle') { S.es.close(); S.es = null; await loadRun(); await refresh(); if (S.step === 3) render(); }
   };
@@ -242,7 +243,7 @@ function paneRuns(main) {
   const p = S.proj; const pane = el('div', { class: 'pane' });
   pane.append(el('h2', {}, 'Runs'), el('p', { class: 'lead' }, 'Each run keeps its plan, brief, HR Steel transcript, candidate package and verification under feedback/<id>/ in the project folder.'));
   const runs = el('div', { class: 'runs' });
-  for (const r of (p.loops || []).slice().reverse()) runs.append(el('div', { class: 'run' + (S.run === r.id ? ' on' : ''), onclick: async () => { S.run = r.id; S.log = []; S.hrText = ''; await loadRun(); render(); } },
+  for (const r of (p.loops || []).slice().reverse()) runs.append(el('div', { class: 'run' + (S.run === r.id ? ' on' : ''), onclick: async () => { S.run = r.id; S.log = []; S.hrText = ''; S.hrReason = ''; await loadRun(); render(); } },
     el('span', { class: 'pill ' + pillOf(r.status) }, r.status), el('span', { class: 't' }, `${r.id} · ${r.title}`), el('span', { class: 'hint' }, r.verify), r.passed === true ? el('span', { class: 'pill ok' }, 'passed') : r.passed === false ? el('span', { class: 'pill bad' }, 'not passed') : null, r.promoted_at ? el('span', { class: 'pill ok' }, 'design of record') : null));
   pane.append(runs.childElementCount ? runs : el('p', { class: 'hint' }, 'No runs yet.'));
   if (S.run && S.runState) pane.append(runDetail(S.runState));
@@ -280,7 +281,9 @@ function runDetail(st) {
     box.append(links);
   }
   if (st.modifier_decision) box.append(el('p', { class: 'hint', style: 'margin-top:8px' }, `Panel-zone modifier: ${st.modifier_decision}`));
-  box.append(el('h3', {}, 'HR Steel'), el('div', { class: 'hrtext', id: 'hrtext' }, S.hrText.slice(-6000)));
+  // the re-design as the hub shows a design run: the model's text, and its reasoning in a box of its own
+  box.append(el('h3', {}, 'Model output (HR Steel)'), el('div', { class: 'hrtext', id: 'hrtext' }, S.hrText.slice(-6000)));
+  box.append(el('div', { id: 'hrreasonwrap', hidden: !S.hrReason }, el('h3', {}, 'Model reasoning'), el('div', { class: 'hrtext reason', id: 'hrreason' }, S.hrReason.slice(-6000))));
   box.append(el('h3', {}, 'Log'), el('div', { class: 'log', id: 'log' }));
   return box;
 }

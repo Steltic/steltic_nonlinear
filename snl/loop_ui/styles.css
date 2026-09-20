@@ -179,6 +179,7 @@ tr.excluded td{opacity:.45}
 .tstep .n{color:var(--dimmer);font-size:11px}
 .hrtext{background:#0a0907;border:1px solid var(--line);border-radius:8px;padding:10px 12px;max-height:260px;overflow:auto;font-size:12.5px;
   white-space:pre-wrap;word-break:break-word;color:var(--dim)}
+.hrtext.reason{color:#8f8677;font-style:italic;max-height:200px}
 .cmp{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:8px 0}
 .cmp .c{border:1px solid var(--line);border-radius:7px;padding:8px 12px;font-size:12.5px}
 .cmp .c .l{font-size:11px;color:var(--dimmer);text-transform:uppercase;letter-spacing:.04em}

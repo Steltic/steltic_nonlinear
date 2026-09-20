@@ -65,6 +65,7 @@ python -m snl run <package.zip | folder> [--out DIR] [--steltic-engine DIR] [--p
                   [--tail auto|fine_step|arclength|none] [--post-cap-ratio 0.5] [--no-block]
 python -m snl report  <job folder>        # four_analyses.html + snl_summary.json + the viewer hub from what exists
 python -m snl inspect <package.zip | folder>
+python -m snl review  <job folder> [--focus "..."] [--no-standards] [--max-searches 8]   # the model's review (below)
 ```
 
 `run` unpacks the zip next to itself (or into `--out`), then runs the three engines **in sequence, each in its own
@@ -95,13 +96,37 @@ hazard, the selected suite and any results on file: scope, governing documents, 
 acceptance criteria, the linear basis (16.1.2, including any drift relief), the 16.5 review scope, open items, the
 retrieval log. Written as `design_criteria_16_1_4.docx` (for mark-up; no python-docx needed) and `.html`.
 
+## The review (the model reads the run)
+
+`python -m snl review <job>` — the **Review** tab in the hub — hands the model what the run measured and gets the
+engineer's review back: verdict, what was measured, every Chapter 16 criterion with its value, limit and clause,
+the pushover mechanism and BPON levels, the DDM capacity, the design basis against the §16.1.4 draft, what to
+change and why (ranked), open items. `snl/review.py` gathers the evidence from the files in the job folder
+(`snl_summary.json`, `nlrha/nlrha_package.json`, `pushover/pushover_package.json`, `ddm_results.json`,
+`design/calc_package.json`, `cfg.py`, the criteria draft, any feedback loops) into one bounded document — every
+number from a file, nothing invented — and the model may call one tool, `search_engineering_standards`, which
+posts to `RAG_API_URL` (in the hub: the Query file manager's standards server, started for the run) so the
+clauses it cites are read from the corpus and cited with their page; a clause it could not find is marked
+UNVERIFIED. Outputs: `review.md`, `review.html`, `review_transcript.json` (the evidence and every passage read).
+
+The connection comes from the environment the hub sets for the run — `STELTIC_LLM_BASE_URL`, `_API_KEY`, `_MODEL`,
+`_PROVIDER`, `_REASONING`, `_MAX_TOKENS` (OpenAI-compatible chat completions; OpenRouter reasoning control and
+provider pinning when the base URL is OpenRouter; `<think>` spans and `reasoning_content` deltas both land in the
+reasoning stream). Model `MOCK` writes the review offline from the evidence alone, still running the same standards
+searches. While it works the step prints one JSON event per line — `reasoning`, `token`, `tool`, `tool_result`,
+`milestone`, `status`, `usage` — which the hub shows the way it shows HR Steel and CFS: the model's text on the run
+line, its reasoning in the separate box, one line per search. `--focus` puts the engineer's question first;
+`--no-standards` skips the corpus; `--max-searches` caps the tool calls (8 by default).
+
 ## Feedback loops back to HR Steel
 
 Once the Chapter 16 run is complete, the **Feedback** tab (hub) or `python -m snl feedback <job>` offers three
 re-design loops — design drift to the measured response (16.1.2 relief, RC I–III), resize by system role, mechanism
 shaping through SCWB and panel zones — each with a reviewed change set, the brief HR Steel's agent applies, a
 verification with the same analyses, and one button to make a verified candidate the design of record. See
-`docs/README_feedback.md`.
+`docs/README_feedback.md`. The tab shows the re-design as the hub shows a design run: HR Steel's streamed text in
+**Model output** and its reasoning stream in its own **Model reasoning** box (the loop relays the agent's
+`reasoning` events as `hr_reason`, as it relays `token` as `hr_text`).
 
 ## The comparison sheet
 
@@ -126,7 +151,7 @@ be shipped alone; `tests/test_snl.py` asserts they match.
 
 ## Repo map
 
-`snl/` orchestrator + comparison · `pushover/`, `nlrha/`, `steltic_ddm/` the three engines (unchanged import names) ·
+`snl/` orchestrator, comparison, the review (`review.py`, `llm.py`, `rag.py`) and the feedback loops · `pushover/`, `nlrha/`, `steltic_ddm/` the three engines (unchanged import names) ·
 `records/` FEMA P-695 far-field set · `skills/` the SNL skill and the three constituent skills · `prompts/` Grok Bot set-up ·
 `contract/DDM_START.md` · `docs/` engine READMEs, scoping documents, φ<sub>s</sub> sources, the two example narratives ·
 `examples/Ex22_SMF` (6-storey RC IV SMF, all outputs, the AISC 342-verified job parameter file) and `examples/Ex18_R3`
@@ -136,7 +161,8 @@ be shipped alone; `tests/test_snl.py` asserts they match.
 
 `python -m pytest tests -q` from the repo root (a few minutes; needs openseespy). `test_feedback.py`, `test_loop.py`
 (against `tests/fake_hr.py`, a stand-in HR Steel server), `test_site_hazard.py` (canned USGS responses, no network) and
-`test_design_criteria.py` cover the feedback loops, the site-specific hazard and the 16.1.4 document. `test_snl.py` covers packaging, the
+`test_design_criteria.py` cover the feedback loops, the site-specific hazard and the 16.1.4 document; `test_review.py` drives the
+review against a fake OpenAI-compatible server and a fake standards server (stdlib, no network, no model). `test_snl.py` covers packaging, the
 identical viewer cores, zip unpacking, `snl report`, the `snl run` step selection with stubbed engines, and the
 four-analyses sheet regenerated from both examples; `test_pushover.py`, `test_nlrha.py` and `test_ddm.py` are the three
 engines' own smoke tests pointed at the packaged examples (the DDM Ex18 ingest/gate test needs `STELTIC_ENGINE_DIR`);

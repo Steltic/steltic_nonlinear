@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "steltic-nonlinear"
-version = "0.2.0"
+version = "0.3.0"
 description = "Steltic_nonlinear (SNL): Pushover (ASCE 41 NSP), NLRHA (ASCE 7-22 Ch. 16) and DDM (GMNIA system capacity) on a Steltic steel design package, with 3-D viewers and the four-analyses comparison"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
