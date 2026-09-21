@@ -18,7 +18,7 @@ LEFT = """
 <h2>Timeline trace</h2>
 <select id="chartMode"><option value="roof">Roof displacement (in)</option><option value="drift">Roof drift ratio (%)</option><option value="ag">Ground acceleration (g)</option></select>
 <h2>Colour by</h2>
-<select id="colorMode"><option value="state">Component state (braces live · frames peak)</option><option value="type">Member type</option><option value="sec">Section</option></select>
+<select id="colorMode"><option value="state">Component state (at this step)</option><option value="type">Member type</option><option value="sec">Section</option></select>
 <div class="row"><span style="min-width:90px">Hinge dots</span><select id="hingeMode"><option value="state">colour = state</option><option value="red">red = any plastic hinge</option><option value="off">off</option></select></div>
 <label><input type="checkbox" id="fAg"> Ground-acceleration vector (live)</label>
 """
@@ -36,6 +36,7 @@ MODULE_JS = r"""
 const N = DATA.nlrha; const RECS = N.records; let ri = 0, step = 0, playing = false, colorMode = 'state', chartMode = 'roof', speed = 1;
 const HZ = N.hinges; const hingeByEle = {}; HZ.forEach((h,i) => { (hingeByEle[h.ele] = hingeByEle[h.ele] || []).push(i); });
 const BIDX = N.brace_idx;                       // frames.brace[j] belongs to hinge HZ[BIDX[j]]
+const HIDX = N.hinge_idx || [];                 // frames.hinge[s][j] belongs to hinge HZ[HIDX[j]]
 const eleByTag = {}; meshes.forEach(m => eleByTag[m.userData.tag] = m);
 const SECS = [...new Set(M.elements.map(e=>e.sec))]; const SEC_PAL = [0x5b8dd9,0x2ecc71,0xe67e22,0x9b59b6,0xf1c40f,0x1abc9c,0xe74c3c,0x95a5a6,0xd35400,0x3498db,0x27ae60,0xc0392b];
 const SEC_COL = {}; SECS.forEach((s,i)=>SEC_COL[s]=SEC_PAL[i%SEC_PAL.length]);
@@ -54,7 +55,20 @@ function frameCount(){ return R().frames.t.length; }
 // per-record peak state of every hinge (frames peak, braces worst of compression / tension excursions)
 function peakStates(rec){ return HZ.map((h,i)=>{ const p = rec.hinge_peak[i]; if (h.kind==='brace') return worseOf(hingeState(h, p[0]), hingeState(h, -p[1])); return hingeState(h, p); }); }
 let PEAK = peakStates(R());
-function statesAt(s){ const st = PEAK.slice(); const fb = R().frames.brace[s]; BIDX.forEach((hi,j)=>{ st[hi] = hingeState(HZ[hi], fb[j]); }); return st; }
+// The state of every hinge AT FRAME s. Braces have always been live; beams and columns used to
+// start from PEAK -- the record's worst -- so the dots and the colours were already at their final
+// state on frame 0 and never changed as you played. With frames.hinge present nothing is seeded
+// from the peak. A suite run before that field existed still falls back to it, and says so.
+const LIVE_HINGES = HIDX.length > 0 && !!(R().frames.hinge);
+function statesAt(s){
+  const F = R().frames;
+  const fh = F.hinge && F.hinge[s];
+  const st = fh ? HZ.map(()=> 'elastic') : PEAK.slice();
+  if (fh) HIDX.forEach((hi,j)=>{ const h = HZ[hi]; const v = fh[j];
+    st[hi] = h.kind==='brace' ? hingeState(h, v) : hingeState(h, Math.abs(v)); });
+  const fb = F.brace[s]; BIDX.forEach((hi,j)=>{ st[hi] = hingeState(HZ[hi], fb[j]); });
+  return st;
+}
 function floorsAt(s){ return [[0,0,0]].concat(R().frames.story[s]); }
 function paint(s){
   const st = statesAt(s); const worst = {};
@@ -151,7 +165,7 @@ function init(){
   document.getElementById('fAg').onchange = () => update();
   setLegend(); suite(); update();
 }
-function setLegend(){ if (colorMode==='state') legend([[STATE.elastic,'elastic'],[STATE.yield,'yielded / brace tension yield'],[STATE.buckled,'brace buckled (Δ > Δc)'],[STATE.io,'> IO'],[STATE.ls,'> LS'],[STATE.cp,'> CP'],[STATE.beyond,'beyond b (valid range)']], 'Component state · braces at this instant, beams/columns at their record peak (parameters: '+(N.params_verified?'verified':'UNVERIFIED placeholders')+')', '<span style="color:#d13b3b;font-size:14px;vertical-align:-1px">●</span> solid dot = plastic hinge formed at that member end (brace: mid-length buckling / tension yield); dot colour follows the state, or red for any hinge (Hinge dots selector)');
+function setLegend(){ if (colorMode==='state') legend([[STATE.elastic,'elastic'],[STATE.yield,'yielded / brace tension yield'],[STATE.buckled,'brace buckled (Δ > Δc)'],[STATE.io,'> IO'],[STATE.ls,'> LS'],[STATE.cp,'> CP'],[STATE.beyond,'beyond b (valid range)']], 'Component state · '+(LIVE_HINGES?'every hinge at this instant':'braces at this instant, beams/columns at their record peak (suite run before per-frame hinges: re-run to see them form)')+' (parameters: '+(N.params_verified?'verified':'UNVERIFIED placeholders')+')', '<span style="color:#d13b3b;font-size:14px;vertical-align:-1px">●</span> solid dot = plastic hinge formed at that member end (brace: mid-length buckling / tension yield); dot colour follows the state, or red for any hinge (Hinge dots selector)');
   else if (colorMode==='type') legend([[TYPE_COL.column,'column'],[TYPE_COL.beam,'beam'],[TYPE_COL.brace,'brace']], 'Member type'); else legend(SECS.map(s=>[SEC_COL[s],s]), 'Section'); }
 """
 
@@ -181,6 +195,11 @@ def write(outdir, pkg, prm, ch16, gm, results, acc, modal, xi, pushover_pkg=None
     pos = {t: i for i, t in enumerate(hz)}
     brace_tags = ref["frames"]["brace_tags"]
     brace_idx = [pos[t] for t in brace_tags]
+    # frames.hinge[s][j] is hinge HZ[hinge_idx[j]] at frame s. Absent from suites run before the
+    # per-frame hinge record existed; the page falls back to the record peak for those, which is
+    # what every suite used to get.
+    hinge_tags = ref["frames"].get("hinge_tags") or []
+    hinge_idx = [pos[t] for t in hinge_tags if t in pos]
     heights = ref["heights"]
     recs = []
     for r in results:
@@ -198,7 +217,8 @@ def write(outdir, pkg, prm, ch16, gm, results, acc, modal, xi, pushover_pkg=None
         recs.append(dict(id=r["record"], label=r["label"], sf=round(r["sf"], 3), x_comp=r["x_comp"], ok=not per.get("unacceptable", False), flags=per.get("flags", []),
                          peak_drift=[[round(v, 5) for v in row] for row in r["peak_story_drift"]], peak_roof=r["peak_roof_in"], residual=[round(v, 5) for v in r["residual_drift"]],
                          t_start=round(r["t_window"][0], 2), t_sig=round(r["t_window"][1], 2), T1x=r["T1x"], T1y=r["T1y"], pga=pga,
-                         frames=dict(t=F["t"], dt=(F["t"][1] - F["t"][0]) if len(F["t"]) > 1 else 0.1, story=F["story"], brace=F["brace"], ag=ag), hinge_peak=hp))
+                         frames=dict(t=F["t"], dt=(F["t"][1] - F["t"][0]) if len(F["t"]) > 1 else 0.1, story=F["story"], brace=F["brace"],
+                                     **({"hinge": F["hinge"]} if F.get("hinge") else {}), ag=ag), hinge_peak=hp))
     v = acc["verdict"]
     fc = {r["ele"]: dict(Qu=r["Qu"], demand=r["demand"], phiBRn=r["phiBRn"], DC=r["DC"]) for r in acc["force_controlled_columns"]}
     dg = acc["deformation_groups"]
@@ -212,7 +232,7 @@ def write(outdir, pkg, prm, ch16, gm, results, acc, modal, xi, pushover_pkg=None
             pdt = {d: pushover_pkg["directions"][d]["nsp"]["BSE-2N"]["target_disp_in"] for d in pushover_pkg["directions"]}
         except Exception:
             pdt = None
-    extra = dict(nlrha=dict(records=recs, hinges=HZ, brace_idx=brace_idx, heights=heights, H=sum(heights), story=acc["story"], limits=acc["limits"], verdict=v,
+    extra = dict(nlrha=dict(records=recs, hinges=HZ, brace_idx=brace_idx, hinge_idx=hinge_idx, heights=heights, H=sum(heights), story=acc["story"], limits=acc["limits"], verdict=v,
                             worst_DC_CP=max([g["DC_CP"] for g in dg], default=None), worst_DC_b=max([g["DC_valid"] for g in dg], default=None),
                             worst_DC_fc=max([r["DC"] for r in acc["force_controlled_columns"]], default=None), force_controlled=fc,
                             SMS=1.5 * b.SDS, xi=xi, period_range=[gm.get("T_lower"), gm.get("T_upper")], scaling_min=gm.get("min_ratio_in_range", float("nan")),

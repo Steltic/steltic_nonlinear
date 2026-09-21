@@ -83,6 +83,12 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     hist_t, hist_roof = [], []
     brace_hist = []
     frames_t, frames_story, frames_brace, frames_ag = [], [], [], []       # viewer frames (every rec_every steps)
+    # ...and the plastic deformation of EVERY hinge at each of those frames, in `hz` order. The loop
+    # below already computes `v` per hinge to build peak_def, so keeping it costs no extra
+    # eleResponse call. Without it the viewer had nothing per-step for beam and column hinges and
+    # fell back to the record peak: every frame -- t = 0 included -- was painted with the worst the
+    # record ever reached, so "play" opened on a structure already fully hinged.
+    frames_hinge = []
     masters = [m for k, z, m, nA, nB in lv]
     braces = [t for t in hz if hinges[t]["kind"] == "brace"]
     n_rec = len(ax)
@@ -134,6 +140,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             frames_story.append([[round(ops.nodeDisp(m, 1), 3), round(ops.nodeDisp(m, 2), 3), round(ops.nodeDisp(m, 6), 6)] for m in masters])
             frames_brace.append([round(ops.eleResponse(b, "deformation")[0], 4) for b in braces])
             ir = min(int(t / dt_rec), n_rec - 1); frames_ag.append([round(float(ax[ir] * sf), 4), round(float(ay[ir] * sf), 4)])
+            hinge_row = []
             for tg in hz:
                 h = hinges[tg]
                 if h["kind"] == "brace":
@@ -153,6 +160,8 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                     v = (d[j] - f[j] / K0[tg]) if len(d) >= 6 else 0.0
                 peak_def[tg] = max(peak_def[tg], abs(v))
                 p, n = signed_def[tg]; signed_def[tg] = (max(p, v), min(n, v))
+                hinge_row.append(round(v, 6))
+            frames_hinge.append(hinge_row)
             for c in cols:
                 f = ops.eleResponse(c, "localForce"); peak_colN[c] = max(peak_colN[c], f[0] if f else 0.0)
             if sample_brace and sample_brace in hinges:
@@ -167,7 +176,8 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                converged=converged, reason=reason, steps=step, fails=fails, seconds=time.time() - t0, t_window=(t_start, t_sig), T1x=modal["T1x"], T1y=modal["T1y"],
                damping=damp, peak_story_drift=peak_drift.tolist(), peak_roof_in=peak_roof.tolist(), residual_drift=resid.tolist(),
                peak_def=peak_def, signed_def=signed_def, peak_colN=peak_colN, hist_t=hist_t, hist_roof=hist_roof, brace_hist=brace_hist,
-               frames=dict(t=frames_t, story=frames_story, brace_tags=braces, brace=frames_brace, ag=frames_ag, masters=masters),
+               frames=dict(t=frames_t, story=frames_story, brace_tags=braces, brace=frames_brace, ag=frames_ag,
+                           hinge_tags=list(hz), hinge=frames_hinge, masters=masters),
                hinges_meta={t: dict(kind=hinges[t]["kind"], section=hinges[t]["section"], z=hinges[t]["z"], ele=hinges[t]["ele"], end=hinges[t]["end"]) for t in hz},
                specs={t: hinges[t]["spec"] for t in hz}, heights=H, stats=stats)
     if verbose:
