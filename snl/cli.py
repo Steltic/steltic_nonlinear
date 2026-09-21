@@ -131,6 +131,11 @@ def cmd_report(a):
     print(">> four analyses:", compare.build(job)); _hub(job)
 
 
+def cmd_revise(a):
+    from . import revise
+    revise.run(a.job)
+
+
 def cmd_inspect(a):
     job = _unpack(a.package, a.out)
     subprocess.run([sys.executable, "-m", "pushover", "inspect", job])
@@ -177,6 +182,10 @@ def main(argv=None):
     mc.add_argument("--rigid-end-offset", type=float, default=None, help="HR DDM rigid end offset fraction")
     mc.add_argument("--no-rigid-end-offset", action="store_true")
     p = sub.add_parser("report"); p.add_argument("job")
+    rs = sub.add_parser("revise", help="re-issue the reports with the standards corpus behind them: needs review.md "
+                                       "from the Review tab, re-asks ASCE 7 / ASCE 41 / AISC 342 through RAG_API_URL, "
+                                       "records every passage and replaces the placeholder wording with the citation")
+    rs.add_argument("job")
     i = sub.add_parser("inspect"); i.add_argument("package"); i.add_argument("--out")
     rv = sub.add_parser("review", help="the model reads what the run measured, looks the governing clauses up in the standards (RAG_API_URL) and writes review.md / review.html")
     rv.add_argument("job"); rv.add_argument("--focus", default="", help="what the engineer wants the review to concentrate on")
@@ -189,7 +198,8 @@ def main(argv=None):
     if a.cmd == "review":
         from .review import cmd_review
         return cmd_review(a)
-    return {"run": cmd_run, "report": cmd_report, "inspect": cmd_inspect, "feedback": cmd_feedback}[a.cmd](a)
+    return {"run": cmd_run, "report": cmd_report, "revise": cmd_revise,
+            "inspect": cmd_inspect, "feedback": cmd_feedback}[a.cmd](a)
 
 
 def cmd_feedback(a):
