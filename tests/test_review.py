@@ -83,12 +83,18 @@ class FakeRAG(BaseHTTPRequestHandler):
         stem = {"engineering_standards_ASCE7": "ASCE7", "engineering_standards_ASCE_41_23": "ASCE_41_23", "engineering_standards_AISC_342_22": "AISC_342_22"}.get(coll, coll)
         hits, note = [], ""
         q = body.get("query") or ""
+        # the real rag_server's own normalisation (rag_server.py, the retrieval policy's fields): an
+        # exact type carries the id in `query`, and the server moves it to `clause` before it looks
+        # anything up. The fake has to do the same or it answers a policy-form call with a miss.
+        clause = body.get("clause") or ""
+        if (body.get("type") or "").strip().lower() in ("exact_section", "exact_equation", "exact_table", "id") and q and not clause:
+            clause, q = q, ""
         if stem and stem not in FakeRAG.docs:
             note = "%s is not in the corpus yet -- convert it on the Convert tab (canonical stem %s) and rebuild the index" % (stem, stem)
-        elif (body.get("clause") == "16.4.1.2" or "drift" in q) and (not stem or stem == "ASCE7") and "ASCE7" in FakeRAG.docs:
+        elif (clause == "16.4.1.2" or "drift" in q) and (not stem or stem == "ASCE7") and "ASCE7" in FakeRAG.docs:
             hits = [{"text": "16.4.1.2 Story Drift. The mean story drift ratio shall not exceed two times the limits of Table 12.12-1.",
                      "doc": "ASCE7", "section_id": "16.4.1.2", "title": "Story Drift", "printed_label": "149", "score": 12.5, "authoritative": True}]
-        elif "target displacement" in q and (not stem or stem == "ASCE_41_23") and not body.get("clause"):
+        elif "target displacement" in q and (not stem or stem == "ASCE_41_23") and not clause:
             hits = [{"text": "7.4.3.3.2 Target Displacement. The target displacement shall be calculated in accordance with Eq. (7-28).",
                      "doc": "ASCE_41_23", "section_id": "7.4.3.3.2", "title": "Target Displacement", "printed_label": "112", "score": 9.1, "authoritative": True}]
         elif "drift" in q and not stem and "ASCE7" not in FakeRAG.docs:
@@ -142,11 +148,14 @@ def test_review_streams_events_grounds_a_clause_and_writes_the_files():
         tool = next(e for e in events if e["type"] == "tool")
         assert tool["name"] == "search_engineering_standards" and "16.4.1.2" in tool["title"] and tool["step"] == 1
         assert next(e for e in events if e["type"] == "tool_result")["summary"].startswith("1 passage")
-        assert FakeRAG.queries[0]["collection"] == "engineering_standards_ASCE7" and FakeRAG.queries[0]["clause"] == "16.4.1.2"
+        first = FakeRAG.queries[0]                                        # the retrieval policy's own form:
+        assert first["collection"] == "engineering_standards_ASCE7"       # one document,
+        assert first["query"] == "16.4.1.2" and first["type"] == "id"     # the id alone, asked for as an id
+        assert "clause" not in first                                      # the server is what moves it to `clause`
         corpus = next(e for e in events if e["type"] == "milestone" and e["text"].startswith("standards corpus"))
         assert "ASCE 7-22 (ASCE7)" in corpus["text"] and "ABSENT: ASCE 7-22" not in corpus["text"]
         assert "DOCUMENTS IN THE CORPUS -- present: ASCE 7-22 (ASCE7)" in FakeLLM.calls[0]["messages"][0]["content"]
-        assert "How to search" in FakeLLM.calls[0]["messages"][0]["content"]
+        assert "RETRIEVAL POLICY" in FakeLLM.calls[0]["messages"][0]["content"]
         usage = [e for e in events if e["type"] == "usage"]
         assert usage[-1]["cum_in"] == 3100 and usage[-1]["cum_out"] == 100
         # the evidence went to the model, with the focus
@@ -178,9 +187,10 @@ def test_mock_model_writes_the_review_offline_and_still_searches():
         os.environ.pop("STELTIC_LLM_BASE_URL", None)
         buf = io.StringIO()
         r = review.run(job, emit=review.Emitter(buf))
-        # three searches; the first hits as asked, the other two climb the whole ladder (4 rungs each) before they miss
+        # three searches; the first is answered by the exact id the policy pulled out of the query,
+        # the other two climb the whole ladder before they miss
         assert r["ok"] and len(r["searches"]) == 3 and len(FakeRAG.queries) == 9
-        assert [s["via"] for s in r["searches"]] == ["as-asked", "exhausted", "exhausted"] and all(s["counted"] for s in r["searches"])
+        assert [s["via"] for s in r["searches"]] == ["exact-id 16.4.1.2", "exhausted", "exhausted"] and all(s["counted"] for s in r["searches"])
         md = r["review_md"]
         assert "model MOCK" in md and "ACCEPTABLE" in md and "1.46%" in md and "2.00%" in md
         assert "[ASCE 7-22 §16.4.1.2, p. 149]" in md                       # found in the corpus
@@ -258,11 +268,13 @@ def test_a_miss_climbs_the_ladder_before_it_is_a_miss():
     R = _Server(FakeRAG)
     try:
         _rag_env(R)
-        # rung 1 (clause 9.9.9 on ASCE 41) misses; rung 2 without the filter finds the target-displacement passage
+        # rung 1 is the policy's exact id (9.9.9 on ASCE 41) and misses; rung 2 navigates with the
+        # words alone -- unfiltered, because the id it would have filtered on has already been tried
         res = rag.search("target displacement", "ASCE41", clause="9.9.9")
-        assert res["results"] and res["counted"] and res["via"].startswith("no-filter")
-        assert [(q["collection"], q.get("clause", "")) for q in FakeRAG.queries] == [("engineering_standards_ASCE_41_23", "9.9.9"), ("engineering_standards_ASCE_41_23", "")]
-        assert rag.render(res).startswith("(answered by: no-filter")
+        assert res["results"] and res["counted"] and res["via"] == "fts-navigate"
+        assert [(q.get("query"), q.get("type", "")) for q in FakeRAG.queries] == [("9.9.9", "id"), ("target displacement", "")]
+        assert all(q["collection"] == "engineering_standards_ASCE_41_23" for q in FakeRAG.queries)
+        assert rag.render(res).startswith("(answered by: fts-navigate")
         # asked of the wrong document: rung 5 answers from the one that holds it, and says so
         FakeRAG.queries.clear()
         res = rag.search("target displacement", "A342")
@@ -271,8 +283,10 @@ def test_a_miss_climbs_the_ladder_before_it_is_a_miss():
         # nothing anywhere: the ladder is reported, the model is told what to do
         FakeRAG.queries.clear()
         res = rag.search("gremlins", "ASCE41", clause="1.2.3")
-        assert res["results"] == [] and res["via"] == "exhausted" and "NOT FOUND after 4 attempts" in res["note"]
-        assert [a["how"] for a in res["attempts"]] == ["as-asked", "no-filter", "exact-id 1.2.3", "any-document"]
+        assert res["results"] == [] and res["via"] == "exhausted" and "NOT FOUND after 3 attempts" in res["note"]
+        # the id first, then the words, then every document -- and the rung that used to repeat an
+        # unfiltered query the policy had already sent is gone
+        assert [a["how"] for a in res["attempts"]] == ["exact-id 1.2.3", "fts-navigate", "any-document"]
         assert rag.render(res).startswith("NO PASSAGES. (tried: exhausted)")
     finally:
         R.close(); os.environ.pop("RAG_API_URL", None); rag._status_cache = None

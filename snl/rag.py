@@ -159,14 +159,65 @@ def _shape(data: dict, top_k: int, coll: str) -> list:
 
 
 # ---------------------------------------------------------------- the search, with its ladder
-def search(query: str, document: str = "ASCE7", top_k: int = 5, clause: str = "", chapter: str = "", timeout: float = 60.0) -> dict:
+# ---------------------------------------------------------------- the retrieval policy
+# steltic_grokbot skills/Skill_querying_PACKAGED.md, the same policy HR Steel and CFS follow: ONE
+# document, an EXACT id when the provision is known, full text only to navigate to an id. The model is
+# told to write calls that way; because it will still type a sentence some of the time, the tool puts
+# every call into policy form itself and records the form it sent.
+_DOCNAME_RE = re.compile(r"\b(?:AISC|AISI|ASCE(?:/SEI)?|ANSI)\s*/?\s*[A-Z]?\d+(?:[-\u2013]\d+)?\b", re.I)
+_ID_RE = re.compile(r"\b(?:[A-Za-z]{1,2}\d+(?:\.\d+)*[a-z]?(?:-\d+[a-z]?)?"    # C3.6  C5.4a  E3.4a  F2-1
+                    r"|\d+(?:\.\d+)+(?:-\d+[a-z]?)?"                          # 16.4.1.2  12.12-1
+                    r"|\d+-\d+[a-z]?)\b")                                      # 16.4-1
+_EXACT_TYPES = ("exact_section", "exact_equation", "exact_table", "id")
+
+
+def policy_plan(query: str, clause: str = "", chapter: str = "", qtype: str = "") -> dict:
+    """What the policy makes of one call: exact lookups first, then at most one navigation query.
+
+    -> {"exact": [(kind, id), ...], "nav": text | "", "chapter": letter/number, "label": "..."}"""
+    q = (query or "").strip()
+    qtype = (qtype or "").strip().lower()
+    ch = (chapter or "").strip().upper()
+    exact: list = []
+    nav = ""
+    if qtype in _EXACT_TYPES:
+        exact = [(qtype, (q or clause).strip())]          # the model named the kind: no guessing
+    elif qtype in ("fts", "keyword"):
+        nav = q                                            # the model chose navigation: send its words
+        if clause:
+            exact = [("id", clause.strip())]               # ...but an id it also gave is still asked for first
+    else:
+        stripped = _DOCNAME_RE.sub(" ", q)
+        bare = stripped.strip()
+        if bare and _ID_RE.fullmatch(bare):
+            exact = [("id", bare)]                         # a bare id typed into `query`
+        else:
+            ids = [m.group(0) for m in _ID_RE.finditer(stripped)][:2]
+            exact = [("id", i) for i in ids]
+            if clause and clause.strip().upper() not in [i.upper() for _k, i in exact]:
+                exact.insert(0, ("id", clause.strip()))
+            nav = re.sub(r"\s+", " ", _ID_RE.sub(" ", stripped)).strip(" ,;:-")
+            if len(nav.split()) < 2:
+                nav = ""                                   # nothing left to navigate with
+    seen, uniq = set(), []
+    for k, i in exact:
+        if i and i.upper() not in seen:
+            seen.add(i.upper()); uniq.append((k, i))
+    steps = ["exact-id %s" % i if k == "id" else "%s %s" % (k, i) for k, i in uniq]
+    if nav:
+        steps.append("fts \u00ab%s\u00bb" % nav[:60] + (" chapter %s" % ch if ch else ""))
+    return {"exact": uniq, "nav": nav, "chapter": ch, "label": " \u00b7 ".join(steps) or "as-asked"}
+
+
+def search(query: str, document: str = "ASCE7", top_k: int = 5, clause: str = "", chapter: str = "",
+           timeout: float = 60.0, qtype: str = "", want_commentary: bool = False, neighbors=None) -> dict:
     """One search as the model asked it, escalated before it may report nothing.
 
     -> {"ok", "results", "collection", "note", "matched", "ms", "via", "counted", "missing_document", "attempts"}
     `counted` is False when the call cost the corpus nothing to answer -- the document is not on this
     PC, the server is unreachable -- so the review's budget is not spent on it. Never raises."""
     t0 = time.time()
-    top_k = max(1, min(int(top_k or 5), 8))
+    top_k = max(1, min(int(top_k or 5), 20))   # the server's own cap
     key = resolve(document)
     if key is None:
         if document and document.lower().startswith("engineering_standards"):
@@ -185,15 +236,25 @@ def search(query: str, document: str = "ASCE7", top_k: int = 5, clause: str = ""
     cm = corpus_map(status())
     attempts: list = []
 
-    def rung(how: str, q: str, collection: str, cl: str = "", ch: str = "", qtype: str = ""):
-        """-> (results | None on transport failure, note, matched)."""
+    sent: set = set()
+
+    def rung(how: str, q: str, collection: str, cl: str = "", ch: str = "", kind: str = ""):
+        """-> (results | None on transport failure, note, matched), or ([], "", "") if already sent."""
+        key = (collection, (q or "").strip().lower(), (cl or "").upper(), (ch or "").upper(), kind)
+        if key in sent:
+            return [], "", ""                       # an identical rung: nothing new to learn, no round trip
+        sent.add(key)
         payload = {"query": q, "collection": collection, "top_k": top_k}
         if cl:
             payload["clause"] = cl
         if ch:
             payload["chapter"] = ch
-        if qtype:
-            payload["type"] = qtype
+        if kind:
+            payload["type"] = kind
+        if want_commentary:
+            payload["want_commentary"] = True
+        if neighbors is not None:
+            payload["context_neighbors"] = max(0, min(int(neighbors), 2))
         data, err = _post(payload, timeout)
         if data is None:
             attempts.append({"how": how, "hits": None, "note": "unreachable: %s" % err})
@@ -234,33 +295,62 @@ def search(query: str, document: str = "ASCE7", top_k: int = 5, clause: str = ""
     collection = coll
     if key and cm["known"] and cm["present"].get(key) not in (None, STEMS[key]):
         collection = cm["present"][key]                       # converted under another stem: ask for it by that name
-    # ---- rung 1: as asked
-    res, note, matched = rung("as-asked", query, collection, clause, chapter)
-    if res is None:
-        return unreachable(note)
-    if "is not in the corpus" in note:                            # an older /healthz did not list documents; the server says so now
-        wide = query or clause
-        res2, note2, _m = rung("any-document (%s absent)" % key, wide, "", "", "") if (wide and key) else ([], "", "")
-        if key:
-            return gap(key, res2 or [])
-        return finish([], "as-asked", note, counted=False)
-    if "no specification index" in note:
-        return finish([], "as-asked", "CORPUS GAP -- there is no specification index on this PC at all: nothing was converted. "
-                      "Stop searching; cite every clause from memory, marked (UNVERIFIED), and say so in section 8.", counted=False)
-    if res:
-        return finish(res, "as-asked", note, matched)
-    best = None
-    # ---- rung 2: without the clause / chapter filter
-    if clause or chapter:
-        q2 = query or clause
-        res, note, matched = rung("no-filter", q2, collection)
+    plan = policy_plan(query, clause, chapter, qtype)
+    exact = list(plan["exact"])
+    nav = plan["nav"]
+    tried_ids = {i.upper() for _k, i in exact}
+
+    def corpus_note(note, how):
+        """The two answers that are about the corpus, not about this query. -> a result, or None."""
+        if "is not in the corpus" in note:          # an older /healthz did not list documents; the server says so now
+            wide = query or clause
+            res2, _n2, _m = rung("any-document (%s absent)" % key, wide, "", "", "") if (wide and key) else ([], "", "")
+            return gap(key, res2 or []) if key else finish([], how, note, counted=False)
+        if "no specification index" in note:
+            return finish([], how, "CORPUS GAP -- there is no specification index on this PC at all: nothing was converted. "
+                          "Stop searching; cite every clause from memory, marked (UNVERIFIED), and say so in section 8.", counted=False)
+        return None
+
+    # ---- rung 1: the policy's exact lookups, BEFORE any full text. An id the model knows is asked
+    # for as an id -- a sentence sent at a corpus that indexes provisions by id is how a lookup that
+    # was always going to work gets reported as "not found".
+    for n, (kind, ident) in enumerate(exact):
+        how = ("exact-id %s" % ident) if kind == "id" else ("%s %s" % (kind, ident))
+        res, note, matched = rung(how, ident, collection, "", "", kind)
+        if res is None:
+            return unreachable(note)
+        if n == 0:
+            hit = corpus_note(note, how)
+            if hit is not None:
+                return hit
+        if res:
+            return finish(res, how, note, matched)
+    # ---- rung 2: navigate with full text, in the standard's own words
+    q_nav = nav or query
+    if q_nav or clause:
+        how = "as-asked" if not exact else "fts-navigate"
+        # the clause filter is only worth sending when the policy did not already ask for it as an id
+        cl = "" if exact else clause
+        res, note, matched = rung(how, q_nav or clause, collection, cl, chapter)
+        if res is None:
+            return unreachable(note)
+        if not exact:
+            hit = corpus_note(note, how)
+            if hit is not None:
+                return hit
+        if res:
+            return finish(res, how, note, matched)
+    # ---- rung 3: without the clause / chapter filter -- only when rung 2 carried one. With an exact
+    # id in hand rung 2 already went out unfiltered, and re-sending it learns nothing.
+    if (clause and not exact) or chapter:
+        res, note, matched = rung("no-filter", q_nav or query or clause, collection)
         if res is None:
             return unreachable(note)
         if res:
             return finish(res, "no-filter (the clause/chapter filter dropped)", note, matched)
-    # ---- rung 3: the id as an exact lookup
+    # ---- rung 4: an id the policy did not spot, as an exact lookup
     cid = clause or (query if re.fullmatch(r"(?:Table |Eq\.? ?|Fig\.? ?)?[A-Z]?\d+(?:\.\d+)*(?:-\d+[a-z]?)?", query or "", re.I) else "")
-    if cid:
+    if cid and cid.upper() not in tried_ids:
         res, note, matched = rung("exact-id %s" % cid, cid, collection, "", "", "id")
         if res is None:
             return unreachable(note)

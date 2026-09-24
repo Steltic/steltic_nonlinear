@@ -1,6 +1,6 @@
 """review.py -- the Review step: the model reads what the run measured and writes the engineer's review.
 
-    python -m snl review <job folder> [--focus "..."] [--no-standards] [--max-searches 8]
+    python -m snl review <job folder> [--focus "..."] [--no-standards] [--max-searches N]
 
 Inputs are what a finished run left in the job folder (snl_summary.json, snl_run.json, nlrha/nlrha_package.json,
 pushover/pushover_package.json, ddm_results.json, design/calc_package.json, the §16.1.4 draft, any feedback
@@ -18,25 +18,35 @@ import datetime, html, json, os, re, sys, time
 
 from . import llm, rag
 
-MAX_TURNS = 14
+# Safety ceiling on the agent loop, not a search budget: a capped run stops at its budget long
+# before this, and an uncapped one searches until the review is written.
+MAX_TURNS = 80
 TOOLS = [{
     "type": "function",
     "function": {
         "name": "search_engineering_standards",
-        "description": ("Search the licensed standards corpus (ASCE 7-22, ASCE 41-23, AISC 342-22, AISC 341-22, AISC 360-22, AISC 358-22) "
-                        "for the clause, table or equation you are about to cite. ONE thing per call. Give the exact id in `clause` when "
-                        "you know it (16.4.1.2, 12.12-1, 16.4-1): the server does an exact section/equation/table lookup first, then full "
-                        "text. `query` in the standard's own words, short. Search only documents the corpus holds (see DOCUMENTS IN THE "
-                        "CORPUS); a miss is escalated for you (filters dropped, exact id, other documents) and the result says which "
-                        "document answered. Cite only what a passage supports; a clause the search cannot find is cited from memory and "
-                        "marked (UNVERIFIED)."),
+        "description": ("Search the licensed standards corpus for the clause, table or equation you are about to cite. "
+                        "ONE provision, ONE document per call. When you know the id, ask for it EXACTLY: type=\"exact_section\" | "
+                        "\"exact_equation\" | \"exact_table\" with `query` = the id alone (\"16.4.1.2\", \"16.4-1\", \"12.12-1\") -- not a "
+                        "sentence, not the document name. Use type=\"fts\" only to NAVIGATE to an id, with `query` in the standard's own "
+                        "printed words, one idea, no ids mixed in; read the ids it returns and ask for them exactly next. Search only "
+                        "documents the corpus holds (see DOCUMENTS IN THE CORPUS). A miss is escalated for you (exact id, filters dropped, "
+                        "reworded, other documents) and the result says which document answered. Cite only what a passage supports; a "
+                        "clause the search cannot find is cited from memory and marked (UNVERIFIED)."),
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "What you are looking for, in the standard's own words"},
+                "query": {"type": "string", "description": "The id alone for an exact type; otherwise the standard's own printed words, one idea"},
                 "document": {"type": "string", "enum": list(rag.DOCUMENTS), "description": "; ".join("%s = %s" % (k, d) for k, (_c, d) in rag.DOCUMENTS.items())},
-                "clause": {"type": "string", "description": "Exact clause / table / equation id when known, e.g. 16.4.1.2, 12.12-1, 16.4-1"},
-                "top_k": {"type": "integer", "minimum": 1, "maximum": 8},
+                "type": {"type": "string", "enum": ["exact_section", "exact_equation", "exact_table", "id", "fts", "keyword"],
+                         "description": "How to look it up. Exact types take the id alone in `query`. fts/keyword navigate."},
+                "clause": {"type": "string", "description": "Exact clause / table / equation id, when you did not put it in `query`"},
+                "chapter": {"type": "string", "description": "Restrict a navigation query to one chapter, e.g. 16 or F"},
+                "purpose": {"type": "string", "description": "Why you need it, short -- recorded in the transcript"},
+                "want_commentary": {"type": "boolean", "description": "Commentary instead of the provision. Default false; commentary never supplies a design value."},
+                "context_neighbors": {"type": "integer", "minimum": 0, "maximum": 2,
+                                      "description": "Surrounding chunks to include. Use 1 for an equation, to get its \"where:\" variables."},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
             },
             "required": ["query", "document"],
         },
@@ -57,15 +67,46 @@ Write the review as Markdown with these sections, in this order:
 
 Rules:
 - Every number comes from the EVIDENCE. Never invent a value; when the evidence lacks one, say "not in the run".
-- Before you cite a clause, table or equation, look it up with search_engineering_standards (at most the number of searches you are told) and cite it as [ASCE 7-22 §16.4.1.2, p. 149] with the page the passage gives. A clause you could not find: cite it from memory and append (UNVERIFIED).
+- Before you cite a clause, table or equation, look it up with search_engineering_standards and cite it as [ASCE 7-22 §16.4.1.2, p. 149] with the page the passage gives. A clause you could not find: cite it from memory and append (UNVERIFIED).
 - Ratios and percentages are written with their basis (e.g. "mean drift 1.46% vs 2.00% = 2 x 1.0% Table 12.12-1, RC IV").
 - Be specific and short. No preamble, no closing pleasantries. Write in English.
 
-How to search (the retrieval policy the design agents follow):
-- One clause, table or equation per call. Put its exact id in `clause` (16.4.1.2, 12.12-1, 16.4-1, Table 12.12-1); the server tries an exact section / equation / table lookup first, then full text. `query` is short and in the standard's own words ("mean story drift ratio limit"), not a sentence of your own.
-- Search only the documents listed under DOCUMENTS IN THE CORPUS. A document listed as ABSENT was never converted on this PC: do not search it (such a call is answered with a corpus-gap note, is not counted, and is wasted); cite it from memory, marked (UNVERIFIED), and say in section 8 that it was unavailable.
-- A miss is escalated for you: the clause filter dropped, the id as an exact lookup, then every other document. When the result says it was answered by another document, cite THAT document, not the one you asked for.
-- NO PASSAGES after the ladder means the wording is not in the indexed text: re-word once in the standard's own terms or ask for the parent section, then cite from memory, (UNVERIFIED). Never invent a clause number, equation id or page.
+===== RETRIEVAL POLICY (mandatory -- how every search_engineering_standards call is written) =====
+This is the query policy the Query file manager is built for (steltic_grokbot skills/Skill_querying_PACKAGED.md),
+the same policy HR Steel and CFS follow. The tool applies it to whatever you send and records the form it
+sent; write it that way yourself.
+
+1. ONE document per call, by its key: document="ASCE7" | "ASCE41" | "A342" | "A341" | "A360" | "A358".
+   Never search all documents blindly. System -> component -> action -> method -> the one document that
+   governs: Chapter 16 acceptance is ASCE 7-22; component models and BPON are ASCE 41-23; modelling
+   parameters and acceptance criteria for steel components are AISC 342-22; detailing is AISC 341-22.
+2. EXACT ID WHEN KNOWN. type="exact_section" | "exact_equation" | "exact_table", query = the id ALONE:
+     {"type":"exact_section","document":"ASCE7","query":"16.4.1.2","purpose":"mean drift limit"}
+     {"type":"exact_equation","document":"ASCE7","query":"16.4-1","purpose":"force-controlled action"}
+     {"type":"exact_table","document":"A342","query":"C3.6","purpose":"column modelling parameters"}
+   Not a sentence. Not the document name. Not "ASCE 7-22 Equation 16.4-1 for force-controlled actions".
+3. FULL TEXT ONLY TO NAVIGATE: type="fts", query = the standard's own printed words, one idea, no
+   sentence, no ids mixed in ("mean story drift ratio limit", not "what drift is allowed in Chapter 16").
+   Read the ids it returns, then ask for them EXACTLY in the next call.
+4. One provision per call: provision, definition, equation, limits, table, procedure -- each its own call.
+   For every equation you compute from, also fetch its "where:" variables (context_neighbors=1), its
+   applicability and its exceptions.
+5. Waves: (1) navigation + the core provisions -> (2) definitions, limits and the cross-references the
+   results name -> (3) verification of every factor that entered a number you quote.
+6. Commentary ids carry a C- prefix; want_commentary stays false unless you need intent, and a commentary
+   excerpt never supplies a design value.
+7. Search only the documents listed under DOCUMENTS IN THE CORPUS. A document listed as ABSENT was never
+   converted on this PC: do not search it (such a call is answered with a corpus-gap note, is not counted,
+   and is wasted); cite it from memory, marked (UNVERIFIED), and say in section 8 that it was unavailable.
+8. A miss is escalated for you: the exact id, the clause/chapter filter dropped, a reworded query, then
+   every other document. When the result says another document answered, cite THAT document, not the one
+   you asked for.
+9. Never invent an id. NO PASSAGES after the ladder is an honest answer: re-word ONCE in the standard's own
+   terms or ask for the parent section; do not fill the gap from memory without marking it (UNVERIFIED).
+   Every clause you cite as verified comes from a passage returned this session -- cite document, section,
+   eq/table id and the printed page the passage gives.
+10. Search as often as the review needs. There is no reward for searching less; an uncited clause you
+   could have looked up is the failure, not an extra call.
 """
 
 
@@ -238,10 +279,12 @@ def _evidence_message(ev: dict, focus: str) -> str:
 
 def _tool_title(args: dict) -> str:
     q = (args.get("query") or "").strip()
-    return "%s%s: %s" % (args.get("document") or "?", (" " + args["clause"]) if args.get("clause") else "", q[:90])
+    kind = (args.get("type") or "").strip().lower()
+    how = {"exact_section": "\u00a7", "exact_equation": "eq ", "exact_table": "table ", "id": "id "}.get(kind, "")
+    return "%s%s: %s%s" % (args.get("document") or "?", (" " + args["clause"]) if args.get("clause") else "", how, q[:90])
 
 
-def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int = 8, emit: Emitter | None = None, conn: dict | None = None) -> dict:
+def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int = 0, emit: Emitter | None = None, conn: dict | None = None) -> dict:
     """The whole step. Returns {"ok", "review_md", "paths", "searches", "usage"}."""
     em = emit or Emitter()
     job = os.path.abspath(job)
@@ -257,9 +300,14 @@ def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int
                                                          (" -- standards search off" if not use_standards else " -- no standards server (RAG_API_URL empty): clauses will be cited from memory, marked UNVERIFIED")))
     em.log("evidence gathered from %s: %d kB, analyses: %s" % (os.path.basename(job), len(json.dumps(ev, default=str)) // 1000, ", ".join(have) or "none"))
     searches: list = []
-    budget = max(0, int(max_searches)) if (use_standards and rag.configured()) else 0   # no server: no tool offered, the review says so
+    # `budget` is None when the review may search as often as the work needs (the default), an int when
+    # the engineer capped it, and 0 when there is nothing to search -- then the tool is not offered at all
+    # and the review says so. A cap is a cost control, never a quality target.
+    searching = use_standards and rag.configured()
+    limit = max(0, int(max_searches or 0))
+    budget = (limit or None) if searching else 0
     corpus_line = ""
-    if budget:
+    if searching:
         # what the corpus actually holds, before the first search: the model is told, and a search for a
         # document that is not here is answered as a gap without spending the budget
         st = rag.status(force=True)
@@ -276,10 +324,13 @@ def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int
     def do_search(args: dict) -> str:
         n = len(searches) + 1
         em.event(type="tool", name="search_engineering_standards", step=n, title=_tool_title(args))
-        if spent["n"] >= budget:
+        if budget is not None and spent["n"] >= budget:
             res = {"ok": False, "results": [], "counted": False, "via": "", "note": "search budget of %d used up -- cite the remaining clauses from memory, marked UNVERIFIED" % budget, "ms": 0}
         else:
-            res = rag.search(args.get("query") or "", args.get("document") or "ASCE7", int(args.get("top_k") or 5), args.get("clause") or "", args.get("chapter") or "")
+            res = rag.search(args.get("query") or "", args.get("document") or args.get("doc") or "ASCE7",
+                             int(args.get("top_k") or 5), args.get("clause") or "", args.get("chapter") or "",
+                             qtype=args.get("type") or "", want_commentary=bool(args.get("want_commentary")),
+                             neighbors=args.get("context_neighbors"))
             if res.get("counted", True):
                 spent["n"] += 1
         searches.append({"n": n, "args": args, "hits": len(res.get("results") or []), "note": res.get("note"), "ms": res.get("ms"),
@@ -300,24 +351,31 @@ def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int
 
     if conn.get("mock"):
         em.event(type="status", text="model MOCK: writing the review from the evidence alone")
-        md = mock_review(ev, focus, do_search if budget else None)
+        md = mock_review(ev, focus, do_search if searching else None)
         usage = {}
     else:
-        em.event(type="status", text="asking %s (up to %d standards searches)" % (conn["model"], budget))
+        em.event(type="status", text="asking %s (%s)" % (conn["model"], "standards search off" if not searching
+                 else ("up to %d standards searches" % budget) if budget else "standards searches as needed"))
         sys_msg = SYSTEM
-        if budget:
-            sys_msg += "\nDOCUMENTS IN THE CORPUS -- " + corpus_line + "\nYou may make at most %d searches (a search for an ABSENT document is not counted, and is wasted)." % budget
+        if searching:
+            sys_msg += "\nDOCUMENTS IN THE CORPUS -- " + corpus_line + (
+                "\nYou may make at most %d searches (a search for an ABSENT document is not counted, and is wasted)." % budget
+                if budget else
+                "\nThere is no limit on the number of searches: look up every clause, table and equation you cite. "
+                "A search for an ABSENT document is not counted, and is wasted.")
         else:
             sys_msg += "\nThe standards search is unavailable for this run: cite from memory and mark every clause (UNVERIFIED)."
         messages = [{"role": "system", "content": sys_msg},
                     {"role": "user", "content": _evidence_message(ev, focus)}]
         md = ""
         usage = {}
-        for turn in range(MAX_TURNS):
+        # one turn per search, plus a few to write the review; the ceiling only stops a runaway loop
+        max_turns = MAX_TURNS if budget is None else min(MAX_TURNS, budget + 6)
+        for turn in range(max_turns):
             def on_piece(kind, text):
                 em.event(type=kind, text=text)
             try:
-                out = llm.chat_with_retry(conn, messages, TOOLS if budget else None, on_piece)
+                out = llm.chat_with_retry(conn, messages, TOOLS if searching else None, on_piece)
             except llm.LLMError as e:
                 em.event(type="error", text=str(e))
                 return {"ok": False, "review_md": "", "paths": {}, "searches": searches, "usage": usage}
@@ -342,7 +400,7 @@ def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int
             messages.append({"role": "assistant", "content": ""})
             messages.append({"role": "user", "content": "Your reply was empty. Write the review now, in the eight sections."})
         if not md:
-            em.event(type="error", text="the model did not produce the review after %d turns" % MAX_TURNS)
+            em.event(type="error", text="the model did not produce the review after %d turns" % max_turns)
             return {"ok": False, "review_md": "", "paths": {}, "searches": searches, "usage": usage}
     paths = write_outputs(job, md, ev, searches, conn, focus, time.time() - t0)
     em.event(type="milestone", text="review written: review.md, review.html (%d standards searches, %d s)" % (len(searches), int(time.time() - t0)))
