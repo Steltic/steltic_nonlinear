@@ -66,12 +66,16 @@ def test_grounding_is_recorded_but_verified_is_never_flipped(tmp_path):
                                       "section": "C5.4b", "page": 78, "passage": "TABLE C5.5 Modeling Parameters"}},
           "clauses": {"16.4.1.2": {"grounded": True, "citation": "[ASCE 7-22 §16.4.1.2, p. 189]"}}}
     out = revise.annotate_params(str(tmp_path), ev, log=lambda *a: None)
-    assert out == str(prm)
     got = json.loads(prm.read_text(encoding="utf-8"))
+    # the record now carries a fingerprint of the modelling parameters, so the analysis run copying
+    # a plain params file back over this one does not lose the citation -- and a DIFFERENT parameter
+    # set cannot inherit it (see tests/test_grounding.py)
+    from snl import grounding as _G
+    assert out["path"] == str(prm) and out["fingerprint"] == _G.fingerprint(got)
     assert got["verified"] is False, "retrieving the table is not reconciling the numbers in it"
     assert got["grounding"]["groups"]["beam_flexure"]["citation"] == "[AISC 342-22 §C5.4b, p. 78]"
     assert got["grounding"]["clauses"]["16.4.1.2"] == "[ASCE 7-22 §16.4.1.2, p. 189]"
-    assert "C5.4b" in got["source"] and "NOT been reconciled" in got["source"]
+    assert "C5.4b" in got["source"] and "NOT read out of those tables" in got["source"]
     assert got["beam_flexure"] == {"basis": "x"}, "nothing else in the file is touched"
 
 

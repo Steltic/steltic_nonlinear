@@ -65,8 +65,42 @@ def _run(args):
         print("viewer", V3.write(out, pkg, prm, runs, results, stats))
     except Exception as ex:
         print("viewer failed:", ex)
-    shutil.copy(args.params or os.path.join(os.path.dirname(__file__), "hinge_params.json"), os.path.join(out, "hinge_params_used.json"))
+    _copy_params(args.params or os.path.join(os.path.dirname(__file__), "hinge_params.json"),
+                 os.path.join(out, "hinge_params_used.json"))
     print("wrote", html, "(%.0f s)" % (time.time() - t0))
+
+
+def _copy_params(src, dst):
+    """Copy the parameters the run used into the job folder, keeping any grounding already recorded.
+
+    This copy is what used to erase `snl revise`'s work: the engineer ran Revise, was told to re-run
+    the analyses to "pick the citation up", and the re-run put the un-annotated file straight back --
+    a loop with no exit. The record itself lives in revise_evidence.json at the job root, which the
+    run never writes, so it is simply re-applied here when it was taken against these same numbers.
+    """
+    import shutil as _sh
+    from snl import grounding as _G
+    _sh.copy(src, dst)
+    try:
+        prm = json.load(open(dst, encoding="utf-8"))
+        st, ev = _G.state(prm, os.path.dirname(dst))
+        if st == _G.GROUNDED and ev:
+            prm["grounding"] = (prm.get("grounding") or {}) | {
+                "asked": ev.get("asked"),
+                "groups": {g: {k: r.get(k) for k in ("document", "citation", "section", "page")}
+                           for g, r in (ev.get("groups") or {}).items() if r.get("grounded")},
+                "clauses": {c: (r.get("citation") if isinstance(r, dict) else r)
+                            for c, r in (ev.get("clauses") or {}).items()
+                            if (r.get("grounded") if isinstance(r, dict) else r)},
+                "evidence": _G.EVIDENCE, "reapplied_by": "pushover run"}
+            cites = "; ".join(_G.citations(ev))
+            prm["source"] = ("cited from the corpus on this PC %s -- %s. The numeric backbone values in this "
+                             "file were NOT read out of those tables; `verified` stays false until "
+                             "they are." % (ev.get("asked") or "", cites))
+            json.dump(prm, open(dst, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+            print("params: grounding from %s re-applied (%d groups)" % (_G.EVIDENCE, len(_G.citations(ev))))
+    except Exception as ex:                       # never fail a completed run over a provenance note
+        print("params: could not re-apply grounding:", ex)
 
 
 def main(argv=None):

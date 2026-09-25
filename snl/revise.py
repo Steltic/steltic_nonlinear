@@ -21,7 +21,7 @@ import json
 import os
 import re
 
-from . import rag
+from . import grounding as G, rag
 
 # Each backbone group, and where the standard that governs it says so. A342 first (it is the steel
 # evaluation standard and speaks about these components directly), ASCE 41 as the fallback the
@@ -141,8 +141,12 @@ def probe(log=print) -> dict:
     return ev
 
 
-def annotate_params(job: str, ev: dict, log=print) -> str | None:
-    """Write the grounding into the params file the run actually used. -> its path, or None."""
+def annotate_params(job: str, ev: dict, log=print) -> dict | None:
+    """Write the grounding into the params file the run actually used.
+
+    -> {"path", "fingerprint"}, or None. The fingerprint is of the modelling parameters alone, so the
+    record survives the analysis run copying a byte-identical params file over this one -- and stops a
+    grounding recorded for one parameter set being shown against another."""
     path = next((p for p in (os.path.join(job, "pushover", "hinge_params_used.json"),
                              os.path.join(job, "hinge_params_base.json")) if os.path.exists(p)), None)
     if not path:
@@ -161,11 +165,11 @@ def annotate_params(job: str, ev: dict, log=print) -> str | None:
     if grounded:
         cites = "; ".join(r["citation"] for r in grounded.values())
         prm["source"] = ("cited from the corpus on this PC %s -- %s. The numeric backbone values in "
-                         "this file have NOT been reconciled against those tables; `verified` stays "
-                         "false until an engineer does that." % (ev.get("asked") or "", cites))
+                         "this file were NOT read out of those tables; `verified` stays "
+                         "false until they are." % (ev.get("asked") or "", cites))
     json.dump(prm, open(path, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     log(">> params annotated: %s (%d of %d groups grounded)" % (path, len(grounded), len(GROUPS)))
-    return path
+    return {"path": path, "fingerprint": G.fingerprint(prm)}
 
 
 def run(job: str, log=print) -> dict:
@@ -182,12 +186,51 @@ def run(job: str, log=print) -> dict:
     log(">> asking the corpus for the clauses the reports lean on")
     ev = probe(log=log)
     ev["review_md"] = {"path": review, "bytes": os.path.getsize(review)}
+    prm_rec = annotate_params(job, ev, log=log)
+    if prm_rec:
+        ev["params"] = prm_rec                     # written into the evidence, which the run never touches
     out = os.path.join(job, "revise_evidence.json")
     json.dump(ev, open(out, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     log(">> evidence: %s" % out)
-    annotate_params(job, ev, log=log)
 
-    rebuilt, failed = [], []
+    # The supplements are rendered during the analysis run from live OpenSees objects, so they cannot be
+    # re-rendered here -- and re-running the analyses is what ERASES this grounding (pushover/cli.py copies
+    # the input params over hinge_params_used.json). So the provenance block in each supplement is replaced
+    # where it stands. Only that block moves; not one number is touched.
+    prm = {}
+    if prm_rec:
+        try:
+            prm = json.load(open(prm_rec["path"], encoding="utf-8"))
+        except Exception:
+            prm = {}
+    st, gev = G.state(prm, job)
+    patched = []
+    for rel in ("pushover/pushover_report.html", "nlrha/nlrha_report.html"):
+        fp = os.path.join(job, *rel.split("/"))
+        if not os.path.exists(fp):
+            continue
+        res = G.patch(fp, st, gev, prm)
+        if res == G.PATCHED:
+            patched.append(fp)
+        elif res == G.UNCHANGED:
+            log("   already current: %s" % rel)
+        else:
+            log("!! %s carries no provenance block (written by an older build) -- re-run the analyses "
+                "once to pick up the new supplement, or read the citation in revise_evidence.json" % rel)
+    for pk_rel in ("pushover/pushover_package.json", "nlrha/nlrha_package.json"):
+        pk_path = os.path.join(job, *pk_rel.split("/"))
+        if not os.path.exists(pk_path):
+            continue
+        try:                                        # the four-analyses sheet reads provenance from here
+            pk = json.load(open(pk_path, encoding="utf-8"))
+            pk["params_state"] = st
+            pk["params_grounding"] = (gev or {}).get("groups") or {}
+            json.dump(pk, open(pk_path, "w", encoding="utf-8"), indent=1, default=str)
+            patched.append(pk_path)
+        except Exception as e:
+            log("!! could not update %s: %s" % (pk_rel, e))
+
+    rebuilt, failed = list(patched), []
     try:                                   # the 16.1.4 submittal document reads the params file
         from nlrha import design_criteria as DC
         made = DC.write(job)
@@ -208,6 +251,11 @@ def run(job: str, log=print) -> dict:
     log(">> grounded %d of %d component groups and %d of %d Chapter 16 clauses" % (n, len(GROUPS), c, len(CLAUSES)))
     if n < len(GROUPS) or c < len(CLAUSES):
         log("   what the corpus could not answer stays marked in the reports -- that is the point of the mark")
-    log("   the NLRHA and pushover supplements are written by the analysis run; they pick the citation up "
-        "the next time those run. The 16.1.4 criteria document and the four-analyses sheet are re-issued now.")
+    if st == G.GROUNDED:
+        log("   every document in this project now carries the citation. Do NOT re-run the analyses to "
+            "\"pick it up\" -- a run copies the input parameters over pushover/hinge_params_used.json, and "
+            "the grounding is re-applied from revise_evidence.json on the next run rather than lost.")
+    log("   `verified` stays false: a clause was retrieved, but the printed values were NOT read out of it "
+        "and copied into hinge_params_used.json -- which is what hinge_params.json's own _README says "
+        "verified=true means. Retrieval is not the check.")
     return {"evidence": out, "rebuilt": rebuilt, "failed": failed, "groups_grounded": n, "clauses_grounded": c}
