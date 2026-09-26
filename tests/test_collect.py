@@ -187,3 +187,84 @@ def test_snl_run_uses_the_collected_file_by_default(tmp_path, monkeypatch, capsy
     assert "component parameters: " + os.path.join(job, collect.OUT_NAME) in out and "(collected from the corpus)" in out
     if seen.get("cmds"):
         assert "--params" in seen["cmds"][0] and seen["cmds"][0][seen["cmds"][0].index("--params") + 1] == os.path.join(job, collect.OUT_NAME)
+
+
+# ---------------------------------------------------------------- the loop the first live run fell into
+from http.server import BaseHTTPRequestHandler   # noqa: E402
+from test_review import _sse, _env               # noqa: E402
+
+
+class LoopingLLM(BaseHTTPRequestHandler):
+    """The model as it behaved on g53ex2: it asks AISC 342 to confirm four numbers it remembers, gets the
+    same five passages, and asks again. 68 times. This fake asks forever while it has the tool; the
+    moment the tool is withdrawn it writes the file (the Ex22 values, cited)."""
+    calls = []
+    answer = None
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        LoopingLLM.calls.append(body)
+        self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+        w = self.wfile
+        if body.get("tools"):
+            _sse(w, {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c%d" % len(LoopingLLM.calls),
+                  "function": {"name": "search_engineering_standards",
+                               "arguments": '{"query": "0.025 0.05 0.035 0.07 RBS", "document": "A342"}'}}]}}]})
+            _sse(w, {"choices": [{"delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 100, "completion_tokens": 10}})
+        else:
+            _sse(w, {"choices": [{"delta": {"content": json.dumps(LoopingLLM.answer)}}]})
+            _sse(w, {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 100, "completion_tokens": 10}})
+        w.write(b"data: [DONE]\n\n"); w.flush()
+
+
+def test_the_same_fruitless_search_is_refused_after_three_and_the_run_still_ends(tmp_path):
+    job = _job(tmp_path)
+    FakeRAG.queries.clear(); LoopingLLM.calls.clear()
+    LoopingLLM.answer = {k: GOOD[k] for k in ("material", "beam_flexure", "column_flexure")}
+    R = _Server(FakeRAG); L = _Server(LoopingLLM)
+    old = dict(os.environ)
+    try:
+        os.environ.update(_env(L.url, R.url + "/query")); rag._status_cache = None
+        buf = io.StringIO()
+        r = collect.run(job, emit=collect.Emitter(buf))
+        ev = json.load(open(os.path.join(job, collect.EVIDENCE_NAME), encoding="utf-8"))
+        same = [s for s in ev["searches"] if (s["args"].get("query") or "").startswith("0.025 0.05")]
+        sent = [s for s in same if s.get("via") != "refused"]
+        refused = [s for s in same if s.get("via") == "refused"]
+        assert len(sent) == collect.REPEAT_LIMIT, "the corpus was asked exactly REPEAT_LIMIT times"
+        assert len(refused) == collect.REPEAT_LIMIT, "then refused without a round trip until the tool was withdrawn"
+        assert len([q for q in FakeRAG.queries if (q.get("query") or "").startswith("0.025 0.05")]) <= collect.REPEAT_LIMIT * 4
+        assert any(e.get("type") == "warning" and "withdrawing the search tool" in e["text"] for e in _events(buf))
+        assert not LoopingLLM.calls[-1].get("tools"), "the last call had no tool to loop on"
+        assert r["ok"] and r["verified"], "the model wrote the file once it was made to"
+        assert len(LoopingLLM.calls) < 12, "and it took a handful of turns, not eighty"
+    finally:
+        R.close(); L.close(); os.environ.clear(); os.environ.update(old); rag._status_cache = None
+
+
+def test_the_tables_each_group_needs_are_fetched_before_the_model_is_asked(tmp_path):
+    job = _job(tmp_path)
+    FakeRAG.queries.clear()
+    R = _Server(FakeRAG)
+    try:
+        _rag_env(R); os.environ["STELTIC_LLM_MODEL"] = "MOCK"; os.environ.pop("STELTIC_LLM_BASE_URL", None)
+        collect.run(job, emit=collect.Emitter(io.StringIO()))
+        # exact-table lookups, in policy form, for the tables an SMF with RBS connections is read from
+        asked = [("342" if "AISC_342" in q.get("collection", "") else q.get("collection", ""), q.get("type"), q.get("query")) for q in FakeRAG.queries]
+        assert ("342", "exact_table", "C5.5") in asked and ("342", "exact_table", "C3.6") in asked
+        assert ("342", "exact_table", "A5.2") in asked
+        assert all(q.get("context_neighbors") is not None for q in FakeRAG.queries if q.get("type") == "exact_table")
+        msg = collect._facts_message(collect.gather(job), {}, [{"group": "g", "document": "A342", "how": "exact_table C5.5",
+                                                                  "passages": [{"source": "AISC_342_22", "section": "C5.5", "page": "110", "text": "RBS row"}], "note": ""}])
+        assert msg.startswith("PASSAGES ALREADY RETRIEVED") and "[AISC_342_22 C5.5 p. 110]" in msg
+    finally:
+        R.close(); os.environ.pop("RAG_API_URL", None); os.environ.pop("STELTIC_LLM_MODEL", None); rag._status_cache = None
+
+
+def test_the_prompt_names_the_converter_artefacts_and_the_memory_trap():
+    assert "X 2 0 07" in collect.SYSTEM and "footnotes [d] and [e]" in collect.SYSTEM
+    assert "Never search for a number you remember" in collect.SYSTEM
+    assert ("come back %d times" % collect.REPEAT_LIMIT) in collect.SYSTEM

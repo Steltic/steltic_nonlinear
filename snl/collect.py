@@ -39,6 +39,8 @@ OUT_NAME = "hinge_params_collected.json"
 PARTIAL_NAME = "hinge_params_collected.partial.json"
 EVIDENCE_NAME = "collect_evidence.json"
 MAX_TURNS = 80                     # a safety ceiling on the agent loop, not a search budget
+MAX_SEARCHES = 60                  # a backstop against a runaway: the guard below is what actually stops one
+REPEAT_LIMIT = 3                   # the same search this many times without moving on = the corpus does not hold it
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TEMPLATE = os.path.join(os.path.dirname(_HERE), "pushover", "hinge_params.json")
@@ -100,18 +102,66 @@ What each group needs, and where it lives:
 - column_flexure: AISC 342-22 Table C3.6, "Columns and braces in compression", the ductility row that matches the sections (highly ductile for an SMF). The table gives a and b as expressions in h/tw, L/ry and PG/Pye with caps: write a_expr, b_expr, c_expr in Python with exactly those symbols (h, tw, L, ry, PG, Pye), the caps a_max / b_max, and the acceptance fractions IO_frac_of_a, LS_frac_of_b, CP_frac_of_b. Keep force_controlled_above_P_over_Pye and Mpce_axial_reduction as the standard states them (C3.4a.2.b and the expected flexural strength with axial reduction).
 - brace_axial (only for a braced frame): the compression and tension backbones and acceptance for the brace section type (AISC 342-22 Chapter C brace tables; ASCE 41-23 Chapter 9 where AISC 342 defers), with the stocky / slender limits on KL/r, and Ry for the brace material (AISC 341-22 Table A3.2, e.g. A500 Gr. C).
 
+How the converted tables read (the corpus is a machine conversion of the printed standard):
+- A cell that holds an expression is flattened to its digits: "X 2 0 07 ≤ ." is the printed "X₂ ≤ 0.07"; "5 5 1 0 07 0 95 0 5 2 4" is "5.5 ... ≤ 0.07 ... ^-0.95 ... ^-0.5 ... ^2.4". Read it back into the expression the table prints and say in `decode_note` that you did, quoting the string.
+- Table C5.5 gives the FR-connection rows' `a` as "X₁ ≤ 0.07" / "X₂ ≤ 0.07": X₁ and X₂ are the table's own footnotes [d] and [e], printed as equations in h/tw, bf/2tf, Lb/ry and L/d, and they appear in the converted text as LaTeX blocks ($$ ... $$) immediately after the table. The row gives you the cap (a_max) and b, c, IO, LS, CP; the footnote gives you a_expr. Both are in the passages.
+- PASSAGES ALREADY RETRIEVED are given to you below for the tables each group needs. Read them first. Search only for what they do not contain.
+- Never search for a number you remember. A query made of numbers ("0.025 0.05 0.035 0.07") is you asking the corpus to confirm your memory; it will return the same passages every time and none of them is evidence. The evidence is the passage you already have.
+- If the same search has come back 3 times without the value, the corpus does not hold it in a form you can read: put the group under "missing" with what you did find, and move on. The tool will refuse that search from then on.
+
 Rules:
 - Cite in each group's `source`: the document, the table or equation id, and the printed page, e.g. "AISC 342-22 Table C3.6, p. 46 (pdf 78)". A group without a real table behind it is reported under "missing" with the reason, and its values are left as they were.
-- The converted text can flatten a table's equations into digit strings ("5 5 1 0 07 0 95 0 5 2 4"). Read them back into the expression the table prints and say in `decode_note` that you did, quoting the string. If a string cannot be read back unambiguously, that value is missing.
 - Never change the schema, never add groups, never touch nsp / numerics / gravity_for_pushover / fema_p695 / panel_zones. Do not set `verified` yourself; it is computed from what you sourced.
 - When you are done, reply with ONLY the JSON object (the whole file), no prose, no code fence.
 
 """ + RETRIEVAL_POLICY
 
 
-def _facts_message(facts: dict, template: dict) -> str:
+# The tables each group is read from. Collect fetches these itself before the model is asked, so the
+# model reads rather than hunts -- the first live run spent 68 searches asking AISC 342 to confirm four
+# numbers it remembered, while the row it needed had come back on its second search.
+PLAN = {
+    "material":       [("A342", "exact_table", "A5.2", 1), ("A341", "exact_table", "A3.2", 1)],
+    "beam_flexure":   [("A342", "exact_table", "C5.5", 2),
+                       ("A342", "fts", "RBS moment connection in conformance with ANSI/AISC 358", 2),
+                       ("A342", "exact_table", "C2.2", 1)],
+    "column_flexure": [("A342", "exact_table", "C3.6", 2), ("A342", "exact_section", "C3.4a", 1)],
+    "brace_axial":    [("A342", "exact_table", "C3.6", 2), ("A342", "fts", "braces in compression buckling modeling parameters", 1),
+                       ("ASCE41", "fts", "steel braces in compression modeling parameters acceptance criteria", 1)],
+}
+
+
+def prefetch(facts: dict, search) -> list:
+    """The passages for every needed group, up front. -> [{"group", "document", "how", "passages": [...]}]"""
+    out = []
+    for gid in facts["needed"]:
+        for doc, how, q, nb in PLAN.get(gid, []):
+            if gid == "beam_flexure" and not facts.get("moment_frame") and how == "exact_table" and q == "C5.5":
+                continue                                   # member hinges, not FR connections: C2.2 alone
+            res = search({"document": doc, "type": how, "query": q, "context_neighbors": nb, "top_k": 8,
+                          "purpose": "prefetch for %s" % gid}, raw=True)
+            out.append({"group": gid, "document": doc, "how": "%s %s" % (how, q),
+                        "passages": [{"source": h.get("source"), "section": h.get("section"), "page": h.get("page"),
+                                      "text": (h.get("text") or "")[:3500]} for h in (res.get("results") or [])[:6]],
+                        "note": res.get("note") or ""})
+    return out
+
+
+def _facts_message(facts: dict, template: dict, fetched: list | None = None) -> str:
     f = {k: v for k, v in facts.items() if k not in ("job",)}
-    return ("BUILDING (from the design package):\n" + json.dumps(f, indent=1, ensure_ascii=False)
+    pre = ""
+    if fetched:
+        blocks = []
+        for r in fetched:
+            if not r["passages"]:
+                blocks.append("### %s -- %s %s: NOTHING RETURNED%s" % (r["group"], r["document"], r["how"], (" (" + r["note"][:120] + ")") if r["note"] else ""))
+                continue
+            blocks.append("### %s -- %s %s" % (r["group"], r["document"], r["how"]))
+            for h in r["passages"]:
+                blocks.append("[%s %s p. %s]\n%s" % (h.get("source") or r["document"], h.get("section") or "", h.get("page") or "?", h["text"]))
+        pre = ("PASSAGES ALREADY RETRIEVED (read these first -- the tables the groups are read from; cite them by the "
+               "document, section and page shown in brackets):\n\n" + "\n\n".join(blocks) + "\n\n")
+    return (pre + "BUILDING (from the design package):\n" + json.dumps(f, indent=1, ensure_ascii=False)
             + "\n\nGROUPS TO FILL: " + ", ".join(facts["needed"])
             + "\n\nFILE SCHEMA (the repository placeholder; keep every key, replace the values of the groups above, "
               "give each a `source`; leave the other groups exactly as they are):\n"
@@ -268,7 +318,7 @@ def write_evidence(job: str, facts: dict, searches: list, probs: dict, ok: bool,
     ev = {"asked": datetime.datetime.now().isoformat(timespec="seconds"), "rag_url": rag.url(),
           "model": conn.get("model") or "MOCK", "building": facts, "needed": facts["needed"],
           "verified": ok, "problems": {g: p for g, p in probs.items() if p}, "written": out_path,
-          "searches": searches}
+          "refused": [x for x in searches if x.get("via") == "refused"], "searches": searches}
     p = os.path.join(job, EVIDENCE_NAME)
     json.dump(ev, open(p, "w", encoding="utf-8"), indent=1, ensure_ascii=False, default=str)
     # the §16.1.4 criteria document reads retrieval_log.md for its "standards consulted" section
@@ -316,9 +366,33 @@ def run(job: str, out_name: str = OUT_NAME, emit: Emitter | None = None, conn: d
         em.event(type="error", text="no standards server (RAG_API_URL is empty): nothing can be collected -- start the Query file manager from the hub's Modules page")
         return {"ok": False, "verified": False, "path": "", "missing": facts["needed"], "searches": [], "usage": {}}
 
-    def do_search(args: dict) -> str:
+    repeats: dict = {}                                       # normalised search -> times the model sent it
+    refused: list = []                                       # searches the guard closed, for the record
+
+    def _key(args: dict) -> tuple:
+        q = re.sub(r"[^0-9a-z./ -]", " ", (args.get("query") or "").lower())
+        return ((args.get("document") or args.get("doc") or "A342").upper(), (args.get("type") or "").lower(),
+                " ".join(q.split()), (args.get("clause") or "").upper(), (args.get("chapter") or "").upper())
+
+    def do_search(args: dict, raw: bool = False):
         n = len(searches) + 1
         em.event(type="tool", name="search_engineering_standards", step=n, title=_tool_title(args))
+        # The same search again is the model not accepting what it was given. Three times is the
+        # limit: after that the corpus is declared not to hold it and the search is refused without
+        # a round trip, so the run ends with a missing group instead of 68 identical queries.
+        k = _key(args)
+        repeats[k] = repeats.get(k, 0) + 1
+        if repeats[k] > REPEAT_LIMIT or len(searches) >= MAX_SEARCHES:
+            why = ("ABSENT -- this exact search has been made %d times and returned the same passages each time. The "
+                   "corpus does not hold what you are looking for in a form this search can find. Do NOT send it again: "
+                   "put the group under \"missing\" with what you did find, and move on."
+                   % (repeats[k] - 1)) if repeats[k] > REPEAT_LIMIT else \
+                  ("ABSENT -- %d searches is the ceiling for this step. Write the file now with what you have; a group "
+                   "you could not source goes under \"missing\"." % MAX_SEARCHES)
+            refused.append({"n": n, "args": args, "why": why[:80]})
+            em.event(type="tool_result", step=n, summary="refused: " + why[:90], ms=0)
+            searches.append({"n": n, "args": args, "hits": 0, "note": why, "ms": 0, "via": "refused", "results": [], "passages": []})
+            return {"ok": False, "results": [], "note": why, "via": "refused"} if raw else "NO PASSAGES. " + why
         res = rag.search(args.get("query") or "", args.get("document") or args.get("doc") or "A342",
                          int(args.get("top_k") or 5), args.get("clause") or "", args.get("chapter") or "",
                          qtype=args.get("type") or "", want_commentary=bool(args.get("want_commentary")),
@@ -329,10 +403,17 @@ def run(job: str, out_name: str = OUT_NAME, emit: Emitter | None = None, conn: d
                          "passages": [h.get("text") for h in (res.get("results") or [])]})
         nres = len(res.get("results") or [])
         summ = "%d passage(s)" % nres + ((" via " + str(res["via"]).split(" (")[0]) if res.get("via") not in ("", "as-asked", None) else "")
+        if repeats[k] == REPEAT_LIMIT:
+            summ += " -- asked %d times now; one more and it is declared absent" % REPEAT_LIMIT
         em.event(type="tool_result", step=n, summary=summ, ms=res.get("ms") or 0)
-        return rag.render(res)
+        return res if raw else rag.render(res)
 
     usage: dict = {}
+    em.event(type="status", text="fetching the tables each group is read from")
+    fetched = prefetch(facts, do_search)
+    got = sum(1 for r in fetched if r["passages"])
+    em.event(type="milestone", text="pre-fetched %d of %d table lookups (%d passages) -- the model reads these before it searches"
+             % (got, len(fetched), sum(len(r["passages"]) for r in fetched)))
     if conn.get("mock"):
         em.event(type="status", text="model MOCK: taking the values from the Ex22 corpus-read example")
         filled = mock_collect(facts, do_search)
@@ -341,13 +422,22 @@ def run(job: str, out_name: str = OUT_NAME, emit: Emitter | None = None, conn: d
         sys_msg = SYSTEM + "\nDOCUMENTS IN THE CORPUS -- " + corpus_line + \
             "\nThere is no limit on the number of searches: every value comes from a passage retrieved this session."
         messages = [{"role": "system", "content": sys_msg},
-                    {"role": "user", "content": _facts_message(facts, template)}]
+                    {"role": "user", "content": _facts_message(facts, template, fetched)}]
         filled = None
+        forced = False                                       # tools withdrawn: the model must answer now
         for turn in range(MAX_TURNS):
             def on_piece(kind, text):
                 em.event(type=kind, text=text)
+            # A model that keeps sending a search the guard has already refused is not going to stop on
+            # its own. After REPEAT_LIMIT refusals the tool is taken away and it is asked for the file.
+            if not forced and len(refused) >= REPEAT_LIMIT:
+                forced = True
+                em.event(type="warning", text="%d refused searches -- withdrawing the search tool; the model is asked to write the file with what it has" % len(refused))
+                messages.append({"role": "user", "content": "Stop searching. Write the complete parameter file now as ONE JSON object: "
+                                                            "every group you could read from the passages filled and sourced, every group "
+                                                            "you could not under \"missing\" with the reason. Nothing else."})
             try:
-                out = llm.chat_with_retry(conn, messages, TOOLS, on_piece)
+                out = llm.chat_with_retry(conn, messages, None if forced else TOOLS, on_piece)
             except llm.LLMError as e:
                 em.event(type="error", text=str(e))
                 return {"ok": False, "verified": False, "path": "", "missing": facts["needed"], "searches": searches, "usage": usage}
@@ -399,11 +489,8 @@ def run(job: str, out_name: str = OUT_NAME, emit: Emitter | None = None, conn: d
 
 # ---------------------------------------------------------------- MOCK
 def mock_collect(facts: dict, search=None) -> dict:
-    """Offline: the corpus-read Ex22 values, labelled as such. Makes the same searches so the log is real."""
+    """Offline: the corpus-read Ex22 values, labelled as such. The pre-fetch already made the searches."""
     ex = json.load(open(_EX22, encoding="utf-8"))
-    if search:
-        search({"type": "exact_table", "document": "A342", "query": "C3.6", "purpose": "column modelling parameters"})
-        search({"type": "exact_table", "document": "A342", "query": "C5.5", "purpose": "FR connection modelling parameters"})
     out = {}
     for gid in facts["needed"]:
         g = json.loads(json.dumps(ex.get(gid) or {}))
