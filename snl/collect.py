@@ -2,24 +2,31 @@
 
     python -m snl collect <job folder> [--out hinge_params_collected.json]
 
-The nonlinear analyses need a component parameter file (pushover/hinge_params.json's shape): the
-backbone a, b, c and the IO / LS / CP acceptance criteria for every hinge kind the building has, the
-expected material, the ductility screens. The repository copy is a PLACEHOLDER written from memory and
-says so in its own _README, which also says what has to happen instead: send a retrieval plan to the
-Query file manager, copy the printed values into the file, set verified=true and fill `source` with
-the exact table / equation ids and printed pages.
+The analyses need a component parameter file (pushover/hinge_params.json's shape): the backbone a, b, c
+and the IO / LS / CP acceptance criteria for every hinge kind the building has, and the expected
+material. The repository copy is a PLACEHOLDER written from memory, and its own _README says what must
+happen instead: retrieve the tables, copy the printed values into the file, set verified=true, cite.
 
-That is this step. The model is given the building (system, sections, connection type, bracing) and
-the file's schema, follows the same retrieval policy the Review uses (snl/standards.py), and hands
-back the filled file. Every group is then validated -- shape, ranges, ordering, expressions that
-evaluate, a source that names a table and a page -- and the file is written as
-`hinge_params_collected.json` ONLY when every group the building needs passed. Otherwise the partial
-result is written as `hinge_params_collected.partial.json`, the missing groups are listed, and the
-hub's Run analyses button stays closed: an analysis on placeholders is what produced the red reports.
+That is this step, and the division of labour is the whole point:
+  * RETRIEVAL IS DETERMINISTIC. Collect knows which table each group is read from (PLAN) and fetches
+    it from the Query file manager itself, as exact lookups. No model chooses what to search.
+  * THE ROW IS DECIDED FROM THE BUILDING. RBS connections -> the RBS row of Table C5.5; an SMF -> the
+    highly ductile row of Table C3.6 (row_for). No model chooses the row.
+  * THE MODEL ONLY TRANSCRIBES. Per group, one short call with the passages and the named fields; it
+    answers {value, quote} per field, reasoning effort LOW. Every quote must occur verbatim in the
+    passages and every number in a value must be among the digits of its quote (check_field) -- so a
+    number the model remembers, with no cell to quote, is rejected. Up to two retries naming exactly
+    what was rejected; then the group is missing. No tools, no searching, no loop.
+  * THE SOURCE IS BUILT BY THE PROGRAM from the passages' own document / section / page.
+The first two live runs are why: given the passages and a free hand, a reasoning model spent its time
+weighing the converted text against its memory (68 identical searches; then pages of deliberation).
 
-The hub then runs the analyses with `--params hinge_params_collected.json`, and the reports carry the
-citations from the first line rather than after a re-issue. Model MOCK (tests, offline) takes the
-values from the Ex22 corpus-read example instead of a provider.
+Every group is then validated (shape, ranges, ordering, expressions that evaluate, a source naming a
+table and a page) and `hinge_params_collected.json` is written only when every needed group passed;
+otherwise `hinge_params_collected.partial.json`, the missing fields named, and the hub's Run analyses
+stays closed. collect_transcript.jsonl holds every prompt, answer and reasoning as it streams, so a
+cancelled run still shows what the model did. Model MOCK (tests) takes the values from the Ex22
+corpus-read example instead of a provider.
 """
 from __future__ import annotations
 
@@ -33,11 +40,11 @@ import time
 
 from . import llm, rag
 from .review import Emitter, _tool_title
-from .standards import RETRIEVAL_POLICY, TOOLS
 
 OUT_NAME = "hinge_params_collected.json"
 PARTIAL_NAME = "hinge_params_collected.partial.json"
 EVIDENCE_NAME = "collect_evidence.json"
+TRANSCRIPT_NAME = "collect_transcript.jsonl"    # every prompt, answer and reasoning, as it streams
 MAX_TURNS = 80                     # a safety ceiling on the agent loop, not a search budget
 MAX_SEARCHES = 60                  # a backstop against a runaway: the guard below is what actually stops one
 REPEAT_LIMIT = 3                   # the same search this many times without moving on = the corpus does not hold it
@@ -73,6 +80,14 @@ def gather(job: str) -> dict:
         elif kind == "brace":
             braces.setdefault(sec, {"roles": set()})["roles"].add(role)
     conns = [c.get("type") or "" for c in (pkg.calc or {}).get("connections") or []]
+    # the RBS flange cut is a design fact from HR Steel's connection design ("RBS a=9.9 b=29.8 c=4.0 in")
+    rbs_c_in, rbs_detail = None, ""
+    for c in (pkg.calc or {}).get("connections") or []:
+        comp = str(c.get("components") or "")
+        m = re.search(r"\bc\s*=\s*([0-9.]+)\s*in", comp) if "rbs" in (c.get("type") or "").lower() else None
+        if m:
+            rbs_c_in, rbs_detail = float(m.group(1)), comp[:120]
+            break
     system = str(basis.get("system") or "").upper()
     moment = any("moment" in c.lower() for c in conns) or system in ("SMF", "IMF", "OMF")
     rbs = any("rbs" in c.lower() for c in conns)
@@ -84,89 +99,302 @@ def gather(job: str) -> dict:
     if braced:
         needed.append("brace_axial")
     return {"job": os.path.abspath(job), "name": pkg.name, "basis": basis, "system": system,
-            "connections": conns, "rbs": rbs, "moment_frame": moment, "braced": braced,
+            "connections": conns, "rbs": rbs, "rbs_c_in": rbs_c_in, "rbs_detail": rbs_detail,
+            "moment_frame": moment, "braced": braced,
             "beams": {k: {"roles": sorted(v["roles"]), "Lb_over_ry": v["Lb_over_ry"]} for k, v in beams.items()},
             "columns": {k: {"roles": sorted(v["roles"])} for k, v in cols.items()},
             "braces": {k: {"roles": sorted(v["roles"])} for k, v in braces.items()},
             "needed": needed}
 
 
-# ---------------------------------------------------------------- the ask
-SYSTEM = """You are filling the component modelling parameter file for the nonlinear analyses (ASCE 41-23 pushover with AISC 342-22 component models, ASCE 7-22 Chapter 16 NLRHA) of ONE steel building. The file's schema is given to you as JSON: keep every key, change only the VALUES of the groups you are asked for, and give every group a `source`.
-
-The whole point of this step is that every number comes from a passage you retrieved THIS session. The file you are replacing was written from memory and the reports it produced were marked UNVERIFIED for it. A value you cannot find is reported as missing, never typed from memory.
-
-What each group needs, and where it lives:
-- material: Fy for the shapes and the expected-strength factor Ry (AISC 341-22 Table A3.2, reached through AISC 342-22 A5.2 / Table A5.2). Fye = Ry Fy.
-- beam_flexure: for a moment frame whose beams frame in with fully restrained connections, the hinge is the CONNECTION: AISC 342-22 Table C5.5, the row for the connection type (e.g. "RBS moment connection in conformance with ANSI/AISC 358"). Set mode="fr_connection" and give the row's modelling parameters a and b as printed (an expression of the beam's h/tw, bf/2tf, Lb/ry, L/d where the table gives one -- write it in Python with those symbol names; a constant where it gives a constant), the caps (a_max, b_abs), the residual c_residual, and the acceptance criteria as fractions of a and b (IO_frac_of_a, LS_frac_of_b, CP_frac_of_b) as the table prints them. Note the table's own footnotes on continuity plates, panel zone, clear-span-to-depth and flange slenderness: they are the `modifiers` an engineer applies -- record what the table says, do not decide them. For a beam that is NOT an FR connection use mode="member" with Table C2.2 (a_over_thetay, b_over_thetay, c_residual, IO_over_thetay, LS_over_thetay, CP_over_thetay).
-- column_flexure: AISC 342-22 Table C3.6, "Columns and braces in compression", the ductility row that matches the sections (highly ductile for an SMF). The table gives a and b as expressions in h/tw, L/ry and PG/Pye with caps: write a_expr, b_expr, c_expr in Python with exactly those symbols (h, tw, L, ry, PG, Pye), the caps a_max / b_max, and the acceptance fractions IO_frac_of_a, LS_frac_of_b, CP_frac_of_b. Keep force_controlled_above_P_over_Pye and Mpce_axial_reduction as the standard states them (C3.4a.2.b and the expected flexural strength with axial reduction).
-- brace_axial (only for a braced frame): the compression and tension backbones and acceptance for the brace section type (AISC 342-22 Chapter C brace tables; ASCE 41-23 Chapter 9 where AISC 342 defers), with the stocky / slender limits on KL/r, and Ry for the brace material (AISC 341-22 Table A3.2, e.g. A500 Gr. C).
-
-How the converted tables read (the corpus is a machine conversion of the printed standard):
-- A cell that holds an expression is flattened to its digits: "X 2 0 07 ≤ ." is the printed "X₂ ≤ 0.07"; "5 5 1 0 07 0 95 0 5 2 4" is "5.5 ... ≤ 0.07 ... ^-0.95 ... ^-0.5 ... ^2.4". Read it back into the expression the table prints and say in `decode_note` that you did, quoting the string.
-- Table C5.5 gives the FR-connection rows' `a` as "X₁ ≤ 0.07" / "X₂ ≤ 0.07": X₁ and X₂ are the table's own footnotes [d] and [e], printed as equations in h/tw, bf/2tf, Lb/ry and L/d, and they appear in the converted text as LaTeX blocks ($$ ... $$) immediately after the table. The row gives you the cap (a_max) and b, c, IO, LS, CP; the footnote gives you a_expr. Both are in the passages.
-- PASSAGES ALREADY RETRIEVED are given to you below for the tables each group needs. Read them first. Search only for what they do not contain.
-- Never search for a number you remember. A query made of numbers ("0.025 0.05 0.035 0.07") is you asking the corpus to confirm your memory; it will return the same passages every time and none of them is evidence. The evidence is the passage you already have.
-- If the same search has come back 3 times without the value, the corpus does not hold it in a form you can read: put the group under "missing" with what you did find, and move on. The tool will refuse that search from then on.
-
-Rules:
-- Cite in each group's `source`: the document, the table or equation id, and the printed page, e.g. "AISC 342-22 Table C3.6, p. 46 (pdf 78)". A group without a real table behind it is reported under "missing" with the reason, and its values are left as they were.
-- Never change the schema, never add groups, never touch nsp / numerics / gravity_for_pushover / fema_p695 / panel_zones. Do not set `verified` yourself; it is computed from what you sourced.
-- When you are done, reply with ONLY the JSON object (the whole file), no prose, no code fence.
-
-""" + RETRIEVAL_POLICY
-
-
-# The tables each group is read from. Collect fetches these itself before the model is asked, so the
-# model reads rather than hunts -- the first live run spent 68 searches asking AISC 342 to confirm four
-# numbers it remembered, while the row it needed had come back on its second search.
+# ---------------------------------------------------------------- what is read from where
+# The tables each group is read from. Collect fetches these itself, before any model is involved: the
+# first live run spent 68 searches asking AISC 342 to confirm four numbers the model remembered, while
+# the row it needed had come back on its second search. Retrieval is deterministic; the model only
+# transcribes what came back.
 PLAN = {
-    "material":       [("A342", "exact_table", "A5.2", 1), ("A341", "exact_table", "A3.2", 1)],
-    "beam_flexure":   [("A342", "exact_table", "C5.5", 2),
-                       ("A342", "fts", "RBS moment connection in conformance with ANSI/AISC 358", 2),
-                       ("A342", "exact_table", "C2.2", 1)],
+    "material":       [("A341", "exact_table", "A3.2", 1), ("A342", "exact_table", "A5.2", 1)],
+    "beam_flexure":   [("A342", "exact_table", "C5.5", 2), ("A342", "exact_table", "C2.2", 1)],
     "column_flexure": [("A342", "exact_table", "C3.6", 2), ("A342", "exact_section", "C3.4a", 1)],
-    "brace_axial":    [("A342", "exact_table", "C3.6", 2), ("A342", "fts", "braces in compression buckling modeling parameters", 1),
+    "brace_axial":    [("A342", "exact_table", "C3.6", 2),
                        ("ASCE41", "fts", "steel braces in compression modeling parameters acceptance criteria", 1)],
 }
 
 
-def prefetch(facts: dict, search) -> list:
-    """The passages for every needed group, up front. -> [{"group", "document", "how", "passages": [...]}]"""
-    out = []
+def prefetch(facts: dict, search) -> dict:
+    """The passages for every needed group, up front. -> {group: [{"source","section","page","text"}, ...]}"""
+    out: dict = {g: [] for g in facts["needed"]}
     for gid in facts["needed"]:
         for doc, how, q, nb in PLAN.get(gid, []):
-            if gid == "beam_flexure" and not facts.get("moment_frame") and how == "exact_table" and q == "C5.5":
-                continue                                   # member hinges, not FR connections: C2.2 alone
+            if gid == "beam_flexure" and q == "C5.5" and not facts.get("moment_frame"):
+                continue                                   # member hinges: Table C2.2 alone
+            if gid == "beam_flexure" and q == "C2.2" and facts.get("moment_frame"):
+                continue                                   # FR connections: Table C5.5 alone
             res = search({"document": doc, "type": how, "query": q, "context_neighbors": nb, "top_k": 8,
-                          "purpose": "prefetch for %s" % gid}, raw=True)
-            out.append({"group": gid, "document": doc, "how": "%s %s" % (how, q),
-                        "passages": [{"source": h.get("source"), "section": h.get("section"), "page": h.get("page"),
-                                      "text": (h.get("text") or "")[:3500]} for h in (res.get("results") or [])[:6]],
-                        "note": res.get("note") or ""})
+                          "purpose": "table for %s" % gid}, raw=True)
+            for h in (res.get("results") or [])[:6]:
+                out[gid].append({"document": doc, "how": "%s %s" % (how, q), "source": h.get("source") or doc,
+                                 "section": h.get("section") or "", "page": h.get("page") or "",
+                                 "text": (h.get("text") or "")[:14000]})
     return out
 
 
-def _facts_message(facts: dict, template: dict, fetched: list | None = None) -> str:
-    f = {k: v for k, v in facts.items() if k not in ("job",)}
-    pre = ""
-    if fetched:
-        blocks = []
-        for r in fetched:
-            if not r["passages"]:
-                blocks.append("### %s -- %s %s: NOTHING RETURNED%s" % (r["group"], r["document"], r["how"], (" (" + r["note"][:120] + ")") if r["note"] else ""))
+# The fields each group is transcribed into: (field, what to read, kind). kind: number | expr | fraction.
+# `fraction` cells read "0.5 a" / "0.75 b" / "b"; `expr` cells are flattened digits or a LaTeX footnote.
+FIELDS = {
+    "material": [
+        ("Ry_expected", "Ry for ASTM A992 in Table A3.2 (the 'W-shapes' / 'A992' row, Ry column)", "number"),
+    ],
+    "beam_flexure:fr_connection": [
+        ("a_expr", "the X expression the FOOTNOTE EQUATIONS block defines for THIS row's `a` cell (X1 for a row marked [d], X2 for a row marked [e]), as Python in h, tw, bf, tf, Lb, ry, L, d -- the pattern is C*(h/tw)**p1*(bf/(2*tf))**p2*(Lb/ry)**p3*(L/d)**p4 with C and the p's from the LaTeX", "expr"),
+        ("a_max", "the cap in this row's `a` cell ('X 2 0 07 <= .' -> 0.07)", "number"),
+        ("b_abs", "this row's `b` cell (plastic rotation, rad)", "number"),
+        ("c_residual", "this row's residual strength ratio `c`", "number"),
+        ("IO_frac_of_a", "this row's IO cell as a fraction of a ('0.5 a' -> 0.5)", "fraction"),
+        ("LS_frac_of_b", "this row's LS cell as a fraction of b ('0.75 b' -> 0.75)", "fraction"),
+        ("CP_frac_of_b", "this row's CP cell as a fraction of b ('b' -> 1.0)", "fraction"),
+    ],
+    "beam_flexure:member": [
+        ("a_over_thetay", "this row's `a` as a multiple of theta_y ('9 thy' -> 9)", "number"),
+        ("b_over_thetay", "this row's `b` as a multiple of theta_y", "number"),
+        ("c_residual", "this row's residual strength ratio `c`", "number"),
+        ("IO_over_thetay", "IO as a multiple of theta_y", "number"),
+        ("LS_over_thetay", "LS as a multiple of theta_y", "number"),
+        ("CP_over_thetay", "CP as a multiple of theta_y", "number"),
+    ],
+    "column_flexure": [
+        ("a_expr", "this row's `a` cell, as Python in h, tw, L, ry, PG, Pye -- the pattern is C*(h/tw)**p1*(L/ry)**p2*(1-PG/Pye)**p3 with C and the p's read from the flattened digits in print order", "expr"),
+        ("a_max", "the cap on `a` in the same cell (the '<= 0.07')", "number"),
+        ("b_expr", "this row's `b` cell, same symbols and pattern", "expr"),
+        ("b_max", "the cap on `b` in the same cell", "number"),
+        ("c_expr", "this row's `c` cell as Python in PG, Pye (the pattern is C1 - C2*PG/Pye)", "expr"),
+        ("IO_frac_of_a", "IO as a fraction of a", "fraction"),
+        ("LS_frac_of_b", "LS as a fraction of b", "fraction"),
+        ("CP_frac_of_b", "CP as a fraction of b", "fraction"),
+    ],
+    "brace_axial": [
+        ("compression.stocky.a_over_dc", "braces in compression, stocky (KL/r at or below the lower limit): `a` as a multiple of delta_c", "number"),
+        ("compression.stocky.b_over_dc", "stocky: `b` as a multiple of delta_c", "number"),
+        ("compression.stocky.c", "stocky: residual strength ratio c", "number"),
+        ("compression.stocky.IO_over_dc", "stocky: IO as a multiple of delta_c", "number"),
+        ("compression.stocky.LS_over_dc", "stocky: LS as a multiple of delta_c", "number"),
+        ("compression.stocky.CP_over_dc", "stocky: CP as a multiple of delta_c", "number"),
+        ("compression.slender.a_over_dc", "braces in compression, slender (KL/r at or above the upper limit): `a` as a multiple of delta_c", "number"),
+        ("compression.slender.b_over_dc", "slender: `b`", "number"),
+        ("compression.slender.c", "slender: c", "number"),
+        ("compression.slender.IO_over_dc", "slender: IO", "number"),
+        ("compression.slender.LS_over_dc", "slender: LS", "number"),
+        ("compression.slender.CP_over_dc", "slender: CP", "number"),
+        ("tension.a_over_dT", "braces in tension: `a` as a multiple of delta_T", "number"),
+        ("tension.b_over_dT", "tension: `b`", "number"),
+        ("tension.c", "tension: c", "number"),
+        ("tension.IO_over_dT", "tension: IO", "number"),
+        ("tension.LS_over_dT", "tension: LS", "number"),
+        ("tension.CP_over_dT", "tension: CP", "number"),
+        ("Ry_expected", "Ry for the brace material (A500 Gr. C round/rectangular HSS) in AISC 341-22 Table A3.2", "number"),
+    ],
+}
+
+
+def _ductility(facts: dict) -> str:
+    sys_ = (facts.get("system") or "").upper()
+    return "highly ductile" if sys_ in ("SMF", "SCBF", "EBF", "BRBF", "SPSW", "") else "moderately ductile"
+
+
+def row_for(gid: str, facts: dict) -> tuple[str, str]:
+    """(variant, the row the model transcribes), decided from the building -- not by the model."""
+    if gid == "material":
+        return "material", "AISC 341-22 Table A3.2, the ASTM A992 row (W-shapes): Ry"
+    if gid == "beam_flexure":
+        if facts.get("moment_frame"):
+            row = ("'RBS moment connection in conformance with ANSI/AISC 358' [e]" if facts.get("rbs")
+                   else "'All ANSI/AISC 358 conforming connections, with the exception of the RBS moment connection' [d]")
+            return "beam_flexure:fr_connection", "AISC 342-22 Table C5.5 (continued), row %s" % row
+        return "beam_flexure:member", "AISC 342-22 Table C2.2, 'Beams -- flexure', the %s row" % _ductility(facts)
+    if gid == "column_flexure":
+        return "column_flexure", "AISC 342-22 Table C3.6, 'Columns and Braces in Compression', the row '1. %s' (a, b, c columns)" % _ductility(facts).capitalize()
+    if gid == "brace_axial":
+        return "brace_axial", "AISC 342-22 Table C3.6, the braces-in-compression (stocky / slender) and braces-in-tension rows; ASCE 41-23 Chapter 9 where AISC 342 defers"
+    return gid, gid
+
+
+# ---------------------------------------------------------------- transcription (the only thing the model does)
+TRANSCRIBE = """You are transcribing values from PASSAGES of a converted standard into named fields. This is copying, not engineering judgement, and nothing you remember about the standard counts.
+
+For every field answer {"value": ..., "quote": "..."} where `quote` is the VERBATIM text from the passages the value was read from -- copy it exactly, converter artefacts included. The program that reads your answer rejects any value whose quote does not occur in the passages, and any number in a value that does not appear among the digits of its quote. A value you cannot quote: {"value": null, "quote": null, "why": "what is missing"}.
+
+How the converted text reads:
+- A table cell that held an expression is flattened to its digits in print order. "5 5 1 0 07 0 95 0 5 2 4" after the symbols "a h t L r P P w y G ye" is  a = 5.5 (h/tw)^-0.95 (L/ry)^-0.5 (1 - PG/Pye)^2.4 <= 0.07 : the coefficient, the 1 of (1 - PG/Pye), the cap, then the exponents in the order the symbols appear. Read the digits back in that order and no other; every number you write must be one of the digit groups in the quote.
+- "X 2 0 07 <= ." is the printed "X2 <= 0.07": the cap is 0.07, and X2 is defined in the FOOTNOTE EQUATIONS block after the table, in LaTeX. Read the coefficient and exponents from that LaTeX line; quote the LaTeX line.
+- In an IO / LS / CP column, "0.5 a" is the fraction 0.5 (of a) and a bare "b" is the fraction 1.0 (of b). Quote the cell as written.
+- LaTeX: \\frac{h}{t_{w}} is h/tw, \\frac{b_{f}}{2t_{f}} is bf/(2*tf), ^{-0.5} is **-0.5. Write expressions as Python with exactly the symbol names the field asks for.
+
+Reply with ONE JSON object -- field name -> {"value", "quote"} -- and nothing else."""
+
+
+def _ask_message(gid: str, variant: str, row: str, fields: list, passages: list, retry_note: str = "") -> str:
+    lines = ["GROUP: %s" % gid, "TABLE AND ROW: %s" % row, "", "FIELDS (name: what to read):"]
+    for f, what, kind in fields:
+        lines.append("  %s: %s" % (f, what))
+    lines += ["", "PASSAGES:"]
+    for p in passages:
+        lines.append("[%s %s p. %s]" % (p["source"], p["section"], p["page"]))
+        lines.append(p["text"])
+        lines.append("")
+    if retry_note:
+        lines += ["REJECTED LAST TIME -- fix exactly these:", retry_note, ""]
+    lines.append("Transcribe the fields now. JSON only.")
+    return "\n".join(lines)
+
+
+_NUM = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", "", (s or "").lower())
+
+
+def _digit_groups(s: str) -> set:
+    """Every number-like token in a quote, as bare digits: '0 . 5 5' -> '055', '0 07' -> '007', '5 5' -> '55'."""
+    t = re.sub(r"[^0-9.\s]", " ", s or "")
+    groups = set()
+    for tok in re.findall(r"[0-9][0-9.\s]*", t):
+        d = re.sub(r"[^0-9]", "", tok)
+        if d:
+            groups.add(d)
+            # a flattened cell runs its numbers together with single spaces: also offer every
+            # contiguous sub-run, so '5 5 1 0 07' yields 55, 1, 007, 5, 51 ...
+            parts = tok.split()
+            for i in range(len(parts)):
+                acc = ""
+                for j in range(i, min(len(parts), i + 4)):
+                    acc += re.sub(r"[^0-9]", "", parts[j])
+                    if acc:
+                        groups.add(acc)
+    return groups
+
+
+def _numbers_in(value) -> list:
+    return [re.sub(r"[^0-9]", "", n) for n in _NUM.findall(str(value))]
+
+
+def check_field(kind: str, value, quote: str, passages_norm: str) -> str:
+    """'' when the value is backed by the quote and the quote by the passages; else the reason."""
+    if value is None:
+        return "not read"
+    if not quote or not isinstance(quote, str):
+        return "no quote"
+    if _norm(quote) not in passages_norm:
+        return "the quote does not occur in the passages"
+    if kind == "fraction":
+        q = _norm(quote)
+        if q in ("a", "b") and value == 1.0:
+            return ""
+        if not isinstance(value, (int, float)):
+            return "a fraction must be a number"
+    if kind == "number" and not isinstance(value, (int, float)):
+        return "must be a number"
+    if kind == "expr" and not isinstance(value, (str, int, float)):
+        return "must be an expression string"
+    groups = _digit_groups(quote)
+    for d in _numbers_in(value):
+        if d and d.lstrip("0") and d not in groups and d.lstrip("0") not in {g.lstrip("0") for g in groups}:
+            return "the number %s is not in the quote" % d
+    return ""
+
+
+def transcribe(gid: str, facts: dict, passages: list, conn: dict, em, trace) -> tuple[dict, dict]:
+    """One group. -> (fields {name: value}, problems {name: why}). At most 3 model calls, no tools."""
+    variant, row = row_for(gid, facts)
+    fields = FIELDS[variant]
+    if not passages:
+        return {}, {f: "no passage was returned for this table (%s)" % ", ".join("%s %s" % (d, q) for d, h, q, n in PLAN.get(gid, []))
+                    for f, _w, _k in fields}
+    passages_norm = _norm("\n".join(p["text"] for p in passages))
+    got: dict = {}
+    probs: dict = {}
+    retry_note = ""
+    # transcription is copying: a reasoning model at "high" deliberates for pages over it
+    tconn = dict(conn, reasoning="low", max_tokens=min(int(conn.get("max_tokens") or 4000), 6000))
+    for attempt in range(3):
+        msg = _ask_message(gid, variant, row, fields, passages, retry_note)
+        trace({"type": "prompt", "group": gid, "attempt": attempt + 1, "chars": len(msg)})
+        messages = [{"role": "system", "content": TRANSCRIBE}, {"role": "user", "content": msg}]
+        pieces: list = []
+
+        def on_piece(kind, text):
+            pieces.append((kind, text))
+            em.event(type=kind, text=text)
+        out = llm.chat_with_retry(tconn, messages, None, on_piece)
+        if out.get("usage"):
+            em.usage(out["usage"])
+        trace({"type": "answer", "group": gid, "attempt": attempt + 1, "reasoning": out.get("reasoning", "")[:20000],
+               "content": (out.get("content") or "")[:20000]})
+        ans = _parse_json(out.get("content") or "")
+        if not isinstance(ans, dict):
+            retry_note = "your reply was not a JSON object"
+            continue
+        probs = {}
+        for f, what, kind in fields:
+            a = ans.get(f)
+            if not isinstance(a, dict):
+                probs[f] = "missing from the reply"
                 continue
-            blocks.append("### %s -- %s %s" % (r["group"], r["document"], r["how"]))
-            for h in r["passages"]:
-                blocks.append("[%s %s p. %s]\n%s" % (h.get("source") or r["document"], h.get("section") or "", h.get("page") or "?", h["text"]))
-        pre = ("PASSAGES ALREADY RETRIEVED (read these first -- the tables the groups are read from; cite them by the "
-               "document, section and page shown in brackets):\n\n" + "\n\n".join(blocks) + "\n\n")
-    return (pre + "BUILDING (from the design package):\n" + json.dumps(f, indent=1, ensure_ascii=False)
-            + "\n\nGROUPS TO FILL: " + ", ".join(facts["needed"])
-            + "\n\nFILE SCHEMA (the repository placeholder; keep every key, replace the values of the groups above, "
-              "give each a `source`; leave the other groups exactly as they are):\n"
-            + json.dumps({k: v for k, v in template.items() if k != "_README"}, indent=1, ensure_ascii=False)
-            + "\n\nFill the file now. Reply with the complete JSON object only.")
+            why = check_field(kind, a.get("value"), a.get("quote"), passages_norm)
+            if why:
+                probs[f] = why + ((" -- " + str(a.get("why"))) if a.get("why") else "")
+            else:
+                got[f] = a["value"]
+                got.setdefault("_quotes", {})[f] = a.get("quote")
+        if not probs:
+            break
+        retry_note = "\n".join("  %s: %s" % (f, w) for f, w in probs.items()) + \
+            "\n(copy the quote EXACTLY from the passage; a number that is not in the quote cannot be used)"
+    return got, probs
+
+
+def _set(d: dict, dotted: str, v):
+    cur = d
+    keys = dotted.split(".")
+    for k in keys[:-1]:
+        cur = cur.setdefault(k, {})
+    cur[keys[-1]] = v
+
+
+def assemble(gid: str, facts: dict, template: dict, got: dict, passages: list) -> dict:
+    """The group as the engines read it: the template's shape, the transcribed values, a source built
+    from the passages' own document / section / page (not from the model)."""
+    variant, row = row_for(gid, facts)
+    g = json.loads(json.dumps(template.get(gid) or {}))
+    quotes = got.pop("_quotes", {})
+    for f, v in got.items():
+        _set(g, f, v)
+    pages = sorted({str(p["page"]) for p in passages if p.get("page")}, key=lambda x: (len(x), x))
+    docs = sorted({p["source"] for p in passages if p.get("source")})
+    g["source"] = "%s, pdf p. %s" % (row.split(",")[0] if gid != "material" else "AISC 341-22 Table A3.2",
+                                     "-".join(pages[:1] + pages[-1:]) if pages else "?")
+    g["quotes"] = quotes
+    g["basis"] = row + " -- transcribed by `snl collect` from the converted %s; every value carries the cell it was read from in `quotes`." % ", ".join(docs)
+    if variant == "beam_flexure:fr_connection":
+        g["mode"] = "fr_connection"
+        lbs = [b["Lb_over_ry"] for b in facts.get("beams", {}).values() if b.get("Lb_over_ry")]
+        if lbs:
+            g["Lb_over_ry"] = round(max(lbs), 1)
+            g["Lb_note"] = "Lb/ry from the design package's beam inputs (max over the SMF beams)"
+        else:
+            g["Lb_divisor"] = 1
+            g["Lb_note"] = "no beam bracing length in the package: Lb taken as the full span"
+        if facts.get("rbs_c_in"):
+            g["rbs_c_in"] = facts["rbs_c_in"]
+            g["rbs_note"] = "RBS flange cut c from the HR Steel connection design (%s)" % facts.get("rbs_detail", "")
+        g.pop("modifiers", None)
+        g["modifier_note"] = ("Table C5.5 footnotes / Sec. C5.4a.1.a.1(a)-(d) modifiers (continuity plates, panel zone "
+                              "V_pz/V_ye, clear span to depth, flange slenderness) are NOT evaluated by Collect; none applied.")
+        for k in ("a_over_thetay", "b_over_thetay", "IO_over_thetay", "LS_over_thetay", "CP_over_thetay"):
+            g.pop(k, None)
+    elif variant == "beam_flexure:member":
+        g["mode"] = "member"
+    return g
 
 
 # ---------------------------------------------------------------- validation
@@ -409,62 +637,48 @@ def run(job: str, out_name: str = OUT_NAME, emit: Emitter | None = None, conn: d
         return res if raw else rag.render(res)
 
     usage: dict = {}
+    # the trace, written as it happens -- a cancelled run still leaves it on disk
+    trace_path = os.path.join(job, TRANSCRIPT_NAME)
+    tf = open(trace_path, "w", encoding="utf-8")
+
+    def trace(rec: dict):
+        rec = dict(rec, t=time.time())
+        tf.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n"); tf.flush()
+
     em.event(type="status", text="fetching the tables each group is read from")
     fetched = prefetch(facts, do_search)
-    got = sum(1 for r in fetched if r["passages"])
-    em.event(type="milestone", text="pre-fetched %d of %d table lookups (%d passages) -- the model reads these before it searches"
-             % (got, len(fetched), sum(len(r["passages"]) for r in fetched)))
+    trace({"type": "prefetch", "groups": {g: [(p["how"], p["section"], p["page"], len(p["text"])) for p in ps] for g, ps in fetched.items()}})
+    em.event(type="milestone", text="tables fetched -- %s" % "; ".join(
+        "%s: %d passage(s)" % (g, len(ps)) for g, ps in fetched.items()))
+
+    filled: dict = {}
+    tprobs: dict = {}
     if conn.get("mock"):
         em.event(type="status", text="model MOCK: taking the values from the Ex22 corpus-read example")
-        filled = mock_collect(facts, do_search)
+        filled = mock_collect(facts, None)
     else:
-        em.event(type="status", text="asking %s (standards searches as needed)" % conn["model"])
-        sys_msg = SYSTEM + "\nDOCUMENTS IN THE CORPUS -- " + corpus_line + \
-            "\nThere is no limit on the number of searches: every value comes from a passage retrieved this session."
-        messages = [{"role": "system", "content": sys_msg},
-                    {"role": "user", "content": _facts_message(facts, template, fetched)}]
-        filled = None
-        forced = False                                       # tools withdrawn: the model must answer now
-        for turn in range(MAX_TURNS):
-            def on_piece(kind, text):
-                em.event(type=kind, text=text)
-            # A model that keeps sending a search the guard has already refused is not going to stop on
-            # its own. After REPEAT_LIMIT refusals the tool is taken away and it is asked for the file.
-            if not forced and len(refused) >= REPEAT_LIMIT:
-                forced = True
-                em.event(type="warning", text="%d refused searches -- withdrawing the search tool; the model is asked to write the file with what it has" % len(refused))
-                messages.append({"role": "user", "content": "Stop searching. Write the complete parameter file now as ONE JSON object: "
-                                                            "every group you could read from the passages filled and sourced, every group "
-                                                            "you could not under \"missing\" with the reason. Nothing else."})
+        em.event(type="status", text="asking %s to transcribe each group from its table (reasoning low, no searching)" % conn["model"])
+        for gid in facts["needed"]:
+            em.event(type="milestone", text="transcribing %s -- %s" % (gid, row_for(gid, facts)[1]))
             try:
-                out = llm.chat_with_retry(conn, messages, None if forced else TOOLS, on_piece)
+                got, probs = transcribe(gid, facts, fetched.get(gid) or [], conn, em, trace)
             except llm.LLMError as e:
                 em.event(type="error", text=str(e))
+                tf.close()
                 return {"ok": False, "verified": False, "path": "", "missing": facts["needed"], "searches": searches, "usage": usage}
-            if out.get("usage"):
-                em.usage(out["usage"]); usage = out["usage"]
-            if out["tool_calls"]:
-                messages.append({"role": "assistant", "content": out["content"] or None, "tool_calls": out["tool_calls"]})
-                for tc in out["tool_calls"]:
-                    try:
-                        args = json.loads(tc["function"]["arguments"] or "{}")
-                    except ValueError:
-                        args = {"query": tc["function"]["arguments"], "document": "A342"}
-                    result = do_search(args if isinstance(args, dict) else {}) if tc["function"]["name"] == "search_engineering_standards" \
-                        else "unknown tool %s" % tc["function"]["name"]
-                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
-                continue
-            filled = _parse_json(out["content"] or "")
-            if filled:
-                break
-            messages.append({"role": "assistant", "content": out["content"] or ""})
-            messages.append({"role": "user", "content": "That was not a JSON object. Reply with the complete parameter file as ONE JSON object and nothing else."})
-        if not filled:
-            em.event(type="error", text="the model did not return the parameter file after %d turns" % MAX_TURNS)
-            return {"ok": False, "verified": False, "path": "", "missing": facts["needed"], "searches": searches, "usage": usage}
+            trace({"type": "group", "group": gid, "fields": {k: v for k, v in got.items() if k != "_quotes"}, "problems": probs})
+            if probs:
+                tprobs[gid] = probs
+                em.log("   %-15s NOT READ: %s" % (gid, "; ".join("%s (%s)" % (f, w) for f, w in probs.items())))
+            if got:
+                filled[gid] = assemble(gid, facts, template, got, fetched.get(gid) or [])
+    tf.close()
 
     params = _merge(template, filled, facts["needed"])
     ok, probs = validate(params, facts["needed"])
+    for g, tp in tprobs.items():
+        probs[g] = (probs.get(g) or []) + ["%s: %s" % (f, w) for f, w in tp.items()]
+    ok = all(not v for v in probs.values())
     missing = [g for g, p in probs.items() if p]
     params["verified"] = bool(ok)
     params["source"] = ("collected from the standards corpus on this PC by `snl collect` %s -- "

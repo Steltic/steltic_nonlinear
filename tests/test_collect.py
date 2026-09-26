@@ -189,82 +189,174 @@ def test_snl_run_uses_the_collected_file_by_default(tmp_path, monkeypatch, capsy
         assert "--params" in seen["cmds"][0] and seen["cmds"][0][seen["cmds"][0].index("--params") + 1] == os.path.join(job, collect.OUT_NAME)
 
 
-# ---------------------------------------------------------------- the loop the first live run fell into
+
+
+# ---------------------------------------------------------------- transcription, against the real converted cells
 from http.server import BaseHTTPRequestHandler   # noqa: E402
 from test_review import _sse, _env               # noqa: E402
 
+FX = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "collect_tables.json"), encoding="utf-8"))
+RBS_ROW = next(l for l in FX["C5.5"].split("\n") if l.startswith("| RBS moment connection"))
+RBS_CELLS = [x.strip() for x in RBS_ROW.strip("|").split("|")]
+FN_E = next(l for l in FX["C5.5"].split("\n") if "X _ { 2 } = 0 . 5 5" in l).strip()
+C36_ROW = next(l for l in FX["C3.6"].split("\n") if l.startswith("| 1. Highly ductile"))
+C36_A = [x.strip() for x in C36_ROW.strip("|").split("|")][0]
+A992_ROW = next(l for l in FX["A3.2"].split("\n") if "A992" in l)
 
-class LoopingLLM(BaseHTTPRequestHandler):
-    """The model as it behaved on g53ex2: it asks AISC 342 to confirm four numbers it remembers, gets the
-    same five passages, and asks again. 68 times. This fake asks forever while it has the tool; the
-    moment the tool is withdrawn it writes the file (the Ex22 values, cited)."""
+
+class TableRAG(BaseHTTPRequestHandler):
+    """The Query file manager answering exact-table lookups with the cells exactly as its converter left them."""
+    queries = []
+    docs = ["ASCE7", "ASCE_41_23", "AISC_342_22", "AISC_341_22"]
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        out = json.dumps({"ok": True, "spec_index": True, "indexed_docs": TableRAG.docs, "converted": TableRAG.docs}).encode("utf-8")
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        TableRAG.queries.append(body)
+        q = (body.get("query") or "").strip()
+        hits = []
+        for tid, doc, sec, page in (("C5.5", "AISC_342_22", "C5.4b", "110"), ("C3.6", "AISC_342_22", "C3.4a", "78"), ("A3.2", "AISC_341_22", "A3.2", "60")):
+            if (body.get("type") == "exact_table" and q == tid) or (body.get("clause") == tid):
+                hits.append({"text": FX[tid], "doc": doc, "section_id": sec, "title": "Table " + tid, "printed_label": page, "score": 20, "authoritative": True})
+        out = json.dumps({"results": hits, "collection": body.get("collection", ""), "count": len(hits), "matched": "exact_table" if hits else ""}).encode("utf-8")
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+
+
+class ScriptedLLM(BaseHTTPRequestHandler):
+    """Answers each call with the next item of `script` (a dict -> JSON reply). Records every request."""
     calls = []
-    answer = None
+    script = []
 
     def log_message(self, *a):
         pass
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-        LoopingLLM.calls.append(body)
+        ScriptedLLM.calls.append(body)
+        ans = ScriptedLLM.script.pop(0) if ScriptedLLM.script else {}
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
         w = self.wfile
-        if body.get("tools"):
-            _sse(w, {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c%d" % len(LoopingLLM.calls),
-                  "function": {"name": "search_engineering_standards",
-                               "arguments": '{"query": "0.025 0.05 0.035 0.07 RBS", "document": "A342"}'}}]}}]})
-            _sse(w, {"choices": [{"delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 100, "completion_tokens": 10}})
-        else:
-            _sse(w, {"choices": [{"delta": {"content": json.dumps(LoopingLLM.answer)}}]})
-            _sse(w, {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 100, "completion_tokens": 10}})
+        _sse(w, {"choices": [{"delta": {"reasoning": "copying the cells"}}]})
+        _sse(w, {"choices": [{"delta": {"content": json.dumps(ans)}}]})
+        _sse(w, {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 500, "completion_tokens": 80}})
         w.write(b"data: [DONE]\n\n"); w.flush()
 
 
-def test_the_same_fruitless_search_is_refused_after_three_and_the_run_still_ends(tmp_path):
+def _q(v, quote):
+    return {"value": v, "quote": quote}
+
+
+GOOD_MATERIAL = {"Ry_expected": _q(1.1, A992_ROW.strip())}
+GOOD_BEAM = {"a_expr": _q("0.55*(h/tw)**-0.5*(bf/(2*tf))**-0.7*(Lb/ry)**-0.5*(L/d)**0.8", FN_E),
+             "a_max": _q(0.07, RBS_CELLS[1]), "b_abs": _q(0.07, RBS_CELLS[2]), "c_residual": _q(0.3, RBS_CELLS[3]),
+             "IO_frac_of_a": _q(0.5, RBS_CELLS[4]), "LS_frac_of_b": _q(0.75, RBS_CELLS[5]), "CP_frac_of_b": _q(1.0, RBS_CELLS[6])}
+GOOD_COLUMN = {"a_expr": _q("5.5*(h/tw)**-0.95*(L/ry)**-0.5*(1-PG/Pye)**2.4", C36_A), "a_max": _q(0.07, C36_A),
+               "b_expr": _q("20*(h/tw)**-0.9*(L/ry)**-0.5*(1-PG/Pye)**3.4", C36_ROW), "b_max": _q(0.07, C36_ROW),
+               "c_expr": _q("0.4-0.4*PG/Pye", C36_ROW),
+               "IO_frac_of_a": _q(0.5, "0.5 a"), "LS_frac_of_b": _q(0.75, "0.75 b"), "CP_frac_of_b": _q(1.0, "b")}
+
+
+def _live(tmp_path, script):
     job = _job(tmp_path)
-    FakeRAG.queries.clear(); LoopingLLM.calls.clear()
-    LoopingLLM.answer = {k: GOOD[k] for k in ("material", "beam_flexure", "column_flexure")}
-    R = _Server(FakeRAG); L = _Server(LoopingLLM)
+    TableRAG.queries.clear(); ScriptedLLM.calls.clear(); ScriptedLLM.script = list(script)
+    R = _Server(TableRAG); L = _Server(ScriptedLLM)
     old = dict(os.environ)
+    os.environ.update(_env(L.url, R.url + "/query")); rag._status_cache = None
+    return job, R, L, old
+
+
+def _done(R, L, old):
+    R.close(); L.close(); os.environ.clear(); os.environ.update(old); rag._status_cache = None
+
+
+def test_the_model_only_transcribes_and_every_value_is_backed_by_a_cell(tmp_path):
+    """The real converted cells of Table C5.5 (RBS row + footnote [e]), Table C3.6 and Table A3.2, and a
+    model that copies them: a verified file, no searching by the model, reasoning low."""
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, GOOD_COLUMN])
     try:
-        os.environ.update(_env(L.url, R.url + "/query")); rag._status_cache = None
         buf = io.StringIO()
         r = collect.run(job, emit=collect.Emitter(buf))
-        ev = json.load(open(os.path.join(job, collect.EVIDENCE_NAME), encoding="utf-8"))
-        same = [s for s in ev["searches"] if (s["args"].get("query") or "").startswith("0.025 0.05")]
-        sent = [s for s in same if s.get("via") != "refused"]
-        refused = [s for s in same if s.get("via") == "refused"]
-        assert len(sent) == collect.REPEAT_LIMIT, "the corpus was asked exactly REPEAT_LIMIT times"
-        assert len(refused) == collect.REPEAT_LIMIT, "then refused without a round trip until the tool was withdrawn"
-        assert len([q for q in FakeRAG.queries if (q.get("query") or "").startswith("0.025 0.05")]) <= collect.REPEAT_LIMIT * 4
-        assert any(e.get("type") == "warning" and "withdrawing the search tool" in e["text"] for e in _events(buf))
-        assert not LoopingLLM.calls[-1].get("tools"), "the last call had no tool to loop on"
-        assert r["ok"] and r["verified"], "the model wrote the file once it was made to"
-        assert len(LoopingLLM.calls) < 12, "and it took a handful of turns, not eighty"
+        assert r["ok"] and r["verified"] and r["missing"] == [], r
+        d = json.load(open(r["path"], encoding="utf-8"))
+        assert d["verified"] is True
+        assert d["beam_flexure"]["mode"] == "fr_connection" and d["beam_flexure"]["a_max"] == 0.07 and d["beam_flexure"]["b_abs"] == 0.07
+        assert d["beam_flexure"]["a_expr"].startswith("0.55*") and d["beam_flexure"]["rbs_c_in"] == 4.0 and d["beam_flexure"]["Lb_over_ry"] == pytest.approx(55.1, abs=0.2)
+        assert d["column_flexure"]["a_expr"].startswith("5.5*") and d["column_flexure"]["b_max"] == 0.07
+        assert d["material"]["Ry_expected"] == 1.1 and d["material"]["Fy_ksi"] == 50.0
+        for g in ("material", "beam_flexure", "column_flexure"):
+            assert "Table" in d[g]["source"] and "p." in d[g]["source"], d[g]["source"]     # built from the passages, not typed
+            assert d[g]["quotes"], "the cell every value was read from travels with it"
+        assert all("tools" not in c for c in ScriptedLLM.calls), "the model has no search tool to wander with"
+        assert len(ScriptedLLM.calls) == 3, "one call per group"
+        assert all(q.get("type") == "exact_table" for q in TableRAG.queries if q.get("query") in ("C5.5", "C3.6", "A3.2"))
+        # the engines build hinges from it
+        from pushover import hinge_models as HM
+        prm = HM.load_params(r["path"])
+        b = HM.beam_hinge("W36X232", 360.0, prm); c = HM.column_hinge("W14X730", 192.0, 651.3, prm)
+        assert 0 < b.IO < b.LS < b.CP and 0 < c.IO < c.LS < c.CP
+        # the trace is on disk, with the reasoning
+        tr = [json.loads(l) for l in open(os.path.join(job, collect.TRANSCRIPT_NAME), encoding="utf-8")]
+        assert any(t["type"] == "answer" and "copying the cells" in t["reasoning"] for t in tr)
     finally:
-        R.close(); L.close(); os.environ.clear(); os.environ.update(old); rag._status_cache = None
+        _done(R, L, old)
 
 
-def test_the_tables_each_group_needs_are_fetched_before_the_model_is_asked(tmp_path):
-    job = _job(tmp_path)
-    FakeRAG.queries.clear()
-    R = _Server(FakeRAG)
+def test_a_remembered_number_is_rejected_and_the_retry_names_it(tmp_path):
+    """The failure of the first live run: the model 'remembers' a = 0.025 for RBS (the ASCE 41-17
+    placeholder) and hands it in against the row. No cell holds it, so it is rejected, and the retry
+    tells the model exactly which field and why."""
+    bad_beam = dict(GOOD_BEAM, a_max=_q(0.025, RBS_ROW))                     # quoted the real row, typed a memory
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, bad_beam, GOOD_BEAM, GOOD_COLUMN])
     try:
-        _rag_env(R); os.environ["STELTIC_LLM_MODEL"] = "MOCK"; os.environ.pop("STELTIC_LLM_BASE_URL", None)
-        collect.run(job, emit=collect.Emitter(io.StringIO()))
-        # exact-table lookups, in policy form, for the tables an SMF with RBS connections is read from
-        asked = [("342" if "AISC_342" in q.get("collection", "") else q.get("collection", ""), q.get("type"), q.get("query")) for q in FakeRAG.queries]
-        assert ("342", "exact_table", "C5.5") in asked and ("342", "exact_table", "C3.6") in asked
-        assert ("342", "exact_table", "A5.2") in asked
-        assert all(q.get("context_neighbors") is not None for q in FakeRAG.queries if q.get("type") == "exact_table")
-        msg = collect._facts_message(collect.gather(job), {}, [{"group": "g", "document": "A342", "how": "exact_table C5.5",
-                                                                  "passages": [{"source": "AISC_342_22", "section": "C5.5", "page": "110", "text": "RBS row"}], "note": ""}])
-        assert msg.startswith("PASSAGES ALREADY RETRIEVED") and "[AISC_342_22 C5.5 p. 110]" in msg
+        r = collect.run(job, emit=collect.Emitter(io.StringIO()))
+        assert r["ok"] and r["verified"]
+        assert len(ScriptedLLM.calls) == 4, "material, beam (rejected), beam again, column"
+        retry = ScriptedLLM.calls[2]["messages"][-1]["content"]
+        assert "REJECTED LAST TIME" in retry and "a_max: the number 0025 is not in the quote" in retry
+        d = json.load(open(r["path"], encoding="utf-8"))
+        assert d["beam_flexure"]["a_max"] == 0.07
     finally:
-        R.close(); os.environ.pop("RAG_API_URL", None); os.environ.pop("STELTIC_LLM_MODEL", None); rag._status_cache = None
+        _done(R, L, old)
 
 
-def test_the_prompt_names_the_converter_artefacts_and_the_memory_trap():
-    assert "X 2 0 07" in collect.SYSTEM and "footnotes [d] and [e]" in collect.SYSTEM
-    assert "Never search for a number you remember" in collect.SYSTEM
-    assert ("come back %d times" % collect.REPEAT_LIMIT) in collect.SYSTEM
+def test_a_quote_that_is_not_in_the_passage_is_rejected(tmp_path):
+    invented = dict(GOOD_COLUMN, a_expr=_q("0.8*(h/tw)**-0.6*(L/ry)**-0.8*(1-PG/Pye)**2.2", "a = 0.8 (h/tw)^-0.6 (L/ry)^-0.8 (1-PG/Pye)^2.2"))
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, invented, invented, invented])
+    try:
+        r = collect.run(job, emit=collect.Emitter(io.StringIO()))
+        assert not r["ok"] and r["missing"] == ["column_flexure"]
+        assert os.path.basename(r["path"]) == collect.PARTIAL_NAME and not os.path.exists(os.path.join(job, collect.OUT_NAME))
+        ev = json.load(open(os.path.join(job, collect.EVIDENCE_NAME), encoding="utf-8"))
+        assert any("a_expr: the quote does not occur in the passages" in p for p in ev["problems"]["column_flexure"])
+        assert len(ScriptedLLM.calls) == 5, "three attempts for the column, then it is missing -- no loop"
+    finally:
+        _done(R, L, old)
+
+
+def test_the_trace_survives_a_run_that_dies(tmp_path):
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL])
+    try:
+        L.close()                                                          # the provider goes away mid-run
+        r = collect.run(job, emit=collect.Emitter(io.StringIO()))
+        assert not r["ok"]
+        tr = [json.loads(l) for l in open(os.path.join(job, collect.TRANSCRIPT_NAME), encoding="utf-8")]
+        assert tr and tr[0]["type"] == "prefetch" and any(t["type"] == "prompt" for t in tr)
+    finally:
+        R.close(); os.environ.clear(); os.environ.update(old); rag._status_cache = None
+
+
+def test_rows_are_decided_from_the_building_not_by_the_model():
+    f = collect.gather(EX22)
+    assert f["rbs"] and f["rbs_c_in"] == 4.0
+    assert collect.row_for("beam_flexure", f)[0] == "beam_flexure:fr_connection" and "RBS" in collect.row_for("beam_flexure", f)[1]
+    assert "Highly ductile" in collect.row_for("column_flexure", f)[1]
+    f2 = dict(f, rbs=False)
+    assert "exception of the RBS" in collect.row_for("beam_flexure", f2)[1]
+    f3 = dict(f, moment_frame=False, rbs=False)
+    assert collect.row_for("beam_flexure", f3)[0] == "beam_flexure:member"
