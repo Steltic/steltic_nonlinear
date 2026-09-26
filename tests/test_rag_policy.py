@@ -85,3 +85,33 @@ def _help_for(flag):
     with contextlib.redirect_stdout(buf), contextlib.suppress(SystemExit):
         cli.main(["review", "--help"])
     return buf.getvalue()
+
+def test_an_exact_hit_is_passed_on_whole(monkeypatch):
+    """Table C5.5 puts the RBS row 8,450 characters in and its footnote equations after 10,000; the
+    old 2,500-character cap on every hit cut them off and Collect reported them absent. An exact lookup
+    is one provision: it goes through whole. Navigation snippets stay short."""
+    row = "| RBS | X 2 0 07 <= . | 0.028 | 0.2 | 0.5 a | 0.75 b | b |"
+    table = "TABLE C5.5 " + ("| SMF filler row |" + " " * 60 + "\n") * 150 + row + "\n\nFOOTNOTE EQUATIONS printed with this table: X_2 = 0.55"
+    assert table.index(row) > 2500
+    sent = []
+
+    def fake_post(payload, timeout):
+        sent.append(payload)
+        return {"results": [{"text": table, "doc": "AISC_342_22", "section_id": "C5.4a", "printed_label": "77"}]}, None
+
+    monkeypatch.setattr(rag, "_post", fake_post)
+    monkeypatch.setattr(rag, "url", lambda: "http://x/query")
+    monkeypatch.setattr(rag, "status", lambda: {"known": True, "indexed_docs": ["AISC_342_22"]})
+    res = rag.search("C5.5", "A342", qtype="exact_table", top_k=8, neighbors=2)
+    assert res["ok"] and res["results"], res
+    text = res["results"][0]["text"]
+    assert row in text and "FOOTNOTE EQUATIONS" in text and "not shown" not in text
+    assert sent[0].get("type") == "exact_table"
+    # a navigation snippet is capped and says so
+    long_snippet = "x" * (rag.FTS_MAX_CHARS + 500)
+    monkeypatch.setattr(rag, "_post", lambda payload, timeout: ({"results": [{"text": long_snippet, "doc": "AISC_342_22"}]}, None))
+    res = rag.search("reduced beam section modeling parameters", "A342", qtype="fts")
+    t = res["results"][0]["text"]
+    assert len(t) < len(long_snippet) and t.endswith("more characters not shown]")
+    assert rag.EXACT_MAX_CHARS >= 30000                     # Table A3.2 of AISC 341 is 27,000 characters
+

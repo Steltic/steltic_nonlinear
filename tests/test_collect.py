@@ -318,7 +318,7 @@ def test_a_remembered_number_is_rejected_and_the_retry_names_it(tmp_path):
         assert r["ok"] and r["verified"]
         assert len(ScriptedLLM.calls) == 4, "material, beam (rejected), beam again, column"
         retry = ScriptedLLM.calls[2]["messages"][-1]["content"]
-        assert "REJECTED LAST TIME" in retry and "a_max: the number 0025 is not in the quote" in retry
+        assert "NOT ACCEPTED" in retry and "a_max: the number 0025 is not in the quote" in retry
         d = json.load(open(r["path"], encoding="utf-8"))
         assert d["beam_flexure"]["a_max"] == 0.07
     finally:
@@ -335,6 +335,25 @@ def test_a_quote_that_is_not_in_the_passage_is_rejected(tmp_path):
         ev = json.load(open(os.path.join(job, collect.EVIDENCE_NAME), encoding="utf-8"))
         assert any("a_expr: the quote does not occur in the passages" in p for p in ev["problems"]["column_flexure"])
         assert len(ScriptedLLM.calls) == 5, "three attempts for the column, then it is missing -- no loop"
+    finally:
+        _done(R, L, old)
+
+
+def test_a_row_the_model_reports_absent_is_asked_for_once_more_and_then_let_go(tmp_path):
+    """The second live run: every hit had been cut to 2,500 characters upstream and the model, reading
+    only what it was handed, said the RBS row was not there -- three times, word for word, the third
+    time spending 15,000 characters of reasoning to say it again. Absent is asked once more (the row of
+    a continued table sits far down the passage), then believed."""
+    absent = {f: {"value": None, "quote": None, "why": "the RBS row is not in the passage"} for f in GOOD_BEAM}
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, absent, absent, GOOD_COLUMN])
+    try:
+        r = collect.run(job, emit=collect.Emitter(io.StringIO()))
+        assert not r["ok"] and r["missing"] == ["beam_flexure"]
+        assert len(ScriptedLLM.calls) == 4, "material, beam absent, beam once more, column -- not a third beam call"
+        second = ScriptedLLM.calls[2]["messages"][-1]["content"]
+        assert "read to the end before answering that a cell is absent" in second
+        ev = json.load(open(os.path.join(job, collect.EVIDENCE_NAME), encoding="utf-8"))
+        assert any(p.startswith("a_max: not read -- the RBS row is not in the passage") for p in ev["problems"]["beam_flexure"])
     finally:
         _done(R, L, old)
 

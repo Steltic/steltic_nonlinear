@@ -135,7 +135,7 @@ def prefetch(facts: dict, search) -> dict:
             for h in (res.get("results") or [])[:6]:
                 out[gid].append({"document": doc, "how": "%s %s" % (how, q), "source": h.get("source") or doc,
                                  "section": h.get("section") or "", "page": h.get("page") or "",
-                                 "text": (h.get("text") or "")[:14000]})
+                                 "text": (h.get("text") or "")[:rag.EXACT_MAX_CHARS]})
     return out
 
 
@@ -242,7 +242,7 @@ def _ask_message(gid: str, variant: str, row: str, fields: list, passages: list,
         lines.append(p["text"])
         lines.append("")
     if retry_note:
-        lines += ["REJECTED LAST TIME -- fix exactly these:", retry_note, ""]
+        lines += ["YOUR LAST ANSWER WAS NOT ACCEPTED -- these fields again:", retry_note, ""]
     lines.append("Transcribe the fields now. JSON only.")
     return "\n".join(lines)
 
@@ -335,21 +335,33 @@ def transcribe(gid: str, facts: dict, passages: list, conn: dict, em, trace) -> 
             retry_note = "your reply was not a JSON object"
             continue
         probs = {}
+        rejected = {}                       # the model quoted something and the check refused it
         for f, what, kind in fields:
             a = ans.get(f)
             if not isinstance(a, dict):
                 probs[f] = "missing from the reply"
+                rejected[f] = probs[f]
                 continue
             why = check_field(kind, a.get("value"), a.get("quote"), passages_norm)
             if why:
                 probs[f] = why + ((" -- " + str(a.get("why"))) if a.get("why") else "")
+                if why != "not read":
+                    rejected[f] = probs[f]
             else:
                 got[f] = a["value"]
                 got.setdefault("_quotes", {})[f] = a.get("quote")
         if not probs:
             break
-        retry_note = "\n".join("  %s: %s" % (f, w) for f, w in probs.items()) + \
-            "\n(copy the quote EXACTLY from the passage; a number that is not in the quote cannot be used)"
+        if not rejected and attempt >= 1:
+            break                           # asked twice, both times "not in the passages": it is not
+        if rejected:
+            retry_note = "\n".join("  %s: %s" % (f, w) for f, w in rejected.items()) + \
+                "\n(copy the quote EXACTLY from the passage; a number that is not in the quote cannot be used)"
+        else:
+            # every remaining field was reported absent: one more look, with the size of what was
+            # handed over, in case the row sits further down the table than the first reading went
+            retry_note = "\n".join("  %s: %s" % (f, w) for f, w in probs.items()) + \
+                "\n(the passages above run %d characters; the rows of a continued table and the FOOTNOTE EQUATIONS block come AFTER its first page -- read to the end before answering that a cell is absent)" % sum(len(p["text"]) for p in passages)
     return got, probs
 
 

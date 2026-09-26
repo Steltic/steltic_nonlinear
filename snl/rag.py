@@ -146,12 +146,25 @@ def _post(payload: dict, timeout: float) -> tuple[dict | None, Exception | None]
     return None, last
 
 
-def _shape(data: dict, top_k: int, coll: str) -> list:
+# How much of one hit's text is passed on. An exact lookup returns ONE provision whole -- a table is
+# its every row plus the footnote equations the server appends after them, and in this corpus that runs
+# 5,000-27,000 characters (Table C5.5 puts the RBS row 8,450 characters in, Table A3.2 the A992 row
+# 6,800 in, Table C3.6 the highly-ductile row 7,100 in). A cap of 2,500 here silently cut every one of
+# those rows off and the collector, reading only what it was handed, rightly reported them absent. Full
+# text navigation returns snippets, which the server already caps at 4,000.
+EXACT_MAX_CHARS = 60000
+FTS_MAX_CHARS = 4000
+
+
+def _shape(data: dict, top_k: int, coll: str, max_chars: int = EXACT_MAX_CHARS) -> list:
     res = []
     for h in (data.get("results") or [])[:top_k]:
         if not isinstance(h, dict):
             continue
-        res.append({"text": str(h.get("text") or h.get("snippet") or "")[:2500], "source": str(h.get("source") or h.get("doc") or coll),
+        text = str(h.get("text") or h.get("snippet") or "")
+        if max_chars and len(text) > max_chars:
+            text = text[:max_chars] + "\n[... %d more characters not shown]" % (len(text) - max_chars)
+        res.append({"text": text, "source": str(h.get("source") or h.get("doc") or coll),
                     "section": str(h.get("section") or h.get("section_id") or ""), "title": str(h.get("title") or ""),
                     "page": h.get("page") or h.get("printed_label") or h.get("pdf_page"), "score": h.get("score"),
                     "authoritative": bool(h.get("authoritative"))})
@@ -259,7 +272,7 @@ def search(query: str, document: str = "ASCE7", top_k: int = 5, clause: str = ""
         if data is None:
             attempts.append({"how": how, "hits": None, "note": "unreachable: %s" % err})
             return None, str(err), ""
-        res = _shape(data, top_k, collection)
+        res = _shape(data, top_k, collection, EXACT_MAX_CHARS if kind in _EXACT_TYPES else FTS_MAX_CHARS)
         attempts.append({"how": how, "hits": len(res), "note": data.get("note") or ""})
         return res, str(data.get("note") or ""), data.get("matched") or ""
 
