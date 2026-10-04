@@ -39,6 +39,8 @@ Rules:
 - Before you cite a clause, table or equation, look it up with search_engineering_standards and cite it as [ASCE 7-22 §16.4.1.2, p. 149] with the page the passage gives. A clause you could not find: cite it from memory and append (UNVERIFIED).
 - Ratios and percentages are written with their basis (e.g. "mean drift 1.46% vs 2.00% = 2 x 1.0% Table 12.12-1, RC IV").
 - Be specific and short. No preamble, no closing pleasantries. Write in English.
+- The EVIDENCE carries `results_verdict`, derived from the files. Your Verdict and section 7 must agree with it: when its status is FAIL or INCOMPLETE, never write that nothing is required or that members are candidates for a lighter design; name each failure and each check that was NOT EVALUATED.
+- Force-controlled actions are ASCE 7-22 §16.4.2.1 (Eqs. 16.4-1/16.4-2); deformation-controlled actions are §16.4.2.2.
 
 """ + RETRIEVAL_POLICY + """"""
 
@@ -178,7 +180,76 @@ def gather(job: str) -> dict:
                 loops.append({"id": d, "kind": st.get("kind"), "status": st.get("status"), "passed": st.get("passed"), "title": st.get("title"),
                               "verdict": ((st.get("comparison") or {}).get("verdict_text") or "")[:300], "promoted_at": st.get("promoted_at")})
     ev["feedback_loops"] = loops
+    ev["results_verdict"] = results_verdict(ev)
     return ev
+
+
+# ---------------------------------------------------------------- the verdict the results support
+_NOTHING_TO_DO = re.compile(r"nothing (?:is |else )?(?:required|needed|to change)|no changes? (?:is |are )?(?:required|needed)|"
+                            r"candidates? for a lighter design|could be lightened|lighter design", re.I)
+
+
+def results_verdict(ev: dict) -> dict:
+    """What the measured results allow the review to say -- derived from the files, never from the model.
+    -> {"status": "PASS" | "FAIL" | "INCOMPLETE", "failures": [...], "not_evaluated": [...], "caveats": [...]}
+    PASS only when every analysis ran and passed AND the pushover BPON was actually evaluated; a DDM
+    combination below 1.0, a failed transfer gate, an unacceptable Chapter 16 suite or a BPON that checked
+    no component are never "nothing required" (register item NL-21)."""
+    s = ev.get("summary") or {}
+    sn, sp, sd = s.get("nlrha") or {}, s.get("pushover") or {}, s.get("ddm") or {}
+    po = ev.get("pushover") or {}
+    fails, notev, cav = [], [], []
+    # Chapter 16
+    if sn:
+        if str(sn.get("verdict") or "").upper() != "ACCEPTABLE":
+            fails.append("Chapter 16 NLRHA: %s (%s of %s records unacceptable)" % (sn.get("verdict") or "no verdict", sn.get("n_unacceptable"), sn.get("n_records")))
+        md = sn.get("mean_drift_max")
+        if not isinstance(md, (int, float)) or md != md:
+            notev.append("Chapter 16 mean drift not computed (no acceptable record)")
+    else:
+        notev.append("Chapter 16 NLRHA not in the run")
+    # pushover BPON
+    if sp or po:
+        groups = [g for d in (po.get("directions") or {}).values() for a in (d.get("acceptance") or {}).values()
+                  for g in (a.get("groups") or [])]
+        status = str(sp.get("bpon_status") or sp.get("bpon") or "")
+        evaluated = sp.get("bpon_evaluated")
+        if evaluated is False or "NOT EVALUATED" in status.upper() or sp.get("bpon_ok") is None or (po and not groups):
+            notev.append("pushover BPON (%s) NOT EVALUATED -- no component group was checked" % "/".join(sp.get("bpon_levels") or []))
+        elif not sp.get("bpon_ok"):
+            fails.append("pushover BPON %s NOT satisfied" % "/".join(sp.get("bpon_levels") or []))
+        if sp.get("nsp_permitted") is False:
+            fails.append("NSP not permitted (mu_strength > mu_max): an NDP is required")
+        if (po.get("params_verified") is False) or (sp.get("params_verified") is False):
+            cav.append("component parameters are UNVERIFIED (not all user-supplied): no acceptance ratio can be relied on")
+    else:
+        notev.append("pushover not in the run")
+    # DDM
+    if sd:
+        n_pass, n_chk = sd.get("n_pass"), sd.get("n_checked")
+        if isinstance(n_pass, int) and isinstance(n_chk, int) and n_pass < n_chk:
+            fails.append("DDM: %d of %d combinations below phi_s lambda_u = 1.0 (governing %s, phi_s lambda_u = %s)"
+                         % (n_chk - n_pass, n_chk, sd.get("governing"), sd.get("phi_lambda")))
+        if sd.get("gate_ok") is False:
+            fails.append("DDM transfer gate FAILED (the GMNIA model does not reproduce the design model)")
+        if not n_chk:
+            notev.append("DDM checked no combination")
+    else:
+        notev.append("DDM not in the run")
+    status = "FAIL" if fails else ("INCOMPLETE" if notev or cav else "PASS")
+    return {"status": status, "failures": fails, "not_evaluated": notev, "caveats": cav}
+
+
+def verdict_block(rv: dict) -> str:
+    """The results-derived verdict, Markdown, placed at the top of every review (MOCK or model)."""
+    lines = ["> **Results-derived verdict: %s.** %s" % (rv["status"], {
+        "PASS": "Every analysis ran, its checks pass, and the BPON was evaluated.",
+        "FAIL": "At least one check fails -- changes are required.",
+        "INCOMPLETE": "Not every check was evaluated -- the design cannot be called adequate, nor a lighter one proposed."}[rv["status"]])]
+    for k, lab in (("failures", "FAIL"), ("not_evaluated", "NOT EVALUATED"), ("caveats", "CAVEAT")):
+        for x in rv.get(k) or []:
+            lines.append("> - %s: %s" % (lab, x))
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------- events
@@ -282,6 +353,14 @@ def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int
         em.event(type="tool_result", step=n, summary=summ, ms=res.get("ms") or 0)
         return rag.render(res)
 
+    if conn.get("mock") and not conn.get("mock_requested"):
+        # NL-23: never a silent fallback -- the user asked for a model review and is getting the offline one
+        loud = ("NO MODEL CONFIGURED -- %s. This is the OFFLINE MOCK review written by rules from the evidence, "
+                "NOT a model review. Configure the hub's model connection (STELTIC_LLM_MODEL / STELTIC_LLM_BASE_URL) "
+                "and run Review again." % (conn.get("mock_reason") or "no model connection"))
+        em.event(type="warning", text=loud)
+        em.log("!! " + loud)
+        sys.stderr.write("!! " + loud + "\n")
     if conn.get("mock"):
         em.event(type="status", text="model MOCK: writing the review from the evidence alone")
         md = mock_review(ev, focus, do_search if searching else None)
@@ -335,6 +414,16 @@ def run(job: str, focus: str = "", use_standards: bool = True, max_searches: int
         if not md:
             em.event(type="error", text="the model did not produce the review after %d turns" % max_turns)
             return {"ok": False, "review_md": "", "paths": {}, "searches": searches, "usage": usage}
+    rv = ev.get("results_verdict") or results_verdict(ev)
+    pre = verdict_block(rv)
+    if rv["status"] != "PASS" and _NOTHING_TO_DO.search(md):
+        pre += ("> **The text below says nothing needs to change or proposes a lighter design; the results do not "
+                "support that (see the list above). This verdict box governs.**\n")
+        em.event(type="warning", text="the review text contradicts the results (%s); the results-derived verdict is placed above it" % rv["status"])
+    if conn.get("mock") and not conn.get("mock_requested"):
+        pre = ("> **NO MODEL CONFIGURED (%s) -- this is the OFFLINE MOCK review, not a model review.**\n\n"
+               % (conn.get("mock_reason") or "no model connection")) + pre
+    md = pre + "\n" + md
     paths = write_outputs(job, md, ev, searches, conn, focus, time.time() - t0)
     em.event(type="milestone", text="review written: review.md, review.html (%d standards searches, %d s)" % (len(searches), int(time.time() - t0)))
     em.log(">> review: " + paths["md"])
@@ -357,21 +446,27 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
     nl, po, dd, de = ev.get("nlrha") or {}, ev.get("pushover") or {}, ev.get("ddm") or {}, ev.get("design") or {}
     cite = {}
     if search:
+        # force-controlled actions are §16.4.2.1 (Eqs. 16.4-1/16.4-2); §16.4.2.2 is deformation-controlled
         for key, args in (("16.4.1.2", {"query": "mean story drift ratio limit two times Table 12.12-1", "document": "ASCE7", "clause": "16.4.1.2"}),
                           ("16.4.1.1", {"query": "unacceptable response number of ground motions", "document": "ASCE7", "clause": "16.4.1.1"}),
-                          ("16.4.2.2", {"query": "force-controlled actions gamma 1.3 Eq. 16.4-1", "document": "ASCE7", "clause": "16.4.2.2"})):
+                          ("16.4.2.1", {"query": "force-controlled actions gamma 1.3 Eq. 16.4-1", "document": "ASCE7", "clause": "16.4.2.1"})):
             txt = search(args)
             m = re.search(r"\[1\] (\S+) (\S+)(?: p\. (\S+))?", txt)
             grounded = "NO PASSAGES" not in txt and "CORPUS GAP" not in txt and "(answered by: any-document" not in txt
+            # the passage must BE the clause asked for (its section id starts with it), not a neighbour
+            if grounded and not re.search(r"\[1\][^\n]*?(?<![\d.])§?" + re.escape(key) + r"(?![\d])", txt):
+                grounded = False
             cite[key] = ("[ASCE 7-22 §%s%s]" % (key, (", p. " + m.group(3)) if m and m.group(3) else "")) if grounded else "[ASCE 7-22 §%s] (UNVERIFIED)" % key
     else:
-        cite = {k: "[ASCE 7-22 §%s] (UNVERIFIED)" % k for k in ("16.4.1.2", "16.4.1.1", "16.4.2.2")}
+        cite = {k: "[ASCE 7-22 §%s] (UNVERIFIED)" % k for k in ("16.4.1.2", "16.4.1.1", "16.4.2.1")}
     v = (nl.get("verdict") or {}); L = nl.get("limits") or {}
     sn, sp, sd = s.get("nlrha") or {}, s.get("pushover") or {}, s.get("ddm") or {}
     lines = ["# Review of %s — nonlinear analyses (model MOCK)" % ev.get("job"), ""]
     if focus.strip():
         lines += ["**Focus asked:** " + focus.strip(), ""]
     lines += ["## 1. Verdict", ""]
+    _rv = ev.get("results_verdict") or results_verdict(ev)
+    lines.append("Overall: **%s**%s." % (_rv["status"], (" — " + "; ".join(_rv["failures"] + _rv["not_evaluated"])) if _rv["status"] != "PASS" else ""))
     if sn:
         lines.append("Chapter 16: **%s** — %d unacceptable of %d records (allowed %s); mean storey drift %s against %s %s." % (
             sn.get("verdict"), sn.get("n_unacceptable") or 0, sn.get("n_records") or 0, v.get("unacceptable_allowed", "not in the run"), _pct(sn.get("mean_drift_max")), _pct(sn.get("mean_limit")), cite["16.4.1.2"]))
@@ -379,7 +474,7 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
         lines.append("Chapter 16: not in the run.")
     if sp:
         lines.append("Pushover: Ω = %s (Ω₀ = %s); BPON %s — %s; NSP %s." % ("/".join(_f(x, 1) for x in (sp.get("Omega") or {}).values()), _f((s.get("basis") or {}).get("Om0"), 1),
-                                                                            "/".join(sp.get("bpon_levels") or []), "both pass" if sp.get("bpon_ok") else "NOT satisfied", "permitted" if sp.get("nsp_permitted") else "not permitted"))
+                                                                            "/".join(sp.get("bpon_levels") or []), ("NOT EVALUATED" if any("BPON" in x for x in _rv["not_evaluated"]) else "both pass" if sp.get("bpon_ok") else "NOT satisfied"), "permitted" if sp.get("nsp_permitted") else "not permitted"))
     if sd:
         lines.append("DDM: governing %s, λᵤ = %s, φₛλᵤ = %s, %s of %s combinations pass, transfer gate %s." % (sd.get("governing"), _f(sd.get("lambda_u")), _f(sd.get("phi_lambda")), sd.get("n_pass"), sd.get("n_checked"), "ok" if sd.get("gate_ok") else "FAILED"))
     lines += ["", "## 2. What the run measured", ""]
@@ -392,7 +487,7 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
         lines.append("- Mean storey drift %s vs %s (2 × %s, Risk Category %s) — %s %s" % (_pct(v.get("mean_drift_max")), _pct(L.get("mean_limit")), _pct(L.get("table_12_12_1"), 1), L.get("risk_category"), "OK" if v.get("mean_drift_ok") else "NOT OK", cite["16.4.1.2"]))
         lines.append("- Unacceptable responses %s of %s (allowed %s) — %s %s" % (v.get("n_unacceptable"), v.get("n_records"), v.get("unacceptable_allowed"), "OK" if v.get("unacceptable_ok") else "NOT OK", cite["16.4.1.1"]))
         lines.append("- Deformation-controlled actions: worst CP D/C %s — %s; valid range %s" % (_f(sn.get("worst_DC_CP")), "OK" if v.get("deformation_ok") else "NOT OK", "OK" if v.get("valid_range_ok") else "NOT OK"))
-        lines.append("- Force-controlled columns: worst D/C %s — %s %s" % (_f(sn.get("worst_DC_force_controlled")), "OK" if v.get("force_controlled_ok") else "NOT OK", cite["16.4.2.2"]))
+        lines.append("- Force-controlled columns: worst D/C %s — %s %s" % (_f(sn.get("worst_DC_force_controlled")), "OK" if v.get("force_controlled_ok") else "NOT OK", cite["16.4.2.1"]))
         lines.append("- Residual drift: %s" % ("not applicable at this height" if not v.get("residual_applicable") else ("OK" if v.get("residual_ok") else "NOT OK")))
     else:
         lines.append("Not in the run.")
@@ -411,10 +506,16 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
     lines.append("- cfg.py: " + ", ".join("%s = %s" % kv for kv in (de.get("cfg_seismic") or {}).items()) if de.get("cfg_seismic") else "- cfg.py not read")
     lines.append("- §16.1.4 draft %s." % ("present" if ev.get("design_criteria_draft") else "not in the run"))
     lines += ["", "## 7. What to change, and why", ""]
-    if nl and v.get("overall") and sp.get("bpon_ok", True) and (sd.get("gate_ok", True)):
-        lines.append("Nothing is required by the checks that ran: every Chapter 16 criterion passes with the margins above. The candidates for a lighter design are the groups whose deformation D/C is far below 1.0 (see the deformation groups in the evidence) — a resize loop in the Feedback tab quantifies that.")
+    rv = ev.get("results_verdict") or results_verdict(ev)
+    if rv["status"] == "PASS":
+        lines.append("Nothing is required by the checks that ran: every check passes with the margins above and the BPON was evaluated. The candidates for a lighter design are the groups whose deformation D/C is far below 1.0 (see the deformation groups in the evidence) — a resize loop in the Feedback tab quantifies that.")
     else:
-        lines.append("Address the failing check first (see sections 3–5); the Feedback tab's loops are the mechanised path back to HR Steel.")
+        for x in rv["failures"]:
+            lines.append("- Required — %s; address it first (sections 3–5). The Feedback tab's loops are the mechanised path back to HR Steel." % x)
+        for x in rv["not_evaluated"]:
+            lines.append("- Not evaluated — %s; no conclusion (adequate or lighter) can be drawn from it until it is." % x)
+        for x in rv["caveats"]:
+            lines.append("- Caveat — %s." % x)
     lines += ["", "## 8. Open items and verification", ""]
     if po and not po.get("params_verified"):
         lines.append("- Component parameters are UNVERIFIED placeholders (pushover and NLRHA): fill hinge_params.json from AISC 342-22 / ASCE 41-23 before anyone relies on these results.")
@@ -492,7 +593,8 @@ def write_outputs(job: str, md: str, ev: dict, searches: list, conn: dict, focus
     md_path = os.path.join(job, "review.md")
     open(md_path, "w", encoding="utf-8").write(md if md.endswith("\n") else md + "\n")
     date = datetime.date.today().isoformat()
-    model = "MOCK (offline)" if conn.get("mock") else conn.get("model")
+    model = (("MOCK (offline)" if conn.get("mock_requested") else "MOCK (offline) — NO MODEL CONFIGURED: " + str(conn.get("mock_reason") or ""))
+             if conn.get("mock") else conn.get("model"))
     doc = ("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Review — %s</title><style>%s</style></head><body>"
            "<div class=\"meta\">Steltic_nonlinear · Review of <b>%s</b> · %s · model %s · %d standards searches · %d s</div>%s"
            "<div class=\"disc\">Written by a language model from the run's measured results (see review_transcript.json for the evidence and every passage it read). "
