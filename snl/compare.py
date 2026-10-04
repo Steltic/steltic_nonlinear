@@ -217,7 +217,8 @@ def build(job, out_name="four_analyses.html", title=None):
         po_foot = (f"BPON for Risk Category {rc.replace('_', '/')}: {lv1} at BSE-1N D/C {bpon1}; {lv2} at BSE-2N D/C {bpon2} — {bpon_word}. "
                    + (f"Monitored components ({mon_txt}). " if mon_txt else "")
                    + f"δ<sub>t</sub> BSE-2N {dt2} in. NSP {'permitted' if nsp_ok else 'NOT permitted (μstrength > μmax) — NDP required'}; "
-                   f"{'members' if stats.get('plasticity') == 'fibre' else 'hinges'}: {stats.get('col', 0)} column, {stats.get('beam', 0)} beam, {stats.get('brace_nonlinear', 0)} brace; descending branch {', '.join(f'{k} {v}' for k, v in tails.items())}. "
+                   f"{'members' if stats.get('plasticity') == 'fibre' else 'hinges'}: {stats.get('col', 0)} column, {stats.get('beam', 0)} beam, {stats.get('brace_nonlinear', 0) - stats.get('brb', 0)} brace"
+                   f"{(', %d BRB' % stats['brb']) if stats.get('brb') else ''}{(', %d EBF link' % stats['links']) if stats.get('links') else ''}; descending branch {', '.join(f'{k} {v}' for k, v in tails.items())}. "
                    f"Component parameters {'verified' if po.get('params_verified') else 'UNVERIFIED placeholders'}.")
         summary["pushover"] = dict(Omega={k: d["p695"].get("Omega") for k, d in dirs.items()}, Vmax={k: d["p695"]["Vmax_kip"] for k, d in dirs.items()},
                                    target_disp_BSE2N={k: d["nsp"]["BSE-2N"]["target_disp_in"] for k, d in dirs.items()}, bpon_levels=[lv1, lv2], bpon_ok=bpon_ok, nsp_permitted=nsp_ok,

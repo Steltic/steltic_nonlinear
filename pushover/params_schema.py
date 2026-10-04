@@ -35,11 +35,16 @@ import re
 
 SCHEMA = "ASCE41-23/AISC342-22"
 E_KSI = 29000.0
-GROUPS = ("material", "beam_flexure", "column_flexure", "brace_axial")
+GROUPS = ("material", "beam_flexure", "column_flexure", "brace_axial",
+          # nl-elements groups (NL-02 / NL-03 / NL-10): never collected, supplied manually by the user
+          "brb_axial", "ebf_link", "cyclic_deterioration")
+TEMPLATE_NOTE = "(group not in the parameter file: repository TEMPLATE values used)"
 
 # keys inside a group that describe the values rather than being values the engine computes with
 _META = {"basis", "note", "notes", "source", "quotes", "mode", "table", "unverified", "element", "decode_note",
          "Lb_note", "rbs_note", "modifier_note", "Mc_note", "modifier_checks", "modifiers", "used",
+         # switches / topology, not component values
+         "nlrha_element", "detect", "element_tags", "exclude_tags", "sections_note",
          # design facts read from the HR package, not table values
          "Lb_over_ry", "Lb_divisor", "rbs_c_in", "rbs_c_frac_bf"}
 _FLAG_WORDS = re.compile(r"PLACEHOLDER|TEMPLATE|\bMOCK\b", re.I)
@@ -123,14 +128,18 @@ def annotate(prm: dict) -> dict:
     return prm
 
 
-def mark_used(prm: dict, gid: str, extra: list | None = None) -> None:
+def mark_used(prm: dict, gid: str, extra: list | None = None, from_template: bool = False) -> None:
     """A hinge builder used group `gid`: if any of its fields is not user-supplied, the run's parameters
-    are UNVERIFIED (the effective flag every report reads), whatever the file claimed."""
+    are UNVERIFIED (the effective flag every report reads), whatever the file claimed. `from_template`: the
+    builder had to take the group from the repository template because the file lacks it (brb_axial,
+    ebf_link, cyclic_deterioration, brace_axial.physical_theory) -- always unverified."""
     if not isinstance(prm, dict):
         return
     if not prm.get("_annotated"):
         annotate(prm)
-    fields = list((prm.get("_unverified") or {}).get(gid) or []) + list(extra or [])
+    fields = ([] if from_template else list((prm.get("_unverified") or {}).get(gid) or [])) + list(extra or [])
+    if from_template:
+        fields.insert(0, TEMPLATE_NOTE)
     if not fields:
         return
     used = prm.setdefault("_used_unverified", {})

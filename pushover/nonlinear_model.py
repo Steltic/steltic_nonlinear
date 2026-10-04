@@ -205,13 +205,35 @@ def fibre_end_rotation(h):
     return tot
 
 
+def zero_length_spring(tag, dof):
+    """(deformation, spring force) of DOF `dof` (1..6) of a zeroLength spring built with all six -dir 1..6 in
+    global orientation (every hinge / link / panel-zone spring of this package).
+
+    SIGN: eleResponse(zl, "force") returns the 12 resisting NODAL forces, [node-1 (0:6), node-2 (6:12)]. The
+    node-1 entries are MINUS the spring force (a spring k = 100 stretched by +0.05 gives force[0] = -5, force[6] =
+    +5). The spring force that goes with eleResponse(zl, "deformation") (= u2 - u1) is therefore force[dof-1+6]
+    (= -force[dof-1]). Using force[dof-1] made theta - M/K0 = plastic + 2 x elastic (merge integration fix)."""
+    j = int(dof) - 1
+    d = ops.eleResponse(tag, "deformation"); f = ops.eleResponse(tag, "force")
+    th = d[j] if (d and len(d) > j) else 0.0
+    if f and len(f) >= 12:
+        M = f[j + 6]
+    elif f and len(f) > j:
+        M = -f[j]
+    else:
+        M = 0.0
+    return th, M
+
+
 def hinge_plastic_deformation(tag, h):
     """(plastic deformation, moment|axial force) of any registered hinge `hinges[tag]` at the current state:
-    brace total axial deformation (in) and force; fibre end region plastic rotation (rad, force None);
-    ConcentratedPlasticity end IP or zeroLength IMK spring plastic rotation theta - M/K0 (rad) and M."""
+    brace total axial deformation (in) and force (hinge_models.brace_axial_force: the truss force, or the first
+    fibre segment's basic axial force for a physical-theory brace); fibre end region plastic rotation (rad,
+    force None); ConcentratedPlasticity end IP or zeroLength IMK / link spring plastic deformation d - F/K0 and
+    the spring force F (zero_length_spring: node-2 force, NOT the node-1 entry)."""
     if h["kind"] == "brace":
-        d = ops.eleResponse(tag, "deformation"); f = ops.eleResponse(tag, "axialForce")
-        return (d[0] if d else 0.0), (f[0] if f else 0.0)
+        d = ops.eleResponse(tag, "deformation")
+        return (d[0] if d else 0.0), HM.brace_axial_force(tag, h)
     if h.get("form") == "fibre_end":
         return fibre_end_rotation(h), None
     if h.get("form") == "fbc_cp":
@@ -221,9 +243,7 @@ def hinge_plastic_deformation(tag, h):
         th = d[jc] if (d and len(d) > jc) else 0.0
         M = f[jc] if (f and len(f) > jc) else 0.0
         return th - M / h["K0"], M
-    d = ops.eleResponse(tag, "deformation"); f = ops.eleResponse(tag, "force")
-    j = h["dof"] - 1
-    th = d[j] if len(d) >= 6 else 0.0; M = f[j] if len(f) >= 6 else 0.0
+    th, M = zero_length_spring(tag, h["dof"])
     return th - M / h["K0"], M
 
 

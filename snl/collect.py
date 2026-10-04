@@ -273,7 +273,8 @@ def row_for(gid: str, facts: dict) -> tuple[str, str]:
                                   "'2. Non-moderately ductile' (a, b, c and IO/LS/CP of both; the engine interpolates per section)")
     if gid == "brace_axial":
         if (facts.get("frame_type") or {}).get("brb"):
-            return "brace_axial", ("AISC 342-22 Table C3.3, buckling-restrained braces -- NOT modelled by this tool (no BRB element); "
+            return "brace_axial", ("AISC 342-22 Table C3.3, buckling-restrained braces -- modelled from the `brb_axial` group, which "
+                                   "Collect does not fill: the user supplies it manually (else the TEMPLATE values, flagged UNVERIFIED); "
                                    "the buckling-brace Table C3.4 does not apply to a BRBF")
         return "brace_axial", ("AISC 342-22 Table C3.4, buckling braces in compression and in tension, the row for the "
                                "brace shape (rectangular HSS: row 3); AISC 341-22 Table A3.2 for Ry")

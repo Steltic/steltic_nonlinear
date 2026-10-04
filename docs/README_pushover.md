@@ -94,7 +94,10 @@ in the job copy. The schema (`"schema": "ASCE41-23/AISC342-22"`, see the file's 
 - **Braces.** `brace_axial` `"mode": "table_C3_4"` = Table C3.4 buckling braces: `compression` / `tension` with
   `n_expr` in `lam_ratio` (λ/λ<sub>hd</sub>) and `slend` ((L<sub>c</sub>/r)/√(E/F<sub>ye</sub>)), `f`, `IO`, `LS`, `CP`
   (printed), `tension_only` (note [d]). The old stocky/slender ASCE 41-17 form is still read but always reported
-  UNVERIFIED. Buckling-restrained braces (Table C3.3) are not modelled.
+  UNVERIFIED. Buckling-restrained braces: `brb_axial` (Table C3.3; acceptance as TOTAL axial deformation Δy + plastic).
+- **Groups supplied manually (not collected).** `brb_axial` (BRBs, Table C3.3), `ebf_link` (EBF links, Tables C2.4 / C2.2),
+  `cyclic_deterioration` (literature IMK Λ for the NLRHA) and `brace_axial.physical_theory` (NLRHA brace fatigue). A file
+  without them uses the template block and the run is reported UNVERIFIED naming the group.
 - **Provenance.** Each group has a `source` and an `unverified` list (the template lists every field). A value
   the user did not supply -- template, MOCK, or a field Collect wrote without a quote -- is listed in the report's
   red banner by name, and the run's effective `verified` is false whatever the file claims.

@@ -125,9 +125,12 @@ def augment_groups(acc: dict) -> dict:
 
 def _worst(acc):
     w = acc.setdefault("worst_DC", {})
+    if acc.get("status", "evaluated") != "evaluated":              # NOT EVALUATED / TARGET NOT REACHED: never 0.00
+        w["DC"] = w["LtdS"] = None
+        return
     for k in ("DC", "LtdS"):
         vals = [g.get("DC_" + k) for g in acc.get("groups") or [] if isinstance(g.get("DC_" + k), (int, float)) and g.get("DC_" + k) == g.get("DC_" + k)]
-        w[k] = max(vals, default=0.0)
+        w[k] = max(vals, default=None)
 
 
 def augment_package(po: dict) -> dict:

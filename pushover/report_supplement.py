@@ -72,6 +72,11 @@ def fig_hinges(run, hinges, acc, lvl):
     if any(c.get("brace_elements") for c in acc["census"]):
         ax.barh([z + 2.7 for z in zs], [c.get("brace_buckled", 0) for c in acc["census"]], height=1.7, color="#e0a100", label="braces buckled (beyond δc)")
         ax.barh([z + 4.5 for z in zs], [c.get("brace_yielded_T", 0) for c in acc["census"]], height=1.7, color="#2f8f7a", label="braces yielded in tension")
+    if any(c.get("brb_elements") for c in acc["census"]):         # NL-02: BRBs yield in compression and tension, they do not buckle
+        ax.barh([z + 2.7 for z in zs], [c.get("brb_yielded_C", 0) for c in acc["census"]], height=1.7, color="#7a4fa3", label="BRBs yielded in compression")
+        ax.barh([z + 4.5 for z in zs], [c.get("brb_yielded_T", 0) for c in acc["census"]], height=1.7, color="#2f8f7a", label="BRBs yielded in tension")
+    if any(c.get("link_hinges") for c in acc["census"]):          # NL-03: EBF link shear springs
+        ax.barh([z - 2.7 for z in zs], [c.get("link_yielded", 0) for c in acc["census"]], height=1.7, color="#5b8c2a", label="EBF links yielded in shear")
     ax.set_xlabel("number of yielded hinges (θpl > 0.5 θy)"); ax.set_ylabel("hinge elevation (ft)")
     ax.set_title("Mechanism census at δt %s (roof u = %s in)" % (lvl, _f(acc["roof_disp_in"], 1) if acc.get("roof_disp_in") is not None else "— target not reached"), fontsize=10)
     ax.grid(alpha=.3, axis="x"); ax.legend(fontsize=8)
@@ -224,13 +229,13 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                         _f(acc["worst_DC"]["LS"]), _f(acc["worst_DC"]["LtdS"]), _f(acc["worst_DC"]["CP"]),
                         _tag(acc["worst_DC"][perf] is not None and acc["worst_DC"][perf] <= 1.0), 100 * acc["max_story_drift"], _f(acc["col_N_max_kip"], 0),
                         ", ".join("%s %d" % (k, v) for k, v in (acc.get("monitored") or {}).items() if v)))
-            H.append("<table><tr><th>Hinge group</th><th>Section</th><th>elev. (in)</th><th>hinges</th><th>yielded</th><th>θ<sub>pl,max</sub> (rad) · braces: |Δ|<sub>max</sub> (in)</th>"
+            H.append("<table><tr><th>Hinge group</th><th>Section</th><th>elev. (in)</th><th>hinges</th><th>yielded</th><th>θ<sub>pl,max</sub> (rad) · braces: |Δ|<sub>max</sub> (in) · BRB: total |Δ| (in) · links: γ<sub>p</sub>·e (in)</th>"
                      "<th>IO limit</th><th>LS limit</th><th>CP limit</th><th>%s limit</th><th>D/C IO</th><th>D/C LS</th><th>D/C CP</th><th>D/C %s</th></tr>" % (perf, perf))
             for g in acc["groups"]:
                 if g["n_yielded"] == 0 and g["theta_pl_max"] < 1e-4:
                     continue
                 H.append("<tr><td>%s</td><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td><b>%.2f</b></td></tr>"
-                         % (g["kind"], g["section"], g["z_in"], g["n"], g["n_yielded"], g["theta_pl_max"], g["IO"], g["LS"], g["CP"], g.get(perf) or 0.0,
+                         % ("BRB" if g.get("brb") else ("link (shear, in)" if g["kind"] == "link" else g["kind"]), g["section"], g["z_in"], g["n"], g["n_yielded"], g["theta_pl_max"], g["IO"], g["LS"], g["CP"], g.get(perf) or 0.0,
                             g["DC_IO"], g["DC_LS"], g["DC_CP"], g.get("DC_" + perf) or 0.0))
             H.append("</table>")
             H.append('<figure><img src="%s"><figcaption>Mechanism census at %s — a beam-hinging (strong-column) mechanism shows blue bars at every level and red '

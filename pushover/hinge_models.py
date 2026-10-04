@@ -102,6 +102,8 @@ def cyclic_lambda(member: str, p: dict, Fye: float, L_in: float, prm: dict, PG_o
     mode = str(g.get("mode", "none")).lower()
     if mode in ("none", "off", "0", ""):
         return 0.0, 1.0, "cyclic deterioration OFF (cyclic_deterioration.mode=none)"
+    if str(prm.get("_analysis", "")).lower() == "nlrha":         # Lambda acts only on reversals: the NSP backbone is unaffected
+        PS.mark_used(prm, "cyclic_deterioration", from_template=tmpl)
     c = float(_gv(g, "c_exponent", "cyclic_deterioration", 1.0))
     if mode == "supplied":
         key = "Lambda_column" if member == "column" else ("Lambda_beam_rbs" if rbs and g.get("Lambda_beam_rbs") else "Lambda_beam")
@@ -687,6 +689,10 @@ def brb_spec(section: str, L_in: float, prm: dict, A_model: float = None, pkg_da
         flags.append("%s=%.3f (%s)" % (nm_, v, s_))
     if "FALLBACK" in (s_om or "") or "FALLBACK" in (s_be or ""):
         flags.append("WARNING: omega/beta not from qualification testing -- AISC 342-22 C3.3a.1 permits 1.3/1.1 for LINEAR analysis only")
+    PS.mark_used(prm, "brb_axial", [x for x, s_ in (("omega (FALLBACK 1.3, C3.3a.1 linear-analysis value)", s_om),
+                                                     ("beta (FALLBACK 1.1, C3.3a.1 linear-analysis value)", s_be),
+                                                     ("Ry (FALLBACK 1.0)", s_ry)) if "FALLBACK" in (s_ or "")],
+                 from_template=tmpl)
     Fye = Ry * Fysc
     Qce = Fye * Asc                                                       # C3.3a.1: P_CE = T_CE = A_core * Fye
     KF, s_kf = pick("KF", pkd.get("KF"))
@@ -810,6 +816,7 @@ def link_specs(section: str, e_in: float, prm: dict):
     yielding of a shear link is not a permitted deformation (limit 1e-5 rad), while the modelling a/b are kept unscaled
     so the spring stays numerically regular."""
     g, tmpl = param_group(prm, "ebf_link")
+    PS.mark_used(prm, "ebf_link", from_template=tmpl); PS.mark_used(prm, "material")
     mt = prm.get("material") or {}
     Fye = float(mt.get("Fy_ksi", 50.0)) * float(mt.get("Ry_expected", 1.1))
     lp = SDB.link_shear_props(section, Fye)
@@ -987,6 +994,10 @@ def brace_fatigue_params(section: str, KLr: float, Fye: float, prm: dict) -> dic
     bp = prm.get("brace_axial") or {}
     pt = dict((template_params().get("brace_axial") or {}).get("physical_theory") or {})
     pt.update(bp.get("physical_theory") or {})
+    if not bp.get("physical_theory"):
+        PS.mark_used(prm, "brace_axial", ["physical_theory (not in the parameter file: repository TEMPLATE literature values)"])
+    else:
+        PS.mark_used(prm, "brace_axial")
     flags = []
     B, tdes = _hss_outside_and_tdes(section)
     wt = ((B - 3.0 * tdes) / tdes) if (B and tdes) else 20.0

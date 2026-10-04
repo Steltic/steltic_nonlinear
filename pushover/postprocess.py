@@ -237,20 +237,34 @@ def _census_drifts(run, hinges, i):
         dc = {k: (th / v if v > 0 else float("nan")) for k, v in lim.items()}
         yielded = (th > 0.5 * s.theta_y) if h["kind"] != "brace" else (th > (s.dc if pl[j] < 0 else s.dT))
         key = (h["kind"], h["section"], round(h["z"]))
+        brb = bool(h.get("brb")) or bool(getattr(s, "Asc", 0.0))
+        mon = h.get("form") or ("axial" if h["kind"] == "brace" else "zeroLength")
+        if brb:
+            mon = "axial, TOTAL deformation (Table C3.3 limits = (1 + n) x Delta_y)"
+        elif h["kind"] == "link":
+            mon = "link shear spring, plastic deformation gamma_p x e (in; Table C2.4 limits x e)"
         g = groups.setdefault(key, dict(kind=h["kind"], section=h["section"], z_in=round(h["z"]), n=0, n_yielded=0,
                                           theta_pl_max=0.0, IO=s.IO, LS=s.LS, CP=s.CP, DC_IO=0.0, DC_LS=0.0, DC_CP=0.0,
-                                          monitor=h.get("form") or ("axial" if h["kind"] == "brace" else "zeroLength")))
+                                          monitor=mon, brb=brb,
+                                          units=("in" if h["kind"] in ("brace", "link") else "rad")))
         g["n"] += 1; g["n_yielded"] += int(yielded)
         if th > g["theta_pl_max"]:
             g.update(theta_pl_max=th, DC_IO=dc["IO"], DC_LS=dc["LS"], DC_CP=dc["CP"])
         c = census.setdefault(round(h["z"]), dict(z_in=round(h["z"]), beam_hinges=0, beam_yielded=0, col_hinges=0, col_yielded=0,
-                                                 brace_elements=0, brace_buckled=0, brace_yielded_T=0))
+                                                 brace_elements=0, brace_buckled=0, brace_yielded_T=0,
+                                                 brb_elements=0, brb_yielded_C=0, brb_yielded_T=0, link_hinges=0, link_yielded=0))
         if h["kind"] == "beam":
             c["beam_hinges"] += 1; c["beam_yielded"] += int(yielded)
+        elif h["kind"] == "brace" and brb:                             # BRBs yield in compression, they do not buckle
+            c["brb_elements"] += 1
+            if pl[j] < 0 and yielded: c["brb_yielded_C"] += 1
+            if pl[j] > 0 and yielded: c["brb_yielded_T"] += 1
         elif h["kind"] == "brace":
             c["brace_elements"] += 1
             if pl[j] < 0 and yielded: c["brace_buckled"] += 1
             if pl[j] > 0 and yielded: c["brace_yielded_T"] += 1
+        elif h["kind"] == "link":                                       # EBF link shear spring (NL-03)
+            c["link_hinges"] += 1; c["link_yielded"] += int(yielded)
         else:
             c["col_hinges"] += 1; c["col_yielded"] += int(yielded)
     table = sorted(groups.values(), key=lambda g: (g["kind"], g["z_in"]))
@@ -280,8 +294,10 @@ def acceptance(run, hinges, disp, level_name):
         kinds[hinges[t]["kind"]] = kinds.get(hinges[t]["kind"], 0) + 1
     n_bc = kinds.get("beam", 0) + kinds.get("col", 0)
     n_mf = run.get("n_moment_frame_members", 0) or 0
-    monitored = dict(beam=kinds.get("beam", 0), col=kinds.get("col", 0), brace=kinds.get("brace", 0),
-                     other=sum(v for k, v in kinds.items() if k not in ("beam", "col", "brace")))
+    n_brb = sum(1 for t in run["hinge_tags"] if hinges[t]["kind"] == "brace" and (hinges[t].get("brb") or getattr(hinges[t]["spec"], "Asc", 0.0)))
+    monitored = dict(beam=kinds.get("beam", 0), col=kinds.get("col", 0), brace=kinds.get("brace", 0) - n_brb, brb=n_brb,
+                     link=kinds.get("link", 0),
+                     other=sum(v for k, v in kinds.items() if k not in ("beam", "col", "brace", "link")))
     base = dict(level=level_name, target_disp_in=float(disp), monitored=monitored, n_moment_frame_members=n_mf)
     i = step_at(run, disp)
     if i is None:

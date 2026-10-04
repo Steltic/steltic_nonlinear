@@ -288,8 +288,8 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                     else:
                         v = 0.0
                 else:
-                    d = ops.eleResponse(tg, "deformation"); f = ops.eleResponse(tg, "force"); j = h["dof"] - 1
-                    v = (d[j] - f[j] / K0[tg]) if len(d) >= 6 else 0.0
+                    th, M = NM.zero_length_spring(tg, h["dof"])      # spring force = node-2 force (sign fix)
+                    v = th - M / K0[tg]
                 peak_def[tg] = max(peak_def[tg], abs(v))
                 p, n = signed_def[tg]; signed_def[tg] = (max(p, v), min(n, v))
                 hinge_row.append(round(v, 6))

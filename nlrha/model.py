@@ -81,6 +81,9 @@ def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
     prm_b = dict(prm); prm_b["_analysis"] = "nlrha"                 # NL-10: physical-theory braces etc. for the NLRHA only
     hinges, stats = NM.build_nonlinear(pkg, prm_b, PG, verbose=True,
                                        member_nseg=member_nseg, plasticity=plasticity)
+    if isinstance(prm, dict) and not prm_b.get("verified"):          # provenance (NL-19): a builder used a non-user-supplied
+        prm["verified"] = False                                      # value on the NLRHA copy -> the run's effective flag drops
+        prm["_used_unverified"] = prm_b.get("_used_unverified") or prm.get("_used_unverified") or {}
     stats["degradation_16_3_1"] = degradation_statement(prm, stats)
     # Fibre: all forceBeamColumn tags for Rayleigh region. IMK: elastic_ele_tags (RBS extras) or pack tags.
     if stats.get("plasticity") == "fibre" and stats.get("fibre_eles"):
