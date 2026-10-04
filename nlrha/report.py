@@ -71,9 +71,12 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append("<style>%s</style><title>NLRHA supplement — %s</title>" % (CSS, pkg.name))
     H.append("<h1>Nonlinear response history (ASCE 7-22 Chapter 16) supplement — %s</h1>" % pkg.name)
     H.append('<div class="sub">Supplement to the Steltic AISC 360/341 package <code>%s</code> and its pushover supplement · generated %s · Non Linear Dynamic Bot prototype · %.0f s</div>' % (pkg.root.name, ts, elapsed_s))
+    deg = next((r.get("stats", {}).get("degradation_16_3_1") for r in results if r.get("stats", {}).get("degradation_16_3_1")), None)
     if not prm.get("verified"):
         H.append('<div class="banner">UNVERIFIED COMPONENT PARAMETERS — the hinge and brace backbones come from steltic_pushover/hinge_params.json (verified=false, ASCE 41 / AISC 342 placeholders). '
-                 'Cyclic deterioration is OFF in this prototype although 16.3.1 requires it unless shown not to govern. The Chapter 16 procedure itself (spectrum, period range, scaling, gravity, damping, acceptance rules) was read against the converted ASCE 7-22 text (pdf pp. 248–251).</div>')
+                 '%s The Chapter 16 procedure itself (spectrum, period range, scaling, gravity, damping, acceptance rules) was read against the converted ASCE 7-22 text (pdf pp. 248–251).</div>'
+                 % ("16.3.1 degradation: %s." % ("modelled for every component family" if deg["demonstrated"] else "NOT demonstrated — see section 1") if deg else
+                    "Cyclic deterioration status unknown (results predate the 16.3.1 statement)."))
     H.append('<div class="note"><b>Not for construction.</b> Prototype output produced by an AI-driven tool. Chapter 16 also requires the Chapter 12 linear analysis (16.1.2 — the Steltic package) and independent design review (16.5). Every result must be independently checked and sealed by a licensed professional engineer.</div>')
 
     H.append("<h2>1. Verdict</h2><table><tr><th>16.4 criterion</th><th>Result</th><th>Clause · pdf p.</th></tr>")
@@ -83,6 +86,10 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append("<tr><td>Force-controlled columns (1.2+0.12S<sub>MS</sub>)D+0.5L+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) ≤ φBR<sub>n</sub></td><td>%s</td><td>16.4.2.1 · 251</td></tr>" % _tag(v["force_controlled_ok"]))
     H.append("<tr><td>Residual drift (> 240 ft only)</td><td>%s</td><td>16.4.1.3 · 250</td></tr>" % ("n/a — h<sub>n</sub> = %.0f ft" % (acc["hn_in"] / 12) if not v["residual_applicable"] else _tag(v["residual_ok"])))
     H.append("<tr><td><b>Overall</b></td><td><b>%s</b></td><td>16.4</td></tr></table>" % _tag(v["overall"], "ACCEPTABLE", "NOT ACCEPTABLE"))
+    if deg:      # NL-10: ASCE 7-22 16.3.1 statement of the degradation in the hysteretic models (pushover.nonlinear_model / nlrha.model)
+        H.append('<div class="%s"><b>16.3.1 Degradation in the hysteretic models — %s.</b><ul>%s</ul></div>'
+                 % ("note" if deg["demonstrated"] else "banner", "included for every component family present" if deg["demonstrated"] else "NOT DEMONSTRATED",
+                    "".join("<li>%s: %s %s</li>" % (i["component"], i["modelled"], "" if i["ok"] else "<b>[not modelled]</b>") for i in deg["items"])))
 
     H.append("<h2>2. Design basis and Chapter 16 inputs</h2><table><tr><th>Item</th><th>Value</th><th>Basis</th></tr>")
     SMS, SM1 = 1.5 * b.SDS, 1.5 * b.SD1
@@ -128,7 +135,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append('<figure><img src="%s"><figcaption>Peak transient story drift per record and the suite statistic per 16.4 (mean, or 120%% of median ≥ mean when one unacceptable record is excluded). Limit = 2 × %.3f (Table 12.12-1 "all other structures", Risk Category %s) and, for h<sub>n</sub> > 100 ft, the 16.4.1.2 height formula (%.2f%%).</figcaption></figure>'
              % (fig_drift(acc, results), acc["limits"].get("table_12_12_1", 0.02), acc["limits"].get("risk_category", "I_II").replace("_", "/"), 100 * acc["limits"]["mean_limit"]))
     fb = fig_brace(results, pkg.name)
-    if fb: H.append('<figure><img src="%s"><figcaption>Axial force–deformation history of one brace under one record (Hysteretic backbone, no cyclic deterioration — see banner).</figcaption></figure>' % fb)
+    if fb: H.append('<figure><img src="%s"><figcaption>Axial force–deformation history of one brace under one record (brace model and its degradation: see the 16.3.1 statement in section 1).</figcaption></figure>' % fb)
 
     H.append("<h2>5. Element acceptance (16.4.2)</h2><h3>Deformation-controlled — mean of the per-record peaks (Q<sub>u</sub>) vs CP and vs the valid modelling range b</h3>")
     H.append("<table><tr><th>Group</th><th>Section</th><th>elev. (in)</th><th>n</th><th>Q<sub>u</sub></th><th>CP limit</th><th>b (valid range)</th><th>D/C CP</th><th>D/C valid</th></tr>")
@@ -136,6 +143,9 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
         if r["kind"] == "brace":
             H.append("<tr><td>brace</td><td>%s</td><td>%d</td><td>%d</td><td>%.2f in comp · %.2f in tens</td><td>%.2f · %.2f in</td><td>%.2f · %.2f in</td><td>%.2f</td><td>%.2f</td></tr>"
                      % (r["section"], r["z_in"], r["n"], r["Qu_comp_in"], r["Qu_tens_in"], r["CP_comp"], r["CP_tens"], r["b_comp"], r["b_tens"], r["DC_CP"], r["DC_valid"]))
+        elif r["kind"] == "link":         # NL-03: link shear spring -- plastic transverse displacement (in) = gamma_p x e
+            H.append("<tr><td>EBF link (shear)</td><td>%s</td><td>%d</td><td>%d</td><td>%.3f in (γ<sub>p</sub>·e)</td><td>%.3f in</td><td>%.3f in</td><td>%.2f</td><td>%.2f</td></tr>"
+                     % (r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
         elif r["Qu_rad"] > 1e-5:
             H.append("<tr><td>%s hinge</td><td>%s</td><td>%d</td><td>%d</td><td>%.4f rad</td><td>%.4f</td><td>%.4f</td><td>%.2f</td><td>%.2f</td></tr>"
                      % (r["kind"], r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
@@ -161,7 +171,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                      % (d, b.V_design_kip, b.R, P.get("p695", {}).get("Omega", float("nan")), P.get("p695", {}).get("Vmax_kip", float("nan"))))
         H.append("</table>")
     H.append("<h2>7. Open items before this supplement is issued</h2><ol>")
-    for it in ("Component backbones are unverified placeholders (steltic_pushover/hinge_params.json) — retrieve ASCE 41-23 / AISC 342-22 through Query file manager; add cyclic deterioration (16.3.1).",
+    for it in ("Component backbones are unverified placeholders (steltic_pushover/hinge_params.json) — retrieve ASCE 41-23 / AISC 342-22 through Query file manager; confirm the cyclic-deterioration parameters (16.3.1).",
                ("Ground-motion selection uses spectral-shape fit to a code spectrum; 16.2.2 consistency with the site's controlling M, R and tectonic regime needs the project hazard (or a site-specific Method 2 spectrum)." if not gm.get("deagg")
                 else "Ground motions were ranked against the site disaggregation (16.2.2) and scaled to a site-specific target; the tectonic-regime match and any pulse-type share rest on the library's metadata — confirm them against the project hazard report."),
                "Gravity is spread equally over each level's column nodes; the no-live-load case (16.3.2) is run only when the exception does not apply — %s here." % ("required" if grav_split["no_live_case_needed"] else "not required"),
@@ -176,7 +186,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
               modal=modal, ground_motions={k: v for k, v in gm.items() if k not in ("selected",)} | {"selected": [{k: v for k, v in r.items() if k != "rotd100_scaled"} for r in gm["selected"]]},
               gravity=dict(table=grav_table, split=grav_split), per_record=acc["per_record"], story=acc["story"], deformation_groups=acc["deformation_groups"],
               force_controlled_columns=acc["force_controlled_columns"], verdict=acc["verdict"], limits=acc["limits"],
-              acceptance=acc, meta=acc.get("meta") or {},
+              acceptance=acc, meta=acc.get("meta") or {}, degradation_16_3_1=deg,
               per_record_fc=acc.get("per_record_fc") or [],
               governing_fc_records=acc.get("governing_fc_records") or [],
               results=[{"converged": r.get("converged"), "label": r.get("label"), "record": r.get("record"),

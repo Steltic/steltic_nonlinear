@@ -36,6 +36,8 @@ def yield_state(model, eps_y):
     out = {}
     nip = model.nip
     for e in model.elems:
+        if e.get("yield_fn"):                     # NL-02/03: BRB truss / EBF link shear spring (deformation / yield deformation)
+            out[e["tag"]] = e["yield_fn"](); continue
         if not e.get("secTag"):
             continue
         sp = model.sec_props[e["secTag"]]
@@ -59,7 +61,7 @@ def brace_state(model):
     out = {}
     for mtag, chain in model.sub_nodes.items():
         m = model._bt[mtag]
-        if m.kind != "brace":
+        if m.kind != "brace" or mtag in getattr(model, "nonbuckling", ()):     # BRBs do not buckle (NL-02)
             continue
         first = [e for e in model.elems if e["mtag"] == mtag][0]
         try:

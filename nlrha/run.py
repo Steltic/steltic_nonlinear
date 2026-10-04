@@ -6,6 +6,7 @@ import math, time
 import numpy as np
 import openseespy.opensees as ops
 from pushover import nonlinear_model as NM
+from pushover import hinge_models as HM
 from . import model as MD
 
 G_IN = 386.4
@@ -165,8 +166,8 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             for c in cols:
                 f = ops.eleResponse(c, "localForce"); peak_colN[c] = max(peak_colN[c], f[0] if f else 0.0)
             if sample_brace and sample_brace in hinges:
-                d = ops.eleResponse(sample_brace, "deformation"); f = ops.eleResponse(sample_brace, "axialForce")
-                brace_hist.append((d[0] if d else 0.0, f[0] if f else 0.0))
+                d = ops.eleResponse(sample_brace, "deformation")
+                brace_hist.append((d[0] if d else 0.0, HM.brace_axial_force(sample_brace, hinges[sample_brace])))   # NL-10: physical-theory braces
     # residual drift (structure at rest after free vibration)
     prev = np.zeros((2, 2)); resid = np.zeros(len(lv))
     for i, (k, z, master, nA, nB) in enumerate(lv):

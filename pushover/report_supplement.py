@@ -102,6 +102,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                  'Source note: %s</div>' % prm.get("source", ""))
     H.append('<div class="note"><b>Not for construction.</b> Prototype output produced by an AI-driven tool from an automatically converted '
              'analysis model. Every result must be independently checked and sealed by a licensed professional engineer.</div>')
+    if hinge_stats and hinge_stats.get("model_warnings"):      # NL-02/03/10: element-model disclosures from the builder
+        H.append('<div class="banner">MODEL LIMITATIONS / FALLBACKS<ul>%s</ul></div>' % "".join("<li>%s</li>" % w for w in hinge_stats["model_warnings"]))
 
     # 1 basis
     H.append("<h2>1. Design basis carried over from the linear package</h2>")

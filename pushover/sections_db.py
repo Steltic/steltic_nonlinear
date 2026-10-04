@@ -1,5 +1,5 @@
 """sections_db.py -- AISC Shapes Database v16 lookups (aisc_shapes.csv, same file steltic ships)."""
-import csv, os
+import csv, os, re
 from functools import lru_cache
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,11 +41,48 @@ _CUSTOM = {
 }
 
 
+_BRB_RE = re.compile(r"^BRB[-_ ]*(?:A\s*SC|ASC|CORE|A)?[-_ =]*([0-9]+(?:\.[0-9]+)?)", re.I)
+
+
+def is_brb(section) -> bool:
+    """True for a buckling-restrained-brace label (HR writes "BRB-Asc22.5"; also "BRB22.5", "BRB-A22.5")."""
+    return bool(section) and str(section).strip().upper().replace(" ", "").startswith("BRB")
+
+
+def parse_brb_label(section):
+    """Core area Asc (in^2) encoded in a BRB label, or None when the label carries no number.
+
+    NL-02: the HR package labels BRBs "BRB-Asc22.5" (steel-core area Asc = 22.5 in^2). That number is the
+    YIELDING core area. The HR elastic truss area is KF*Asc (KF ~ 1.5, the stiffness modification factor for the
+    stiffer non-yielding ends) and must never be used as the yielding area."""
+    if not is_brb(section):
+        return None
+    m = _BRB_RE.match(str(section).strip())
+    return float(m.group(1)) if m else None
+
+
+def link_shear_props(section: str, Fye: float) -> dict:
+    """EBF link section quantities (kip, in).
+
+    Vp = 0.6*Fye*Alw with Alw = (d - 2tf)*tw  -- AISC 341-22 F3.5b.2 (Eq. F3-2) with Fye in place of Fy, which is
+    AISC 342-22 C2.3a.2 (expected shear strength of a shear-yielding beam = Vpe of Seismic Provisions F3).
+    Mp = Zx*Fye -- AISC 342-22 C2.3a.1 (no lateral-torsional buckling reduction for a link of length e).
+    As = d*tw  -- effective shear area of AISC 342-22 Commentary Eq. C-E2-2 (link elastic shear stiffness)."""
+    p = props(section)
+    Alw = (p["d"] - 2.0 * p["tf"]) * p["tw"]
+    return dict(d=p["d"], tw=p["tw"], tf=p["tf"], bf=p["bf"], Zx=p["Zx"], Ix=p["Ix"], A=p["A"],
+                Alw=Alw, As=p["d"] * p["tw"], Vp=0.6 * Fye * Alw, Mp=p["Zx"] * Fye)
+
+
 def props(section: str) -> dict:
     """Section properties (in, in^2, in^4). Adds h/tw and bf/2tf compactness ratios (h ~ d - 2tf here;
-    the tabulated h/tw is not in this csv, so the ratio is approximate and flagged as such)."""
+    the tabulated h/tw is not in this csv, so the ratio is approximate and flagged as such).
+    BRB labels are not rolled shapes: they raise a KeyError that names the BRB path (hinge_models.brb_spec)."""
     t = _table()
     key = section.strip().upper().replace(" ", "")
+    if is_brb(key):
+        raise KeyError(f"section {section!r} is a buckling-restrained brace (core area label), not an AISC shape -- "
+                       "build it with hinge_models.brb_spec (NL-02)")
     if key in _CUSTOM:
         cust = _CUSTOM[key]
         prim = cust["alias_primary"].strip().upper().replace(" ", "")

@@ -15,6 +15,16 @@ model_gmnia.py -- rebuild a Steltic elastic model as a GMNIA model in openseespy
   * bases: as recorded (fixed / pinned)
   * optional rigid_end_offset on primary beams: stiff elasticBeamColumn stubs
     (~0.05L, ×1000 EI) for continuous FR beam–column continuity (Liu lesson)
+  * buckling-restrained braces (label "BRB-Asc..", NL-02): corotTruss that does NOT buckle -- yield force
+    Pysc = Fysc*Asc (AISC 341-22 F4.5b nominal, core area from the label / package, never the HR truss area KF*Asc),
+    stiffness = the HR truss (E*KF*Asc/L) or AISC 342-22 Eq. C3-3 when core lengths are supplied; Steel01 with the
+    model hardening. Yield ratio = axial deformation / Delta_y (solver.yield_state hook); excluded from the
+    brace-buckling census.
+  * EBF links (NL-03, pushover.hinge_models.find_links): a zeroLength shear spring (global Z) in series with the
+    link's fibre chain -- Vn = 0.6 Fy Alw (AISC 341-22 F3.5b.2, nominal), Ks = G d tw / e (AISC 342-22 Commentary
+    C-E2-2), Steel01 with the model hardening -- so link SHEAR yielding limits the GMNIA capacity. In the elastic
+    (transfer-gate) build the spring is rigid, reproducing Steltic's shear-rigid elastic model; the inelastic
+    build is therefore slightly softer (disclosed in builder.log). Link axial interaction (Pr/Pc > 0.15) not applied.
 
 Steltic orientation decoding (engine3d):
   transf 1: vecxz (1,0,0) -> column strong axis resists Y (weak-axis bow in X)
@@ -31,6 +41,10 @@ SUB_NODE0 = 10_000_000
 PIN_NODE0 = 30_000_000
 PIN_ELE0 = 40_000_000
 SUB_ELE0 = 100_000
+LINK_NODE0 = 50_000_000   # NL-03: link shear-spring node LINK_NODE0 + member tag
+LINK_ELE0 = 60_000_000    # NL-03: link shear-spring zeroLength LINK_ELE0 + member tag
+BRB_ELE0 = 70_000_000     # NL-02: BRB corotTruss BRB_ELE0 + member tag
+SPRING_MAT0 = 80_000_000  # BRB / link spring materials
 K_TRANS = 1.0e9      # kip/in   stiff pin springs
 K_ROT = 1.0e10       # kip-in/rad
 
@@ -61,6 +75,9 @@ class GMNIAModel:
         self.masters = sorted(t for t in nm.nodes if t % 100000 == 99999)
         self.builder = None
         self.Ecol = {}           # mtag -> transf tag
+        self.nonbuckling = set() # member tags excluded from the brace-buckling census (BRBs)
+        self.links = {}          # member tag -> link info (NL-03)
+        self.special_log = []    # BRB / link modelling notes (also appended to builder.log)
 
     # ------------------------------------------------------------------ geometry helpers
     def _coord(self, tag):
@@ -113,8 +130,12 @@ class GMNIAModel:
         ops.uniaxialMaterial("Elastic", 2, K_ROT)
         self.builder = FiberSectionBuilder(ops, Fy=self.Fy, hardening=self.hardening,
                                            residual=self.residual, elastic=self.elastic, mat_tag0=1000)
+        self.nonbuckling, self.special_log, self._spring_mat = set(), [], SPRING_MAT0
+        self._prepare_special()
         for m in nm.members:
             self._add_member(m)
+        for note in self.special_log:
+            self.builder.log.append((0, "special", "note", 0, note))
         for master, slaves in nm.diaphragms.items():
             ops.rigidDiaphragm(3, master, *slaves)
         if with_mass:
@@ -180,7 +201,86 @@ class GMNIAModel:
         except (TypeError, ValueError):
             return 0.0
 
+    # ------------------------------------------------------------------ NL-02 / NL-03 special members
+    def _hm_params(self):
+        """Parameters for pushover.hinge_models in DDM terms: nominal Fy (Ry = 1); BRB / link groups from the template
+        unless the cfg carries a `snl_params` dict (same schema as hinge_params.json)."""
+        prm = dict((self.cfg or {}).get("snl_params") or {})
+        prm["material"] = {"Fy_ksi": self.Fy, "Ry_expected": 1.0}
+        return prm
+
+    def _prepare_special(self):
+        from pushover import hinge_models as HM
+        prm = self._hm_params()
+        mem = [dict(tag=m.tag, kind=m.kind, section=m.section, n1=m.n1, n2=m.n2, released=bool(m.relz)) for m in self.nm.members]
+        system = (self.cfg or {}).get("system")
+        try:
+            self.links = {t: v for t, v in HM.find_links(self.nm.nodes, mem, prm, system).items() if not v.get("skipped")}
+        except Exception as ex:                                   # never silent: a census failure is logged and links stay beams
+            self.links = {}
+            self.special_log.append("EBF link census failed (%s) -- links modelled as plain fibre beams" % ex)
+        if self.links:
+            self.special_log.append("EBF links: %d shear springs (Vn = 0.6 Fy Alw, Ks = G d tw / e)%s" % (
+                len(self.links), " -- RIGID in this elastic build (Steltic model is shear-rigid)" if self.elastic else ""))
+        self._brb_pkg = HM.brb_package_data(self.nm.calc_package or {})
+
+    def _next_spring_mat(self):
+        self._spring_mat += 1
+        return self._spring_mat
+
+    def _add_brb(self, m):
+        """NL-02: non-buckling BRB truss (see module docstring)."""
+        from pushover import hinge_models as HM
+        p1, p2 = self._coord(m.n1), self._coord(m.n2)
+        L = math.dist(p1, p2)
+        A_model = float(m.A) if m.A else None
+        spec = HM.brb_spec(m.section, L, self._hm_params(), A_model=A_model, pkg_data=self._brb_pkg)
+        Pysc = spec.Fysc_ksi * spec.Asc                          # nominal core yield (AISC 341-22 F4.5b)
+        K = spec.K_axial
+        A_el = spec.A_model
+        E_mat = K * L / A_el
+        mt = self._next_spring_mat()
+        if self.elastic:
+            ops.uniaxialMaterial("Elastic", mt, E_mat)
+        else:
+            ops.uniaxialMaterial("Steel01", mt, Pysc / A_el, E_mat, self.hardening)
+        et = BRB_ELE0 + m.tag
+        ops.element("corotTruss", et, m.n1, m.n2, A_el, mt)
+        dy = Pysc / K
+        self.elems.append(dict(tag=et, mtag=m.tag, kind=m.kind, role=m.role, section=m.section, secTag=-1, s=0,
+                               n1=m.n1, n2=m.n2, L=L, brb=True,
+                               yield_fn=(lambda et=et, dy=dy: abs((ops.eleResponse(et, "deformation") or [0.0])[0]) / dy)))
+        self.sub_nodes[m.tag] = [m.n1, m.n2]
+        self.nonbuckling.add(m.tag)
+        if len(self.nonbuckling) == 1:
+            self.special_log.append("BRB: non-buckling corotTruss, Pysc = Fysc*Asc (%s)" % "; ".join(spec.flags[:3]))
+
+    def _add_link_spring(self, m, end1, p1):
+        """NL-03: zeroLength shear spring end1 -> new node; returns the new node (start of the fibre chain)."""
+        from pushover import sections_db as SDB
+        lp = SDB.link_shear_props(m.section, self.Fy)
+        e = math.dist(self._coord(m.n1), self._coord(m.n2))
+        Ks = 11200.0 * lp["As"] / e
+        Vn = lp["Vp"]                                             # 0.6 Fy Alw with the nominal Fy (AISC 341-22 F3.5b.2)
+        mt = self._next_spring_mat()
+        if self.elastic:
+            ops.uniaxialMaterial("Elastic", mt, K_TRANS)
+        else:
+            ops.uniaxialMaterial("Steel01", mt, Vn, Ks, self.hardening)
+        nn = LINK_NODE0 + m.tag
+        ops.node(nn, *p1)
+        zl = LINK_ELE0 + m.tag
+        ops.element("zeroLength", zl, end1, nn, "-mat", 1, 1, mt, 2, 2, 2, "-dir", 1, 2, 3, 4, 5, 6)
+        dy = Vn / Ks
+        self.elems.append(dict(tag=zl, mtag=m.tag, kind="link_shear", role=m.role, section=m.section, secTag=-1, s=0,
+                               n1=end1, n2=nn, L=0.0, Vn=Vn,
+                               yield_fn=(lambda zl=zl, dy=dy: abs((ops.eleResponse(zl, "deformation") or [0, 0, 0])[2]) / dy)))
+        return nn
+
     def _add_member(self, m):
+        from pushover import sections_db as SDB
+        if m.kind == "brace" and SDB.is_brb(m.section):
+            return self._add_brb(m)
         nsub = {"col": self.nsub_col, "beam": self.nsub_beam, "brace": self.nsub_brace}[m.kind]
         tr = self._transf_for(m)
         p1, p2 = self._coord(m.n1), self._coord(m.n2)
@@ -221,8 +321,11 @@ class GMNIAModel:
             self.sub_nodes[m.tag] = [end1, end2]
             return
 
+        is_link = m.tag in self.links and m.kind == "beam"
+        if is_link:                                               # NL-03: shear spring in series, no rigid end offsets
+            end1 = self._add_link_spring(m, end1, p1)
         # Optional rigid end offsets on primary beams (continuous FR joint continuity).
-        off_frac = self._offset_frac() if (m.kind == "beam" and not self._is_secondary(m)) else 0.0
+        off_frac = self._offset_frac() if (m.kind == "beam" and not self._is_secondary(m) and not is_link) else 0.0
         if off_frac > 0:
             from .sections_fiber import elastic_props, E_KSI, G_KSI
             off = max(3.0, min(12.0, off_frac * L))
