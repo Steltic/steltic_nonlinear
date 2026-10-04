@@ -16,27 +16,55 @@ from pushover import nonlinear_model as NM
 G_IN = 386.4
 
 
-def ch16_gravity(pkg, ch16, live_psf=None, roof_live_psf=20.0):
-    """16.3.2: 1.0 D + 0.5 L, L = 40% of unreduced live (<= 100 psf) / 80% (> 100 psf). D from the recorded seismic
-    mass (D + cladding). Spread equally over each level's column nodes (same idealisation as the pushover tool)."""
+def ch16_gravity(pkg, ch16, live_psf=None, roof_live_psf=None, with_live=True):
+    """ASCE 7-22 16.3.2 expected gravity, applied as nodal loads on the nonlinear model.
+
+    with_live=True : 1.0 D + 0.5 L, L = 80% of unreduced live loads > 100 psf, 40% of all other unreduced live.
+    with_live=False: 1.0 D (the "without live load" case of 16.3.2).
+    D per level = recorded seismic weight (mass x g: D + cladding + the cfg's extra mass). L from the framed floor
+    plate (nlrha/gravity.py): floor bays at cfg L_by_level[k] / L_floor, roof bays (top level and every set-back /
+    lower roof) at cfg Lr; each bay lumped in equal shares to its column corners, so gravity follows the tributary
+    areas (16.3.3).
+
+    Exception check (16.3.2): the no-live case may be skipped only if sum(0.5 L) <= 25% of sum(D) AND the live load
+    intensity L0 is below 100 psf over at least 75% of the structure's area. Both conditions are evaluated from the
+    per-bay loads and reported (`ratio`, `share_L0_lt_100`).
+
+    Returns (loads {node: Pz kip, -ve down}, table [per level], split dict)."""
+    from . import gravity as GR
     g = ch16["gravity"]
-    lv = NM.levels(pkg)
-    Lpsf = live_psf if live_psf is not None else (pkg.basis.L_floor_psf or 50.0)
+    trib, info = GR.tributary(pkg, live_psf=live_psf, roof_live_psf=roof_live_psf)
     loads, table, sumD, sumL = {}, [], 0.0, 0.0
-    for k, z, master, slaves in lv:
-        WD = pkg.model.masses.get(master, [0] * 6)[0] * G_IN
-        xs = [pkg.model.nodes[n][0] for n in slaves]; ys = [pkg.model.nodes[n][1] for n in slaves]
-        area = (max(xs) - min(xs)) * (max(ys) - min(ys)) / 144.0
-        L0 = roof_live_psf if k == len(lv) else Lpsf
-        f = g["live_factor_gt100psf"] if L0 > 100 else g["live_factor_le100psf"]
-        Lexp = g["combination_factor"] * f * L0 * area / 1000.0            # 0.5 x (0.4 or 0.8) x L0
-        QG = WD + Lexp
-        sumD += WD; sumL += Lexp
-        for n in slaves:
-            loads[n] = loads.get(n, 0.0) - QG / len(slaves)
-        table.append(dict(level=k, z_in=z, D_kip=round(WD, 1), Lexp_kip=round(Lexp, 1), QG_kip=round(QG, 1), nodes=len(slaves)))
-    no_live_case_needed = not (sumL <= g["exception_live_over_dead"] * sumD and Lpsf < 100)
-    return loads, table, dict(sum_D=sumD, sum_Lexp=sumL, ratio=sumL / sumD, no_live_case_needed=no_live_case_needed)
+    area_all = area_lt100 = 0.0
+    f_le, f_gt, c = g["live_factor_le100psf"], g["live_factor_gt100psf"], g["combination_factor"]
+    for lv in trib:
+        WD = pkg.model.masses.get(lv["master"], [0] * 6)[0] * G_IN
+        A = sum(lv["node_area"].values())
+        fL = f_gt if lv["L0_floor_psf"] > 100 else f_le
+        fR = f_gt if lv["Lr_psf"] > 100 else f_le
+        Lexp_floor = c * fL * lv["L0_kip"]; Lexp_roof = c * fR * lv["Lr_kip"]
+        Lexp = (Lexp_floor + Lexp_roof) if with_live else 0.0
+        for n, a in lv["node_area"].items():
+            pz = WD * a / A if A > 0 else 0.0
+            if with_live:
+                pz += c * fL * lv["node_L0"].get(n, 0.0) + c * fR * lv["node_Lr"].get(n, 0.0)
+            loads[n] = loads.get(n, 0.0) - pz
+        sumD += WD; sumL += Lexp_floor + Lexp_roof
+        area_all += lv["area_ft2"]
+        area_lt100 += (lv["floor_ft2"] if lv["L0_floor_psf"] < 100 else 0.0) + (lv["roof_ft2"] if lv["Lr_psf"] < 100 else 0.0)
+        table.append(dict(level=lv["k"], z_in=lv["z"], area_ft2=round(lv["area_ft2"]), floor_ft2=round(lv["floor_ft2"]), roof_ft2=round(lv["roof_ft2"]),
+                          L0_psf=lv["L0_floor_psf"], Lr_psf=lv["Lr_psf"], D_kip=round(WD, 1),
+                          Lexp_floor_kip=round(Lexp_floor, 1), Lexp_roof_kip=round(Lexp_roof, 1), Lexp_kip=round(Lexp, 1),
+                          QG_kip=round(WD + Lexp, 1), nodes=len(lv["node_area"]), method=lv["method"]))
+    ratio = sumL / sumD if sumD else float("inf")
+    share = area_lt100 / area_all if area_all else 0.0
+    exception = (ratio <= g["exception_live_over_dead"]) and (share >= 0.75)
+    split = dict(sum_D=sumD, sum_Lexp=(sumL if with_live else 0.0), sum_Lexp_with_live=sumL, ratio=ratio, share_L0_lt_100=share,
+                 exception_applies=exception, no_live_case_needed=not exception, with_live=with_live,
+                 basis=dict(L_floor_psf=info["L_floor_used"], L_floor_from=info["L_floor_basis"], Lr_psf=info["Lr_used"], Lr_from=info["Lr_basis"],
+                            L_by_level=info["L_by_level"], area="framed bays from the package geometry (nlrha/gravity.py)",
+                            roof_live_in_L="roof live Lr included at the 40% factor (conservative; 16.3.2 names L only)"))
+    return loads, table, split
 
 
 def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):

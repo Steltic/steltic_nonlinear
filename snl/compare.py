@@ -67,7 +67,13 @@ def fmt(x, n=2):
 
 
 def pct(x, n=2):
-    return "—" if x is None else f"{100 * x:.{n}f}%"
+    if x is None:
+        return "—"
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    return f"{100 * v:.{n}f}%" if v == v and abs(v) != float("inf") else "not computed"     # NaN never printed as a number (NL-20)
 
 
 def pill(cls, txt):
@@ -225,17 +231,25 @@ def build(job, out_name="four_analyses.html", title=None):
     # ---------------- NLRHA
     if nl:
         V = nl["verdict"]; L = nl["limits"]; recs = nl["per_record"]; story = nl["story"]
-        ok_recs = [r for r in recs if not r["unacceptable"]] or recs
-        mean_X = [100 * s["mean_X"] for s in story]; mean_Y = [100 * s["mean_Y"] for s in story]; max_X = [100 * (s["max_X"] or 0) for s in story]; max_Y = [100 * (s["max_Y"] or 0) for s in story]
-        roof_mean = [sum(r["peak_roof_in"][i] for r in ok_recs) / len(ok_recs) for i in (0, 1)]
+        # NL-20: only completed, acceptable records carry peaks; a suite without one has no statistic -- say so.
+        ok_recs = [r for r in recs if not r["unacceptable"] and r.get("peak_drift") is not None and r.get("peak_roof_in")]
+        have = bool(story) and all(s.get("mean_X") is not None and s.get("mean_Y") is not None for s in story)
+        mean_X = [100 * s["mean_X"] for s in story] if have else None; mean_Y = [100 * s["mean_Y"] for s in story] if have else None
+        max_X = [100 * (s["max_X"] or 0) for s in story] if have else None; max_Y = [100 * (s["max_Y"] or 0) for s in story] if have else None
+        roof_mean = [sum(r["peak_roof_in"][i] for r in ok_recs) / len(ok_recs) for i in (0, 1)] if ok_recs else None
         dg = nl["deformation_groups"]; worst_def = max(dg, key=lambda g: g["DC_CP"]) if dg else None
         fc = nl["force_controlled_columns"]; worst_fc = max(fc, key=lambda c: c["DC"]) if fc else None
         sfs = [r["sf"] for r in nl["ground_motions"]["selected"]]
-        nl_verdict = "ACCEPTABLE" if V["overall"] else "NOT ACCEPTABLE"
-        nl_v = nl_verdict; nl_vl = f"{V['n_unacceptable']} unacceptable of {V['n_records']} (allowed {V['unacceptable_allowed']}) · mean drift {pct(V['mean_drift_max'])} vs {pct(L['mean_limit'])}"
+        nl_verdict = V.get("status") or ("ACCEPTABLE" if V["overall"] else "NOT ACCEPTABLE")
+        gaps = []
+        if V.get("n_incomplete"): gaps.append(f"{V['n_incomplete']} incomplete (time-out)")
+        if V.get("n_not_run"): gaps.append(f"{V['n_not_run']} of {V.get('n_suite', V['n_records'])} NOT run")
+        nl_v = nl_verdict; nl_vl = (f"{V['n_unacceptable']} unacceptable of {V['n_records']} (allowed {V['unacceptable_allowed']})" + (" · " + ", ".join(gaps) if gaps else "")
+                                    + f" · mean drift {pct(V['mean_drift_max']) if V.get('mean_drift_max') is not None else 'not computed (no acceptable record)'} vs {pct(L['mean_limit'])}")
         damp = nl["ch16"].get("damping", {})
         nl_foot = (f"{V['n_records']} pairs scaled to MCE<sub>R</sub> (SF {min(sfs):.2f}–{max(sfs):.2f}), {damp.get('integrator', 'newmark').upper()} dt {damp.get('dt_s', 0.02)} s, ξ {100*damp.get('xi_used', 0.025):.1f}%. "
-                   f"Record peak drifts {100*min(r['peak_drift'] for r in ok_recs):.2f}–{100*max(r['peak_drift'] for r in ok_recs):.2f}%. "
+                   + (f"Record peak drifts {100*min(r['peak_drift'] for r in ok_recs):.2f}–{100*max(r['peak_drift'] for r in ok_recs):.2f}%. " if ok_recs else "Record peak drifts not computed — no acceptable record. ")
+                   + (f"Not evaluated: {'; '.join(V['not_evaluated'])}. " if V.get("not_evaluated") else "")
                    + (f"Deformation-controlled CP D/C {worst_def['DC_CP']:.2f} ({worst_def['kind']} {worst_def['section']}); " if worst_def else "")
                    + (f"force-controlled columns D/C {worst_fc['DC']:.2f}. " if worst_fc else "")
                    + f"Risk Category {rc.replace('_', '/')} rules (Table 12.12-1 row {L.get('table_12_12_1', 0.02):.3f}).")
@@ -277,22 +291,22 @@ def build(job, out_name="four_analyses.html", title=None):
                      (f"λ<sub>u</sub> {min(r['lambda_u'] for r in dd['runs'] if r['kind'] != 'gravity'):.2f}–{max(r['lambda_u'] for r in dd['runs'] if r['kind'] != 'gravity'):.2f} (lateral cases)" if dd and any(r['kind'] != 'gravity' for r in dd['runs']) else "—"),
                      "Ω is measured at the system level without R, Ω<sub>0</sub> or C<sub>d</sub>. The DDM λ<sub>u</sub> of a lateral case scales gravity with the lateral pattern and is not an overstrength."))
         dt_row = " / ".join(f"{d['nsp']['BSE-2N']['target_disp_in']:.1f}" for d in po["directions"].values())
-        nl_roof = (f"mean {roof_mean[0]:.1f} / {roof_mean[1]:.1f}" if nl else "—")
+        nl_roof = (f"mean {roof_mean[0]:.1f} / {roof_mean[1]:.1f}" if roof_mean else ("not computed" if nl else "—"))
         rd = ""
-        if nl and len(po["directions"]) == 2:
+        if nl and roof_mean and len(po["directions"]) == 2:
             devs = [(d["nsp"]["BSE-2N"]["target_disp_in"] - roof_mean[i]) / roof_mean[i] * 100 for i, d in enumerate(po["directions"].values())]
             rd = "The coefficient-method δ<sub>t</sub> sits " + " and ".join(f"{abs(v):.0f}% {'above' if v > 0 else 'below'}" for v in devs) + " the record mean (X, Y); the suite adds the record-to-record scatter."
         Q.append(row("MCE<sub>R</sub>-level roof displacement (in)", "—", f"δ<sub>t</sub> {dt_row}", nl_roof, "—", rd))
     if st["drift_X"] or po or nl:
         Q.append(row("Max storey drift", (f"design {max(st['drift_X']):.2f}% / {max(st['drift_Y']):.2f}% (DE, C<sub>d</sub>δ<sub>e</sub>/I<sub>e</sub>)" if st["drift_X"] else "—"),
                      (" / ".join((f"{100*d['acceptance']['BSE-2N']['max_story_drift']:.2f}%" if d['acceptance']['BSE-2N'].get('max_story_drift') is not None else "δ<sub>t</sub> not reached") for d in po["directions"].values()) + " at δ<sub>t</sub> BSE-2N" if po else "—"),
-                     (f"mean {max(mean_X):.2f}% / {max(mean_Y):.2f}% (peaks {max(max_X):.2f}% / {max(max_Y):.2f}%)" if nl else "—"), "—",
+                     (f"mean {max(mean_X):.2f}% / {max(mean_Y):.2f}% (peaks {max(max_X):.2f}% / {max(max_Y):.2f}%)" if mean_X else ("not computed — no acceptable record" if nl else "—")), "—",
                      (f"Chapter 16 mean limit {pct(nl['limits']['mean_limit'])} for Risk Category {rc.replace('_','/')}" + (f"; ASCE 7 design limit {st['drift_limit_pct']:.2f}%." if st["drift_limit_pct"] else ".") if nl else "")))
     if nl:
         Q.append(row("Deformation-controlled components", "—", (" / ".join(f"CP D/C {lv_txt(d, 'BSE-2N', 'CP')}" for d in po["directions"].values()) if po else "—"),
                      f"mean CP D/C {worst_def['DC_CP']:.2f} · valid-range {worst_def['DC_valid']:.2f}" if worst_def else "—", "—", "Both nonlinear seismic methods use the same hinge and brace backbones; NLRHA checks the mean of the record peaks per group (16.4.2.2)."))
         Q.append(row("Force-controlled columns", (f"D/C ≤ {max(x['DC'] for x in st['members'] if 'col' in x['id']):.2f}" if any('col' in x['id'] for x in st['members']) else "—"), "P<sub>G</sub>/P<sub>ye</sub> screened (> 0.6 → force-controlled)",
-                     f"D/C {worst_fc['DC']:.2f} ({worst_fc['section']})" if worst_fc else "—", (f"λ<sub>u</sub> {summary['ddm']['lambda_u']:.2f} ({html.escape(summary['ddm']['governing'])})" if dd else "—"), "Chapter 16 Eq. 16.4-1 with γ = 1.3 on the mean column axial demand; the DDM asks the gravity-system question directly."))
+                     f"D/C {worst_fc['DC']:.2f} ({worst_fc['section']})" if worst_fc else "—", (f"λ<sub>u</sub> {summary['ddm']['lambda_u']:.2f} ({html.escape(summary['ddm']['governing'])})" if dd else "—"), "Chapter 16 16.4.2.1 (both equations, γ = 1.3) on the mean column axial force with concurrent flexure (H1-1); the DDM asks the gravity-system question directly."))
     Q.append(row("Component parameters", "AISC 360/341 cited per member", ("verified · " + html.escape(str(prm.get("source", ""))[:90])) if po and po.get("params_verified") else ("UNVERIFIED placeholders" if po else "—"),
                  ("same file" if nl else "—"), (f"φ<sub>s</sub> {gov['phi'].get('status', '')}" if dd and checked else "—"), "Parameters live with the job outputs (pushover/hinge_params_used.json); the bots query the standards through Query file manager."))
 
@@ -303,11 +317,11 @@ def build(job, out_name="four_analyses.html", title=None):
     if po or nl or st["drift_X"]:
         # direction with the larger NLRHA mean drift (else pushover, else Y)
         dirn = "Y"
-        if nl: dirn = "X" if max(mean_X) > max(mean_Y) else "Y"
+        if nl and mean_X: dirn = "X" if max(mean_X) > max(mean_Y) else "Y"
         elif po: dirn = max(po["directions"], key=lambda k: po["directions"][k]["acceptance"]["BSE-2N"].get("max_story_drift") or 0.0)
         stp = (st["drift_X"] if dirn == "X" else st["drift_Y"]) if st["drift_X"] else None
         pop = [100 * x["drift_ratio"] for x in po["directions"][dirn]["acceptance"]["BSE-2N"]["story_drifts"]] if po and dirn in po["directions"] else None
-        figs.append(f"<figure>{svg_drifts(stp, pop, (mean_X if dirn == 'X' else mean_Y) if nl else None, (max_X if dirn == 'X' else max_Y) if nl else None, 100*nl['limits']['mean_limit'] if nl else None, st['drift_limit_pct'], dirn)}"
+        figs.append(f"<figure>{svg_drifts(stp, pop, (mean_X if dirn == 'X' else mean_Y) if (nl and mean_X) else None, (max_X if dirn == 'X' else max_Y) if (nl and mean_X) else None, 100*nl['limits']['mean_limit'] if nl else None, st['drift_limit_pct'], dirn)}"
                     f"<figcaption>Storey drift profiles, direction {dirn}: design drift, pushover at δ<sub>t</sub> BSE-2N, Chapter 16 suite mean and record maximum, with the ASCE 7 design limit and the Chapter 16 mean limit.</figcaption></figure>")
     if dd:
         grav = [r for r in dd["runs"] if r["kind"] == "gravity"]; lat = [r for r in dd["runs"] if r["kind"] != "gravity"]

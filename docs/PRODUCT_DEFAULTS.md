@@ -26,7 +26,7 @@ python -m snl mesh-converge JOB --analyses nsp ddm --steltic-engine "$STELTIC_EN
 
 # Standalone defaults
 python -m pushover run JOB          # fibre
-python -m nlrha run JOB             # ModIMK (imk), early-abort-nc=2
+python -m nlrha run JOB             # ModIMK (imk); early abort OFF (full suite). --early-abort-nc N stops only once N records fail to converge AND that exceeds the 16.4.1.1 allowance; skipped records are listed in the report
 python -m steltic_ddm run JOB       # HR: rigid offsets on; CFS portal: Tier-2 gate
 ```
 
