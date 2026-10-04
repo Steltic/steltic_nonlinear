@@ -176,19 +176,44 @@ def build(job, out_name="four_analyses.html", title=None):
         om = " / ".join(fmt(d["p695"].get("Omega"), 1) for d in dirs.values())
         vmx = " / ".join(f"{d['p695']['Vmax_kip']:,.0f}" for d in dirs.values())
         dt2 = " / ".join(f"{d['nsp']['BSE-2N']['target_disp_in']:.1f}" for d in dirs.values())
-        bpon1 = " / ".join(fmt(wd(d, "BSE-1N", lv1)) for d in dirs.values()); bpon2 = " / ".join(fmt(wd(d, "BSE-2N", lv2)) for d in dirs.values())
-        bpon_ok = all((wd(d, "BSE-1N", lv1) or 0) <= 1.0 and (wd(d, "BSE-2N", lv2) or 0) <= 1.0 for d in dirs.values())
+        # BPON verdict (NL-01 / NL-09): a level whose push never reached delta_t is NOT ACCEPTABLE; a level with no
+        # monitored component (or no monitored beam/column in a moment frame) is NOT EVALUATED -> bpon_ok None.
+        # A missing D/C is never read as 0.00 and never as a pass.
+        from pushover.postprocess import level_verdict
+        def lv_txt(d, lvl, key):
+            a = d["acceptance"].get(lvl) or {}
+            st = a.get("status")
+            if st == "target_not_reached":
+                return "target not reached"
+            v = level_verdict(a, key)
+            if v is None:
+                return "not evaluated"
+            x = wd(d, lvl, key)
+            return (f"{x:.3f}" if 0 < x < 0.01 else fmt(x)) if isinstance(x, (int, float)) else fmt(x)
+        bpon1 = " / ".join(lv_txt(d, "BSE-1N", lv1) for d in dirs.values()); bpon2 = " / ".join(lv_txt(d, "BSE-2N", lv2) for d in dirs.values())
+        verdicts = [level_verdict(d["acceptance"].get("BSE-1N"), lv1) for d in dirs.values()] + \
+                   [level_verdict(d["acceptance"].get("BSE-2N"), lv2) for d in dirs.values()]
+        reached = not any((d["acceptance"].get(l) or {}).get("status") == "target_not_reached" for d in dirs.values() for l in ("BSE-1N", "BSE-2N"))
+        bpon_ok = False if any(v is False for v in verdicts) else (None if any(v is None for v in verdicts) else True)
+        bpon_word = {True: "both pass", False: ("NOT satisfied" if reached else "NOT ACCEPTABLE — target displacement not reached (ASCE 41-23 7.4.3.3.1)"),
+                     None: "NOT EVALUATED (no monitored beam/column components at δ<sub>t</sub>; no pass can be claimed)"}[bpon_ok]
         nsp_ok = all(n.get("nsp_permitted", True) for d in dirs.values() for n in d["nsp"].values())
         tails = {k: d.get("tail", {}).get("status", "") for k, d in dirs.items()}
         stats = po.get("hinge_stats", {})
         po_v = f"Ω {om}"; po_vl = f"V<sub>max</sub> {vmx} kip vs V = {fmt(po['basis'].get('V_design_kip'), 0)} kip ({' / '.join(dirs)})"
-        po_foot = (f"BPON for Risk Category {rc.replace('_', '/')}: {lv1} at BSE-1N D/C {bpon1}; {lv2} at BSE-2N D/C {bpon2} — {'both pass' if bpon_ok else 'NOT satisfied'}. "
-                   f"δ<sub>t</sub> BSE-2N {dt2} in. NSP {'permitted' if nsp_ok else 'NOT permitted (μstrength > μmax) — NDP required'}; "
-                   f"hinges: {stats.get('col', 0)} column, {stats.get('beam', 0)} beam, {stats.get('brace_nonlinear', 0)} brace; descending branch {', '.join(f'{k} {v}' for k, v in tails.items())}. "
+        mon = {k: (d["acceptance"].get("BSE-2N") or {}).get("monitored") for k, d in dirs.items()}
+        mon_txt = "; ".join(f"{k}: " + ", ".join(f"{n} {kind}" for kind, n in (m or {}).items() if n) for k, m in mon.items() if m)
+        po_foot = (f"BPON for Risk Category {rc.replace('_', '/')}: {lv1} at BSE-1N D/C {bpon1}; {lv2} at BSE-2N D/C {bpon2} — {bpon_word}. "
+                   + (f"Monitored components ({mon_txt}). " if mon_txt else "")
+                   + f"δ<sub>t</sub> BSE-2N {dt2} in. NSP {'permitted' if nsp_ok else 'NOT permitted (μstrength > μmax) — NDP required'}; "
+                   f"{'members' if stats.get('plasticity') == 'fibre' else 'hinges'}: {stats.get('col', 0)} column, {stats.get('beam', 0)} beam, {stats.get('brace_nonlinear', 0)} brace; descending branch {', '.join(f'{k} {v}' for k, v in tails.items())}. "
                    f"Component parameters {'verified' if po.get('params_verified') else 'UNVERIFIED placeholders'}.")
         summary["pushover"] = dict(Omega={k: d["p695"].get("Omega") for k, d in dirs.items()}, Vmax={k: d["p695"]["Vmax_kip"] for k, d in dirs.items()},
                                    target_disp_BSE2N={k: d["nsp"]["BSE-2N"]["target_disp_in"] for k, d in dirs.items()}, bpon_levels=[lv1, lv2], bpon_ok=bpon_ok, nsp_permitted=nsp_ok,
-                                   max_story_drift_BSE2N={k: d["acceptance"]["BSE-2N"]["max_story_drift"] for k, d in dirs.items()}, tail=tails, params_verified=po.get("params_verified"))
+                                   max_story_drift_BSE2N={k: d["acceptance"]["BSE-2N"]["max_story_drift"] for k, d in dirs.items()}, tail=tails, params_verified=po.get("params_verified"),
+                                   bpon_status={k: {l: (d["acceptance"].get(l) or {}).get("status", "evaluated" if (d["acceptance"].get(l) or {}).get("groups") else "not_evaluated")
+                                                    for l in ("BSE-1N", "BSE-2N")} for k, d in dirs.items()},
+                                   monitored=mon)
     else:
         po_v, po_vl, po_foot = "not run", "", "pushover/pushover_package.json not found in the job folder."
 
@@ -255,11 +280,11 @@ def build(job, out_name="four_analyses.html", title=None):
         Q.append(row("MCE<sub>R</sub>-level roof displacement (in)", "—", f"δ<sub>t</sub> {dt_row}", nl_roof, "—", rd))
     if st["drift_X"] or po or nl:
         Q.append(row("Max storey drift", (f"design {max(st['drift_X']):.2f}% / {max(st['drift_Y']):.2f}% (DE, C<sub>d</sub>δ<sub>e</sub>/I<sub>e</sub>)" if st["drift_X"] else "—"),
-                     (" / ".join(f"{100*d['acceptance']['BSE-2N']['max_story_drift']:.2f}%" for d in po["directions"].values()) + " at δ<sub>t</sub> BSE-2N" if po else "—"),
+                     (" / ".join((f"{100*d['acceptance']['BSE-2N']['max_story_drift']:.2f}%" if d['acceptance']['BSE-2N'].get('max_story_drift') is not None else "δ<sub>t</sub> not reached") for d in po["directions"].values()) + " at δ<sub>t</sub> BSE-2N" if po else "—"),
                      (f"mean {max(mean_X):.2f}% / {max(mean_Y):.2f}% (peaks {max(max_X):.2f}% / {max(max_Y):.2f}%)" if nl else "—"), "—",
                      (f"Chapter 16 mean limit {pct(nl['limits']['mean_limit'])} for Risk Category {rc.replace('_','/')}" + (f"; ASCE 7 design limit {st['drift_limit_pct']:.2f}%." if st["drift_limit_pct"] else ".") if nl else "")))
     if nl:
-        Q.append(row("Deformation-controlled components", "—", (" / ".join(f"CP D/C {fmt(d['acceptance']['BSE-2N']['worst_DC'].get('CP'))}" for d in po["directions"].values()) if po else "—"),
+        Q.append(row("Deformation-controlled components", "—", (" / ".join(f"CP D/C {lv_txt(d, 'BSE-2N', 'CP')}" for d in po["directions"].values()) if po else "—"),
                      f"mean CP D/C {worst_def['DC_CP']:.2f} · valid-range {worst_def['DC_valid']:.2f}" if worst_def else "—", "—", "Both nonlinear seismic methods use the same hinge and brace backbones; NLRHA checks the mean of the record peaks per group (16.4.2.2)."))
         Q.append(row("Force-controlled columns", (f"D/C ≤ {max(x['DC'] for x in st['members'] if 'col' in x['id']):.2f}" if any('col' in x['id'] for x in st['members']) else "—"), "P<sub>G</sub>/P<sub>ye</sub> screened (> 0.6 → force-controlled)",
                      f"D/C {worst_fc['DC']:.2f} ({worst_fc['section']})" if worst_fc else "—", (f"λ<sub>u</sub> {summary['ddm']['lambda_u']:.2f} ({html.escape(summary['ddm']['governing'])})" if dd else "—"), "Chapter 16 Eq. 16.4-1 with γ = 1.3 on the mean column axial demand; the DDM asks the gravity-system question directly."))
@@ -274,7 +299,7 @@ def build(job, out_name="four_analyses.html", title=None):
         # direction with the larger NLRHA mean drift (else pushover, else Y)
         dirn = "Y"
         if nl: dirn = "X" if max(mean_X) > max(mean_Y) else "Y"
-        elif po: dirn = max(po["directions"], key=lambda k: po["directions"][k]["acceptance"]["BSE-2N"]["max_story_drift"])
+        elif po: dirn = max(po["directions"], key=lambda k: po["directions"][k]["acceptance"]["BSE-2N"].get("max_story_drift") or 0.0)
         stp = (st["drift_X"] if dirn == "X" else st["drift_Y"]) if st["drift_X"] else None
         pop = [100 * x["drift_ratio"] for x in po["directions"][dirn]["acceptance"]["BSE-2N"]["story_drifts"]] if po and dirn in po["directions"] else None
         figs.append(f"<figure>{svg_drifts(stp, pop, (mean_X if dirn == 'X' else mean_Y) if nl else None, (max_X if dirn == 'X' else max_Y) if nl else None, 100*nl['limits']['mean_limit'] if nl else None, st['drift_limit_pct'], dirn)}"
@@ -317,7 +342,7 @@ def build(job, out_name="four_analyses.html", title=None):
         pcr = (po.get("numerics") or {}).get("post_cap_ratio")
         if pcr and pcr > 0.2: disc.append(f"Pushover / NLRHA hinge backbones: post-capping descent spread over {pcr:.2f}a (tail-protocol rung 3, default 0.15a).")
         for k, v in tails.items():
-            if v and v != "captured": disc.append(f"Push {k}: descending branch {v} — δ<sub>u</sub> and μ<sub>T</sub> are lower bounds.")
+            if v and v not in ("captured", "component_limit"): disc.append(f"Push {k}: descending branch {v} — δ<sub>u</sub> and μ<sub>T</sub> are lower bounds.")
         if not po.get("params_verified"): disc.append("Pushover / NLRHA component parameters are UNVERIFIED placeholders (red banner in both reports).")
     if nl:
         d_ = nl["ch16"].get("damping", {})

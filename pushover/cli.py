@@ -47,10 +47,16 @@ def _run(args):
         p695 = PP.p695_factors(run, pkg.basis, nsp["BSE-1N"])
         acc = {lvl: PP.acceptance(run, hinges, n["target_disp_in"], lvl) for lvl, n in nsp.items()}
         runs[d] = run; results[d] = dict(nsp=nsp, p695=p695, acc=acc, hinges=hinges)
+        def _dc(v):
+            return "%.2f" % v if isinstance(v, (int, float)) else "n/a"
         for lvl, n in nsp.items():
-            print("  [%s %s] Te=%.2fs Sa=%.3fg C0=%.2f C1=%.2f C2=%.2f -> dt=%.2f in (%.2f%% H) mu_str=%.2f mu_max=%.2f NSP ok=%s reached1.5=%s | worst D/C IO %.2f LS %.2f CP %.2f"
+            a = acc[lvl]
+            print("  [%s %s] Te=%.2fs Sa=%.3fg C0=%.2f C1=%.2f C2=%.2f -> dt=%.2f in (%.2f%% H) mu_str=%.2f mu_max=%.2f NSP permitted=%s reached dt=%s reached1.5=%s | %s worst D/C IO %s LS %s CP %s (monitored %s)"
                   % (d, lvl, n["Te"], n["Sa"], n["C0"], n["C1"], n["C2"], n["target_disp_in"], 100 * n["target_over_H"], n["mu_strength"],
-                     n["mu_max"], n["nsp_permitted"], n["reached_150pct"], acc[lvl]["worst_DC"]["IO"], acc[lvl]["worst_DC"]["LS"], acc[lvl]["worst_DC"]["CP"]))
+                     n["mu_max"], n["nsp_permitted"], n["reached_target"], n["reached_150pct"], a["status"].upper(),
+                     _dc(a["worst_DC"]["IO"]), _dc(a["worst_DC"]["LS"]), _dc(a["worst_DC"]["CP"]), a["monitored"]))
+            if a["status"] != PP.EVALUATED:
+                print("  !! [%s %s] %s" % (d, lvl, a["note"]))
         print("  [%s P-695] Vmax=%.0f kip Omega=%s (Om0=%s) mu_T=%.2f (%s)" % (d, p695["Vmax_kip"], "%.2f" % p695["Omega"] if p695["Omega"] else "n/a",
                                                                           pkg.basis.Om0, p695["mu_T"], p695["delta_u_basis"]))
         t = run["tail"]

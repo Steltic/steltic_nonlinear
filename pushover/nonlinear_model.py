@@ -23,7 +23,14 @@ Scissors PZ retained; RBS uses elastic stubs + CP midspan at RBS centres when ge
 
 Default method (HR wave): plasticity="fibre" — forceBeamColumn + Lobatto fibre sections
 (see fibre_model.py). IMK / ConcentratedPlasticity remain available via --plasticity imk or
-numerics.element_form. Fibre path drops scissors PZ (rigid) and skips RBS remesh.
+numerics.element_form. Fibre path drops scissors PZ (rigid); it meshes RBS beam ends with the circular
+flange cut in the fibres and registers every unreleased beam/column end as a monitored plastic-hinge region
+(fibre_model.py, NL-01 / NL-07).
+
+Per-beam geometry (NL-07): beam_params_for() evaluates the supplied beam hinge parameters with the design
+package's own RBS cut c (Z_RBS, AISC 358-22 Eq. 5.7-4) and unbraced length Lb per beam section.
+Scissors panel zones take HR's per-joint doubler plates (capacity_design.panel_zone.by_joint, NL-28).
+The push re-issues analysis objects only when they change (StaticAnalysis, NL-11).
 """
 from __future__ import annotations
 import math
@@ -85,6 +92,175 @@ def strong_I_slot(pkg, e, kind):
     """Which elasticBeamColumn inertia argument (Iy or Iz) is the strong-axis one for this member.
     steltic add_column passes (Iy_weak, Ix_strong) -> 'Iz'; add_beam passes (Ix_strong, Iy_weak) -> 'Iy'."""
     return "Iz" if kind == "col" else "Iy"
+
+
+def beam_params_for(pkg, prm, section, fr=True):
+    """hinge_params view for ONE beam section with the design package's own RBS cut and unbraced length (NL-07).
+
+    The component values (Table C5.5 a/b/c expressions, IO/LS/CP) stay exactly as supplied in hinge_params;
+    only the member geometry they are evaluated with is taken per beam from the package:
+      * RBS cut c (and a, b) -- hinge_params `beam_flexure.rbs_geometry_*[section]` if the engineer gave one,
+        else the package's record for this section (package_reader.beam_details), else, for an FR beam of a
+        frame the package shows to be RBS, the AISC 358-22 5.7 Step 1 default (package_reader.rbs_default).
+        The hinge then uses Z_RBS = Zx - 2 c tf (d - tf) (AISC 358-22 Eq. 5.7-4) through rbs_c_in. A single
+        global `rbs_c_in` in hinge_params is only used when the package records no RBS at all.
+      * Lb -- the larger of the member's recorded Lb_in and the frame's beam-bracing spacing (D1.2), passed
+        as Lb_over_ry = Lb / ry of this section (ry from sections_db); the hinge takes min(span, Lb). Without
+        package data the hinge_params Lb rule is kept (and noted).
+    Returns (prm_view, info) with info = {rbs: geometry|None, Lb_in, notes: [...]}."""
+    from . import package_reader as PR
+    from . import sections_db as SDB
+    bp0 = prm.get("beam_flexure") or {}
+    sec = PR._norm_sec(section)
+    cache = getattr(pkg, "_beam_prm_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            pkg._beam_prm_cache = cache
+        except Exception:
+            pass
+    key = (id(prm), sec, bool(fr))
+    if key in cache:
+        return cache[key]
+    det = PR.beam_details(pkg)
+    bp = dict(bp0)
+    notes = []
+    geo = None
+    explicit = RBS.rbs_geometry_for_section(section, {k: v for k, v in bp0.items() if str(k).startswith("rbs_geometry")})
+    if explicit:
+        geo = dict(explicit, source="hinge_params beam_flexure.rbs_geometry_*")
+    elif sec in det["rbs"]:
+        geo = dict(det["rbs"][sec])
+    elif det["rbs_frame"] and fr:
+        try:
+            geo = PR.rbs_default(SDB.props(section))
+            notes.append("%s: RBS frame but no cut recorded for this section -> %s (c = %.3f in)" % (sec, geo["source"], geo["c_in"]))
+        except Exception as ex:
+            notes.append("%s: RBS frame, no cut recorded and no section properties (%s); full section used" % (sec, ex))
+    if det["rbs_frame"] or explicit:
+        if (bp0.get("rbs_c_in") or bp0.get("rbs_c_frac_bf")) and geo and not explicit and \
+                abs(float(bp0.get("rbs_c_in") or 0) - geo["c_in"]) > 1e-6:
+            notes.append("%s: hinge_params global rbs_c_in=%s superseded by the per-beam cut c=%.3f in (%s)"
+                         % (sec, bp0.get("rbs_c_in"), geo["c_in"], geo["source"]))
+        bp["rbs_c_in"] = float(geo["c_in"]) if (geo and fr) else 0.0
+        bp["rbs_c_frac_bf"] = 0.0
+        if geo and fr:
+            bp["rbs_geometry_pkg"] = {sec: dict(a_in=geo["a_in"], b_in=geo["b_in"], c_in=geo["c_in"])}
+        basis = str(bp0.get("basis") or bp0.get("source") or "")
+        if geo and fr and bp0.get("mode") == "fr_connection" and basis and not PR._RBS_NAME.search(basis):
+            notes.append("%s: the package records an RBS connection but hinge_params beam_flexure is not the RBS row (%s) -- "
+                         "check the supplied Table C5.5 row" % (sec, basis[:80]))
+    elif geo is None and (bp0.get("rbs_c_in") or bp0.get("rbs_c_frac_bf")):
+        geo = None                                      # legacy: global cut from hinge_params, package silent
+    # unbraced length
+    cands = []
+    if det["Lb"].get(sec):
+        cands.append((det["Lb"][sec]["Lb_in"], det["Lb"][sec]["source"]))
+    if fr and det["Lb_frame"]:
+        cands.append((det["Lb_frame"]["Lb_in"], det["Lb_frame"]["source"]))
+    Lb_in = None
+    if cands:
+        Lb_in, src = max(cands)
+        try:
+            ry = float(SDB.props(section)["ry"])
+            bp["Lb_divisor"] = None
+            bp["Lb_over_ry"] = Lb_in / ry
+            bp["Lb_source"] = src
+            if len(cands) > 1 and abs(cands[0][0] - cands[1][0]) > 0.01 * max(cands[0][0], cands[1][0]):
+                notes.append("%s: Lb %.1f in (%s) vs %.1f in (%s); larger used" % (sec, cands[0][0], cands[0][1], cands[1][0], cands[1][1]))
+        except Exception as ex:
+            Lb_in = None
+            notes.append("%s: Lb from package not applied (%s)" % (sec, ex))
+    elif bp0.get("mode") == "fr_connection":
+        notes.append("%s: no unbraced length in the package -> hinge_params rule (%s)"
+                     % (sec, ("Lb = span/%s" % bp0["Lb_divisor"]) if bp0.get("Lb_divisor") else ("Lb/ry = %s" % bp0.get("Lb_over_ry"))))
+    view = dict(prm)
+    view["beam_flexure"] = bp
+    # notes only where a hinge exists (an FR beam-to-column end); pinned framing has no hinge to qualify
+    out = (view, dict(rbs=(geo if fr else None), Lb_in=Lb_in, notes=(notes if fr else [])))
+    cache[key] = out
+    return out
+
+
+def fibre_end_rotation(h):
+    """Plastic rotation (rad) of one monitored fibre hinge region (fibre_model, form "fibre_end").
+
+    `plasticDeformation` of a forceBeamColumn is its basic deformation minus the initial-flexibility elastic
+    part, i.e. theta_I,p = int (xi - 1) kappa_p dx and theta_J,p = int xi kappa_p dx. Over the region's
+    segments the plastic curvature integral is sum (theta_J,p - theta_I,p) ("integral"); a single-segment
+    member uses its own end rotation (-theta_I,p at end I, theta_J,p at end J), the concentrated-hinge
+    equivalent of the curvature near that end."""
+    i, j = h["comp"]
+    tot = 0.0
+    for et in h["segs"]:
+        r = ops.eleResponse(et, "plasticDeformation")
+        if not r or len(r) <= j:
+            continue
+        if h["mode"] == "integral":
+            tot += r[j] - r[i]
+        elif h["mode"] == "endI":
+            tot -= r[i]
+        else:
+            tot += r[j]
+    return tot
+
+
+def hinge_plastic_deformation(tag, h):
+    """(plastic deformation, moment|axial force) of any registered hinge `hinges[tag]` at the current state:
+    brace total axial deformation (in) and force; fibre end region plastic rotation (rad, force None);
+    ConcentratedPlasticity end IP or zeroLength IMK spring plastic rotation theta - M/K0 (rad) and M."""
+    if h["kind"] == "brace":
+        d = ops.eleResponse(tag, "deformation"); f = ops.eleResponse(tag, "axialForce")
+        return (d[0] if d else 0.0), (f[0] if f else 0.0)
+    if h.get("form") == "fibre_end":
+        return fibre_end_rotation(h), None
+    if h.get("form") == "fbc_cp":
+        ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
+        d = ops.eleResponse(h["ele"], "section", ip, "deformation")
+        f = ops.eleResponse(h["ele"], "section", ip, "force")
+        th = d[jc] if (d and len(d) > jc) else 0.0
+        M = f[jc] if (f and len(f) > jc) else 0.0
+        return th - M / h["K0"], M
+    d = ops.eleResponse(tag, "deformation"); f = ops.eleResponse(tag, "force")
+    j = h["dof"] - 1
+    th = d[j] if len(d) >= 6 else 0.0; M = f[j] if len(f) >= 6 else 0.0
+    return th - M / h["K0"], M
+
+
+def column_nodes(pkg):
+    """Nodes a column (with a section) frames into -- where a beam end can be a beam-to-column connection."""
+    cached = getattr(pkg, "_column_nodes", None)
+    if cached is not None:
+        return cached
+    out = set()
+    for e in pkg.model.elements:
+        if "etype" not in e and member_kind(pkg, e) == "col":
+            out.update((e["n1"], e["n2"]))
+    try:
+        pkg._column_nodes = out
+    except Exception:
+        pass
+    return out
+
+
+def fr_column_ends(pkg, e):
+    """(end1, end2) booleans: this beam end is not released about the major axis AND frames into a column,
+    i.e. a moment (FR) beam-to-column connection -- the only place an RBS cut belongs."""
+    relz = _major_release_code(e, strong_I_slot(pkg, e, "beam"))
+    cn = column_nodes(pkg)
+    return (relz not in (1, 3) and e["n1"] in cn), (relz not in (2, 3) and e["n2"] in cn)
+
+
+def moment_frame_members(pkg):
+    """Number of FR beams (at least one major-axis end not released at a column) -- members whose flexural
+    hinges an NSP of this frame must evaluate."""
+    n = 0
+    for e in pkg.model.elements:
+        if "etype" in e or member_kind(pkg, e) != "beam" or not pkg.schedule.get(e["tag"], {}).get("section"):
+            continue
+        if any(fr_column_ends(pkg, e)):
+            n += 1
+    return n
 
 
 def _major_release_code(e, slot):
@@ -634,7 +810,6 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
             args = [e["A"], e["E"], e["G"], e["J"], e["Iy"], e["Iz"], e["transf"]] + (e["release"] or [])
             ops.element("elasticBeamColumn", e["tag"], e["n1"], e["n2"], *args); stats["brace"] += 1
             continue
-        spec = HM.column_hinge(sec, L, PG.get(e["tag"], 0.0), prm) if kind == "col" else HM.beam_hinge(sec, L, prm)
         slot = strong_I_slot(pkg, e, kind); dof = strong_rot_dof(pkg, e, kind)
         I = e[slot]
         rel = e["release"] or []
@@ -643,20 +818,29 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
         flag = "-releasey" if slot == "Iy" else "-releasez"
         relz = int(rel[rel.index(flag) + 1]) if flag in rel else 0
         hinge_i = relz not in (1, 3); hinge_j = relz not in (2, 3)
+        prm_m = prm
+        if kind == "col":
+            spec = HM.column_hinge(sec, L, PG.get(e["tag"], 0.0), prm)
+        else:                                               # per-beam RBS cut and Lb from the package (NL-07)
+            prm_m, binfo = beam_params_for(pkg, prm, sec, fr=any(fr_column_ends(pkg, e)))
+            spec = HM.beam_hinge(sec, L, prm_m)
+            for note in binfo.get("notes", ()):
+                if note not in stats.setdefault("beam_detail_notes", []):
+                    stats["beam_detail_notes"].append(note)
         if spec.force_controlled:
             hinge_i = hinge_j = False; stats["force_controlled"] += 1
         stats["released_ends"] += (0 if hinge_i else 1) + (0 if hinge_j else 1)
         # L2: ConcentratedPlasticity + forceBeamColumn (gated). Skips ZL / RBS7-ZL path.
         if FBC.want_fbc(prm) and (hinge_i or hinge_j) and not spec.force_controlled:
             mat = FBC.build_fbc_member(
-                pkg, e, prm, sec, spec, slot, dof, p1, p2, L, kind,
+                pkg, e, prm_m, sec, spec, slot, dof, p1, p2, L, kind,
                 hinge_i, hinge_j, beam_side, mat, hinges, stats, verbose=verbose,
             )
             continue
-        geo = RBS.want_rbs_remesh(kind, sec, hinge_i, hinge_j, prm)
+        geo = RBS.want_rbs_remesh(kind, sec, hinge_i, hinge_j, prm_m)
         if geo is not None:
             try:
-                mat = _build_rbs7_beam(pkg, e, prm, sec, spec, slot, dof, p1, p2, L, geo, beam_side, mat, hinges, stats)
+                mat = _build_rbs7_beam(pkg, e, prm_m, sec, spec, slot, dof, p1, p2, L, geo, beam_side, mat, hinges, stats)
                 continue
             except Exception as ex:
                 # Fall through to single-span path if remesh cannot fit / fails
@@ -697,6 +881,13 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     # inherit in-plane motion through the rigid translational DOFs of this zeroLength.
     pz_registry = {}
     if pz_mode == "scissors" and pz_plan:
+        # Per-joint doubler plates from HR (capacity_design.panel_zone.by_joint[].doubler_in, NL-28) instead of
+        # one global panel_zones.doubler_t_in; `panel_zones.doublers = "global"` keeps the old behaviour.
+        from . import package_reader as PR
+        pz_blk = prm.get("panel_zones") or {}
+        pz_records = PR.pz_doublers(pkg) if str(pz_blk.get("doublers", "per_joint")).lower() != "global" else []
+        z_level = {round(z, 3): k for k, z, _m, _s in levels(pkg)}
+        stats["pz_doublers"] = dict(per_joint=0, global_fallback=0, records=len(pz_records))
         for nj, by_dof in pz_plan.items():
             bn = beam_side[nj]
             active = sorted(by_dof)
@@ -705,7 +896,17 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
             mat_tags, dirs, specs = [], [], []
             for dof in active:
                 info = by_dof[dof]
-                pz_spec = HM.panel_zone_spec(nj, dof, info["col_section"], info["beam_sections"], prm)
+                prm_pz, dbl_note = prm, "hinge_params panel_zones.doubler_t_in (global)"
+                if pz_records:
+                    lvl = z_level.get(round(m.nodes[nj][2], 3))
+                    t_dbl, why = PR.doubler_for_joint(pz_records, lvl, info["col_section"], info["beam_sections"])
+                    if t_dbl is not None:
+                        prm_pz = dict(prm, panel_zones=dict(pz_blk, doubler_t_in=t_dbl))
+                        dbl_note = why; stats["pz_doublers"]["per_joint"] += 1
+                    else:
+                        dbl_note = why + " -> global panel_zones.doubler_t_in"; stats["pz_doublers"]["global_fallback"] += 1
+                pz_spec = HM.panel_zone_spec(nj, dof, info["col_section"], info["beam_sections"], prm_pz)
+                pz_spec.flags = tuple(pz_spec.flags) + ("doubler: " + dbl_note,)
                 mat += 1
                 HM.make_panel_zone_material(mat, pz_spec)
                 zl_mats[dof] = mat
@@ -763,17 +964,61 @@ def modal_pattern(pkg, direction, nmodes=6):
                 masses={k: pkg.model.masses[m][0] for k, z, m, s in lv})
 
 
-def _try_analyze(dU, ctrl, dof, algos=(("Newton",), ("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",))):
+class StaticAnalysis:
+    """Owns the OpenSees static-analysis objects of one push and re-issues them ONLY when they change (NL-11).
+
+    Re-issuing `ops.integrator` replaces the integrator without freeing the old one's ndof-sized work vectors
+    (measured: 4.5k DOF, 800 steps, 35 -> 192 MB; re-issuing test/algorithm alone is flat). The old loop re-issued
+    test + algorithm + integrator on EVERY step, which OOM-killed the Ex8 pushover after 51 min. Here:
+      * test / algorithm are issued only when their arguments differ from the current ones;
+      * an integrator change (step halving, speed-up, arc-length) wipes the analysis (`ops.wipeAnalysis`, which
+        frees every analysis object) and rebuilds constraints/numberer/system/test/algorithm/integrator/analysis,
+        so memory stays flat however often the step changes. The domain state (displacements, load factor,
+        committed material state) is untouched by wipeAnalysis.
+    `issued` counts the calls actually made (the regression test checks it stays bounded)."""
+
+    def __init__(self, constraints=("Transformation",), numberer=("RCM",), system=("UmfPack",)):
+        self.base = (tuple(constraints), tuple(numberer), tuple(system))
+        self.cur = dict(test=None, algorithm=None, integrator=None)
+        self.built = False
+        self.issued = dict(test=0, algorithm=0, integrator=0, rebuild=0)
+
+    def set(self, test, algorithm, integrator):
+        test, algorithm, integrator = tuple(test), tuple(algorithm), tuple(integrator)
+        if self.built and integrator != self.cur["integrator"]:
+            ops.wipeAnalysis()
+            self.built = False
+        if not self.built:
+            ops.constraints(*self.base[0]); ops.numberer(*self.base[1]); ops.system(*self.base[2])
+            ops.test(*test); ops.algorithm(*algorithm); ops.integrator(*integrator); ops.analysis("Static")
+            self.cur = dict(test=test, algorithm=algorithm, integrator=integrator)
+            self.built = True
+            self.issued["rebuild"] += 1; self.issued["integrator"] += 1
+            self.issued["test"] += 1; self.issued["algorithm"] += 1
+            return
+        if test != self.cur["test"]:
+            ops.test(*test); self.cur["test"] = test; self.issued["test"] += 1
+        if algorithm != self.cur["algorithm"]:
+            ops.algorithm(*algorithm); self.cur["algorithm"] = algorithm; self.issued["algorithm"] += 1
+
+    def wipe(self):
+        ops.wipeAnalysis(); self.built = False
+
+
+ALGOS = (("Newton",), ("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",))
+
+
+def _try_analyze(an, dU, ctrl, dof, algos=ALGOS):
+    """One displacement-controlled step of size dU, trying the algorithms in order (objects reused, NL-11)."""
+    integ = ("DisplacementControl", ctrl, dof, dU)
     for i, alg in enumerate(algos):
-        ops.test("NormDispIncr", 1e-5, 100 if i == 0 else 40, 0)
-        ops.algorithm(*alg)
-        ops.integrator("DisplacementControl", ctrl, dof, dU)
+        an.set(("NormDispIncr", 1e-5, 100 if i == 0 else 40, 0), alg, integ)
         if ops.analyze(1) == 0:
             return True
     return False
 
 
-def _tail_recovery(rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, verbose):
+def _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, verbose):
     """Descending-branch escalation ladder. Called only when the main push stopped on non-convergence
     BEFORE the curve fell to 0.8*Vmax. Each rung restarts from the last converged state:
       fine_step  -- displacement control with dU0/100 and a relaxed tolerance (1e-4, 200 iters)
@@ -783,6 +1028,7 @@ def _tail_recovery(rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, verbos
                 message="curve did not lose 20% of Vmax; delta_u and mu_T are lower bounds")
     def reached():
         return rec["V"][-1] <= 0.8 * Vmax or rec["u"][-1] >= umax
+    tst = ("NormDispIncr", 1e-4, 200, 0)
     for strat in strategies:
         if reached():
             break
@@ -790,20 +1036,20 @@ def _tail_recovery(rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, verbos
         if strat == "fine_step":
             dU = dU0 / 100.0
             while not reached() and fails < 6 and steps < 4000:
-                ops.test("NormDispIncr", 1e-4, 200, 0); ops.algorithm("KrylovNewton")
-                ops.integrator("DisplacementControl", roof, dof, dU)
+                integ = ("DisplacementControl", roof, dof, dU)
+                an.set(tst, ("KrylovNewton",), integ)
                 if ops.analyze(1) != 0:
-                    ops.algorithm("ModifiedNewton", "-initial")
+                    an.set(tst, ("ModifiedNewton", "-initial"), integ)
                     if ops.analyze(1) != 0:
                         fails += 1; dU /= 2.0; continue
                 fails = 0; steps += 1; snapshot()
         elif strat == "arclength":
             s_arc = dU0 / 20.0; back = 0
             while not reached() and fails < 6 and steps < 4000 and back < 20:
-                ops.test("NormDispIncr", 1e-4, 200, 0); ops.algorithm("KrylovNewton")
-                ops.integrator("ArcLength", s_arc, 0.0)
+                integ = ("ArcLength", s_arc, 0.0)
+                an.set(tst, ("KrylovNewton",), integ)
                 if ops.analyze(1) != 0:
-                    ops.algorithm("ModifiedNewton", "-initial")
+                    an.set(tst, ("ModifiedNewton", "-initial"), integ)
                     if ops.analyze(1) != 0:
                         fails += 1; s_arc /= 2.0; continue
                 fails = 0; steps += 1
@@ -828,10 +1074,15 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
     with the first-mode force pattern. Records the capacity curve, story displacements and every
     hinge's plastic rotation at each step. Stops at max_roof_drift*H, at 20% strength loss past the
     peak, or when the solver gives up after step-halving -- in which case the descending-branch
-    escalation ladder (`tail_strategies`, in order) is tried before giving up. Pass () to disable."""
+    escalation ladder (`tail_strategies`, in order) is tried before giving up. Pass () to disable.
+
+    The analysis objects are created once and changed only when the step or algorithm changes
+    (StaticAnalysis, NL-11). `run["n_moment_frame_members"]` and `run["monitored"]` let the acceptance
+    check refuse to call a frame acceptable when none of its moment-frame members was evaluated (NL-01)."""
     ok = _apply_gravity(loads)
     if ok != 0:
         raise RuntimeError("gravity stage failed in nonlinear model (%d)" % ok)
+    ops.wipeAnalysis()                                      # free the gravity analysis before the eigen solve
     pat = modal_pattern(pkg, direction)
     lv = levels(pkg); dof = 1 if direction.upper() == "X" else 2
     roof = lv[-1][2]; H = lv[-1][1]
@@ -840,14 +1091,13 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
     for k, z, master, s in lv:
         f = [0.0] * 6; f[dof - 1] = pat["F"][k]
         ops.load(master, *f)
-    ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
-    ops.test("NormDispIncr", 1e-5, 100, 0); ops.algorithm("Newton")
-    ops.integrator("DisplacementControl", roof, dof, dU0); ops.analysis("Static")
+    ops.wipeAnalysis()                                      # drop the gravity / eigen analysis objects
+    an = StaticAnalysis()
+    an.set(("NormDispIncr", 1e-5, 100, 0), ("Newton",), ("DisplacementControl", roof, dof, dU0))
     fixed = [t for t, fl in pkg.model.fixes.items() if fl[dof - 1] == 1]
     cols = [e["tag"] for e in pkg.model.elements if "etype" not in e and member_kind(pkg, e) == "col"]
     rec = dict(u=[], V=[], story_u=[], hinge_pl=[], hinge_M=[], col_N=[])
     hz = sorted(hinges)
-    K0 = [hinges[t]["K0"] for t in hz]
     B = [max(hinges[t]["spec"].b_pl, 1e-9) for t in hz]
     A = [max(hinges[t]["spec"].a_pl, 1e-9) for t in hz]
     grav = [hinges[t]["kind"] != "brace" for t in hz]      # only gravity-carrying members define the b (collapse) limit
@@ -858,24 +1108,9 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
         rec["u"].append(ops.nodeDisp(roof, dof)); rec["V"].append(V)
         rec["story_u"].append([ops.nodeDisp(m, dof) for k, z, m, s in lv])
         pl, MM = [], []
-        for i, t in enumerate(hz):
-            if hinges[t]["kind"] == "brace":
-                d = ops.eleResponse(t, "deformation"); f = ops.eleResponse(t, "axialForce")
-                pl.append(d[0] if d else 0.0); MM.append(f[0] if f else 0.0)     # TOTAL axial deformation (in); limits are total-deformation multiples
-                continue
-            h = hinges[t]
-            if h.get("form") == "fbc_cp":
-                ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
-                d = ops.eleResponse(h["ele"], "section", ip, "deformation")
-                f = ops.eleResponse(h["ele"], "section", ip, "force")
-                th = d[jc] if (d and len(d) > jc) else 0.0
-                M = f[jc] if (f and len(f) > jc) else 0.0
-                pl.append(th - M / K0[i]); MM.append(M)
-                continue
-            d = ops.eleResponse(t, "deformation"); f = ops.eleResponse(t, "force")
-            j = h["dof"] - 1
-            th = d[j] if len(d) >= 6 else 0.0; M = f[j] if len(f) >= 6 else 0.0
-            pl.append(th - M / K0[i]); MM.append(M)
+        for t in hz:
+            v, M = hinge_plastic_deformation(t, hinges[t])
+            pl.append(v); MM.append(M)
         rec["hinge_pl"].append(pl); rec["hinge_M"].append(MM)
         rec["b_ratio"].append(max([abs(pl[i]) / B[i] for i in range(len(pl)) if grav[i]] or [0.0]))
         rec["a_ratio"].append(max([abs(pl[i]) / A[i] for i in range(len(pl)) if grav[i]] or [0.0]))
@@ -885,7 +1120,7 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
     dU, umax, Vmax, halvings, step = dU0, max_roof_drift * H, 0.0, 0, 0
     stop_reason = "reached max roof drift %.1f%% of H" % (100 * max_roof_drift)
     while rec["u"][-1] < umax:
-        if not _try_analyze(dU, roof, dof):
+        if not _try_analyze(an, dU, roof, dof):
             halvings += 1; dU /= 2.0
             if halvings > 8:
                 stop_reason = "solver non-convergence at roof u=%.2f in (after %d step halvings)" % (rec["u"][-1], halvings)
@@ -899,10 +1134,14 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
         if halvings and step % 20 == 0 and dU < dU0:
             dU *= 2.0                                        # try to speed back up
     if verbose:
-        print("[pushover %s] T1=%.3fs (mode %d, %.0f%% mass) steps=%d Vmax=%.0f kip u_end=%.2f in  -- %s"
-              % (direction, pat["T1"], pat["mode"], 100 * pat["meff_frac"], step, Vmax, rec["u"][-1], stop_reason))
-    tail = dict(needed=False, tried=[], captured=rec["V"][-1] <= 0.8 * Vmax, status="captured" if rec["V"][-1] <= 0.8 * Vmax else "not_needed",
-                message="")
+        print("[pushover %s] T1=%.3fs (mode %d, %.0f%% mass) steps=%d Vmax=%.0f kip u_end=%.2f in  -- %s  [analysis objects: %s]"
+              % (direction, pat["T1"], pat["mode"], 100 * pat["meff_frac"], step, Vmax, rec["u"][-1], stop_reason, an.issued))
+    captured_main = rec["V"][-1] <= 0.8 * Vmax
+    # NL-22: "captured" only when the main push itself fell to 0.8 Vmax; a stop above 0.8 Vmax is never "captured"
+    tail = dict(needed=not captured_main, tried=[], captured=captured_main,
+                status="captured" if captured_main else "lower_bound",
+                message="the main push fell to 0.8*Vmax (delta_u valid)" if captured_main else
+                        "curve did not lose 20% of Vmax; delta_u and mu_T are lower bounds")
     if rec["b_ratio"] and rec["b_ratio"][-1] >= 0.95 and rec["V"][-1] > 0.8 * Vmax:
         # hinges have reached rotation b (loss of gravity-load capacity): a NON-SIMULATED collapse point.
         # FEMA P-695 takes delta_u at the earlier of 20% strength loss and such a point, so this is a valid end.
@@ -911,14 +1150,23 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
                     message="hinge plastic rotation reached b (loss of gravity capacity) at roof u=%.2f in before 20%% strength loss; "
                             "delta_u taken there (P-695 non-simulated collapse rule) -- not a solver problem" % rec["u"][i_b])
         stop_reason += "; component rotation limit b reached (max theta_pl/b = %.2f)" % rec["b_ratio"][-1]
-    elif stop_reason.startswith("solver") and rec["V"][-1] > 0.8 * Vmax and tail_strategies:
-        tail = _tail_recovery(rec, snapshot, roof, dof, dU0, umax, Vmax, tail_strategies, verbose)
-        Vmax = max(Vmax, max(rec["V"]))
-        if tail["captured"]:
-            stop_reason += "; descending branch recovered by %s" % "+".join(t["strategy"] for t in tail["tried"])
-    elif stop_reason.startswith("reached max") and rec["V"][-1] > 0.8 * Vmax:
+    elif stop_reason.startswith("solver") and not captured_main:
+        if tail_strategies:
+            tail = _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, tail_strategies, verbose)
+            Vmax = max(Vmax, max(rec["V"]))
+            if tail["captured"]:
+                stop_reason += "; descending branch recovered by %s" % "+".join(t["strategy"] for t in tail["tried"])
+        else:
+            tail["message"] = ("solver stopped above 0.8*Vmax and the descending-branch escalation is disabled (--tail none); "
+                               "delta_u and mu_T are lower bounds")
+    elif stop_reason.startswith("reached max") and not captured_main:
         tail = dict(needed=True, tried=[], captured=False, status="max_drift",
                     message="reached the max roof drift before losing 20%; raise --max-drift to capture delta_u")
+    kinds = {}
+    for t in hz:
+        kinds[hinges[t]["kind"]] = kinds.get(hinges[t]["kind"], 0) + 1
+    ops.wipeAnalysis()
     return dict(direction=direction, H=H, col_tags=cols, tail=tail,
                 gravity_table_QG=[r["QG_kip"] for r in (gravity_table or [])], heights=[lv[0][1]] + [lv[i][1] - lv[i - 1][1] for i in range(1, len(lv))],
-                pattern=pat, rec=rec, hinge_tags=hz, stop_reason=stop_reason, Vmax=Vmax, roof_node=roof)
+                pattern=pat, rec=rec, hinge_tags=hz, stop_reason=stop_reason, Vmax=Vmax, roof_node=roof,
+                n_moment_frame_members=moment_frame_members(pkg), monitored=kinds, analysis_objects=dict(an.issued))

@@ -235,6 +235,219 @@ def read_basis(root: Path, calc: dict) -> DesignBasis:
     return b
 
 
+# --------------------------------------------------------------------------- design details the engines need per member
+# (NL-07 RBS geometry and beam bracing, NL-28 per-joint panel-zone doublers). Read from the STRUCTURED records
+# HR writes into calc_package.json -- member inputs, connection records carrying a cut geometry, and the
+# capacity_design block -- never from one free-text word. Everything returned carries where it came from.
+_W_SHAPE = re.compile(r"\bW\d+(?:\.\d+)?X\d+(?:\.\d+)?\b", re.I)
+_NUMV = r"([0-9]+(?:\.[0-9]+)?)"
+_GEO_RE = {k: re.compile(r"(?<![A-Za-z_'])%s\s*=\s*%s\s*(?:in\b|\"|$|[,;)\s])" % (k, _NUMV)) for k in ("a", "b", "c")}
+# AISC 358-22 Chapter 5 names the connection "reduced beam section (RBS)"; HR spells it several ways
+# ("RBS", "Reduced Beam Section", "AISC 358 Ch.5"). A connection record counts as an RBS only when it ALSO
+# carries the cut geometry a / b / c (AISC 358-22 Fig. 5.1) -- the name alone is never enough for a number.
+_RBS_NAME = re.compile(r"\bRBS\b|reduced[\s_-]*beam[\s_-]*section|358(?:-\d+)?\s*(?:ch(?:apter|\.)?\s*5\b)", re.I)
+
+
+def _norm_sec(s) -> str:
+    return str(s or "").strip().upper().replace(" ", "")
+
+
+def _shapes_in(text) -> list:
+    return [_norm_sec(m.group(0)) for m in _W_SHAPE.finditer(str(text or ""))]
+
+
+def _geo_from_text(text) -> Optional[dict]:
+    t = str(text or "")
+    out = {}
+    for k, rx in _GEO_RE.items():
+        mo = rx.search(t)
+        if not mo:
+            return None
+        out[k + "_in"] = float(mo.group(1))
+    return out if out["c_in"] > 0 else None
+
+
+def _length_in(text) -> Optional[float]:
+    """First 'Lb <n> ft|in' / '<n> in spacing' / 'at <n> ft' bracing length in a capacity-design string (inches)."""
+    t = str(text or "")
+    for pat in (r"\bLb\w*\s*(?:=|of|:)?\s*" + _NUMV + r"\s*(ft|in)\b",
+                r"\bat\s+" + _NUMV + r"\s*(ft|in)\.?\s+(?:spacing|o\.?c\.?|centres|centers)",
+                r"\bspacing\s+(?:of\s+)?" + _NUMV + r"\s*(ft|in)\b"):
+        mo = re.search(pat, t, re.I)
+        if mo:
+            v = float(mo.group(1))
+            return v * 12.0 if mo.group(2).lower() == "ft" else v
+    return None
+
+
+def beam_details(p: "Package") -> dict:
+    """Per-beam-section design details for the hinge models (cached on the package).
+
+    Returns {"rbs": {SECTION: {a_in, b_in, c_in, source}}, "rbs_frame": bool, "rbs_evidence": [...],
+             "Lb": {SECTION: {Lb_in, source}}, "Lb_frame": {Lb_in, source} | None, "notes": [...]}
+
+    RBS (AISC 358-22 Ch. 5): a beam section is RBS when
+      * a member record carries an `RBS` geometry dict (inputs.RBS with a_in/b_in/c_in), or
+      * a connection record names the RBS connection AND carries its cut geometry a=, b=, c= (Fig. 5.1);
+        the beam section comes from the record's `section` field, else the first W shape in its text.
+    The frame is RBS (`rbs_frame`) when any of those exist, when a connection record's type names the RBS
+    connection without recording its cut, or capacity_design carries RBS-specific entries
+    (`rbs_drift_factor`, an RBS `connection` / `moment_connection` record). Where the frame is RBS but a
+    section has no recorded geometry, the engines use the AISC 358-22 5.7 Step 1 default (see rbs_default).
+    Where two records give different cuts for one section the smaller c is kept (larger Z_RBS: the beam
+    is not under-strength against the columns) and the disagreement is noted.
+
+    Lb (unbraced length of the beam for the AISC 342 Table C5.5 a-expression): per section from the member
+    inputs (`Lb_in` > 0) and frame-wide from capacity_design beam_bracing / beam_ductility (D1.2 bracing
+    spacing). Where both exist the LARGER governs (a decreases with Lb/ry -> conservative), noted.
+    """
+    cached = getattr(p, "_beam_details", None)
+    if cached is not None:
+        return cached
+    calc = p.calc or {}
+    cd = calc.get("capacity_design") or {}
+    rbs, notes, evidence = {}, [], []
+
+    def put(sec, geo, src):
+        sec = _norm_sec(sec)
+        if not sec or not geo:
+            return
+        old = rbs.get(sec)
+        if old and abs(old["c_in"] - geo["c_in"]) > 1e-6:
+            notes.append("RBS %s: records disagree on c (%.3f in from %s, %.3f in from %s); smaller c kept"
+                         % (sec, old["c_in"], old["source"], geo["c_in"], src))
+            if geo["c_in"] >= old["c_in"]:
+                return
+        elif old:
+            return
+        rbs[sec] = dict(a_in=float(geo["a_in"]), b_in=float(geo["b_in"]), c_in=float(geo["c_in"]), source=src)
+
+    for m in calc.get("members") or []:
+        inp = (m or {}).get("inputs") or {}
+        g = inp.get("RBS") or inp.get("rbs")
+        if isinstance(g, dict) and all(g.get(k) is not None for k in ("a_in", "b_in", "c_in")):
+            put(inp.get("section"), g, "calc_package members[%s].inputs.RBS" % m.get("id"))
+            evidence.append("member %s inputs.RBS" % m.get("id"))
+    for cn in calc.get("connections") or []:
+        if not isinstance(cn, dict):
+            continue
+        text = " ".join(str(cn.get(k) or "") for k in ("type", "components", "notes", "note", "id"))
+        if not _RBS_NAME.search(str(cn.get("type") or "") + " " + str(cn.get("id") or "") + " " + str(cn.get("components") or "")):
+            continue
+        geo = _geo_from_text(cn.get("components")) or _geo_from_text(text)
+        if not geo:                                   # the connection type names the RBS but records no cut:
+            evidence.append("connection %s type '%s' (no cut geometry recorded)" % (cn.get("id"), cn.get("type")))
+            continue
+        secs = _shapes_in(cn.get("section")) or _shapes_in(cn.get("components")) or _shapes_in(cn.get("id"))
+        if secs:
+            put(secs[0], geo, "calc_package connections[%s]" % cn.get("id"))
+            evidence.append("connection %s (%s)" % (cn.get("id"), cn.get("type")))
+    for key in ("connection", "moment_connection"):
+        v = cd.get(key)
+        if v and _RBS_NAME.search(json.dumps(v) if not isinstance(v, str) else v):
+            evidence.append("capacity_design.%s" % key)
+    if isinstance(cd.get("rbs_drift_factor"), dict):
+        evidence.append("capacity_design.rbs_drift_factor")
+    rbs_frame = bool(rbs) or bool(evidence)
+
+    # unbraced length
+    Lb = {}
+    for m in calc.get("members") or []:
+        inp = (m or {}).get("inputs") or {}
+        sec = _norm_sec(inp.get("section"))
+        try:
+            v = float(inp.get("Lb_in") or 0.0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if sec and v > 0 and (sec not in Lb or v > Lb[sec]["Lb_in"]):
+            Lb[sec] = dict(Lb_in=v, source="calc_package members[%s].inputs.Lb_in" % m.get("id"))
+    Lb_frame = None
+    bb = cd.get("beam_bracing")
+    if isinstance(bb, dict) and bb.get("Lb_provided_in"):
+        Lb_frame = dict(Lb_in=float(bb["Lb_provided_in"]), source="capacity_design.beam_bracing.Lb_provided_in")
+    else:
+        for key, val in (("beam_bracing", bb), ("beam_ductility", cd.get("beam_ductility"))):
+            txt = val if isinstance(val, str) else (json.dumps(val) if val else "")
+            if isinstance(val, dict):
+                txt = " ".join(str(x) for x in val.values())
+            v = _length_in(txt)
+            if v:
+                Lb_frame = dict(Lb_in=v, source="capacity_design.%s" % key)
+                break
+    out = dict(rbs=rbs, rbs_frame=rbs_frame, rbs_evidence=evidence, Lb=Lb, Lb_frame=Lb_frame, notes=notes)
+    try:
+        p._beam_details = out
+    except Exception:
+        pass
+    return out
+
+
+def rbs_default(props: dict) -> dict:
+    """AISC 358-22 5.7 Step 1 mid-range RBS geometry for a beam with no recorded cut:
+    a = 0.625 bf (0.5..0.75 bf, Eq. 5.7-1), b = 0.75 d (0.65..0.85 d, Eq. 5.7-2), c = 0.25 bf (0.1..0.25 bf, Eq. 5.7-3).
+    c is taken at the upper limit: the smallest Z_RBS = Zx - 2 c tf (d - tf) (Eq. 5.7-4), so the beam yields at
+    the lowest moment the connection permits and its plastic-rotation demand is not under-estimated."""
+    return dict(a_in=0.625 * props["bf"], b_in=0.75 * props["d"], c_in=0.25 * props["bf"],
+                source="AISC 358-22 5.7 Step 1 default (no cut recorded for this section)")
+
+
+def pz_doublers(p: "Package") -> list:
+    """HR's per-joint panel-zone doublers (capacity_design.panel_zone.by_joint[]) normalised to
+    [{level, column, beams:[...], doubler_in, label}] (level None where the record does not say)."""
+    pz = ((p.calc or {}).get("capacity_design") or {}).get("panel_zone") or {}
+    out = []
+    for j in pz.get("by_joint") or []:
+        if not isinstance(j, dict):
+            continue
+        t = j.get("doubler_in", j.get("doubler_t_in"))
+        try:
+            t = float(t or 0.0)
+        except (TypeError, ValueError):
+            continue
+        label = str(j.get("joint") or "")
+        lvl = j.get("level")
+        if lvl is None:
+            mo = re.search(r"\b(?:L|level|floor|storey|story)\s*-?\s*(\d+)\b", label, re.I)
+            lvl = int(mo.group(1)) if mo else None
+        col = _norm_sec(j.get("column")) or None
+        beams_txt = str(j.get("beams") or "")
+        beams = []
+        for mo in re.finditer(r"(?:(\d+)\s*[x×]\s*)?(W\d+(?:\.\d+)?X\d+(?:\.\d+)?)", beams_txt, re.I):
+            beams += [_norm_sec(mo.group(2))] * int(mo.group(1) or 1)
+        if col is None or not beams:                 # e.g. 'conn-IMF-RBS-W27X94-W14X176' -> beam then column
+            shp = _shapes_in(label)
+            if len(shp) >= 2:
+                beams = beams or [shp[0]]
+                col = col or shp[-1]
+        out.append(dict(level=int(lvl) if lvl is not None else None, column=col, beams=beams, doubler_in=t, label=label))
+    return out
+
+
+def doubler_for_joint(records: list, level: int, column: str, beams: list):
+    """Pick HR's doubler for one model joint: same column section, same beam section set, same level where
+    the record names one. Returns (doubler_in, note) or (None, reason). Several matching records with
+    different doublers (HR groups joints by position, which the model does not carry) -> the THINNEST is
+    used (the more flexible / weaker panel, so panel-zone demand is not under-estimated) and noted."""
+    col = _norm_sec(column)
+    bset = sorted(set(_norm_sec(b) for b in beams if b))
+    cand = []
+    for r in records:
+        if r["column"] and r["column"] != col:
+            continue
+        if r["beams"] and sorted(set(r["beams"])) != bset:
+            continue
+        if r["level"] is not None and level is not None and r["level"] != level:
+            continue
+        cand.append(r)
+    if not cand:
+        return None, "no HR panel_zone.by_joint record for %s with %s at level %s" % (col, "+".join(bset), level)
+    exact = [r for r in cand if r["level"] is not None and len(r["beams"]) == len(beams)] or cand
+    ts = sorted(set(r["doubler_in"] for r in exact))
+    if len(ts) == 1:
+        return ts[0], "HR panel_zone.by_joint '%s'" % exact[0]["label"]
+    return ts[0], "HR panel_zone.by_joint: %d records match (%s in); thinnest used" % (len(exact), ", ".join("%.4g" % t for t in ts))
+
+
 # --------------------------------------------------------------------------- entry point
 def load(path: str | os.PathLike) -> Package:
     root = locate(path)
