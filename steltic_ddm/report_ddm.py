@@ -103,6 +103,51 @@ def phi_s_status_text(runs, as_html=True):
     return t
 
 
+PHI_MEMBER = 0.90      # AISC 360-22 phi_c (Section E1) and phi_b (Section F1): the member factor HR Steel checked with
+
+
+def member_equivalence(runs, member_table=None):
+    """Why the DDM check can fail where the AISC 360 member check passed (register item NL-27).
+
+    The DDM check is phi_s * lambda_u >= 1 with a SYSTEM factor phi_s (0.80 for hot-rolled gravity at beta_T = 3.0,
+    lower for the higher beta_T of Risk Category III/IV); the member check is D/C = Pu / (phi_c Pn) <= 1 with
+    phi_c = phi_b = 0.90. When one member governs the collapse, lambda_u ~ Pn / Pu = 1 / (phi_c * D/C), so
+    phi_s * lambda_u >= 1  <=>  D/C <= phi_s / phi_c. That ratio is the member D/C a design must stay below
+    for the DDM to pass without system redistribution. -> list of dict(cls, phi_s, beta_T, limit, worst_DC)."""
+    worst = None
+    for row in member_table or []:
+        dc = row.get("DC") if isinstance(row, dict) else None
+        dc = dc[0] if isinstance(dc, (list, tuple)) else dc
+        if isinstance(dc, (int, float)) and (worst is None or dc > worst[0]):
+            worst = (dc, row.get("role"), row.get("section"))
+    out, seen = [], set()
+    for r in runs:
+        ph = r.get("phi") or {}
+        if ph.get("phi_s") is None or ph.get("cls") in seen:
+            continue
+        seen.add(ph.get("cls"))
+        out.append(dict(cls=ph.get("cls"), phi_s=ph["phi_s"], beta_T=ph.get("beta_T"), limit=round(ph["phi_s"] / PHI_MEMBER, 3),
+                        worst_DC=worst))
+    return out
+
+
+def member_equivalence_html(eq):
+    if not eq:
+        return ""
+    rows = "; ".join("%s: φ<sub>s</sub> = %.2f (β<sub>T</sub> %s) → member D/C ≤ φ<sub>s</sub>/φ<sub>c</sub> = %.2f/%.2f = <b>%.2f</b>"
+                     % (_h(e["cls"]), e["phi_s"], e["beta_T"] if e["beta_T"] is not None else "—", e["phi_s"], PHI_MEMBER, e["limit"]) for e in eq)
+    w = eq[0]["worst_DC"]
+    worst = (" The highest AISC 360 member D/C in the design is %.3f (%s %s)%s." % (
+        w[0], _h(w[1] or ""), _h(w[2] or ""), " — above the equivalent limit, so a DDM FAIL here is expected, not a solver artefact"
+        if w[0] > min(e["limit"] for e in eq) else "")) if w else ""
+    return ('<div class="flag"><b>Why this check is stricter than the AISC 360 member check HR Steel passed.</b> The DDM verdict is '
+            'φ<sub>s</sub>·λ<sub>u</sub> ≥ 1.0 with a <i>system</i> resistance factor φ<sub>s</sub> calibrated to the reliability target β<sub>T</sub> '
+            '(ASCE 7-22 Table 1.3-1 by Risk Category); the member check is D/C ≤ 1.0 with φ<sub>c</sub> = φ<sub>b</sub> = %.2f '
+            '(AISC 360-22 §E1 / §F1). When one member governs the collapse, λ<sub>u</sub> ≈ 1/(φ<sub>c</sub>·D/C), so the DDM passes only '
+            'if D/C ≤ φ<sub>s</sub>/φ<sub>c</sub>: %s.%s Redistribution in the real system can lift λ<sub>u</sub> above this estimate; '
+            'the GMNIA result above governs.</div>' % (PHI_MEMBER, rows, worst))
+
+
 def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, notes):
     """runs: list of dict(combo=..., summary=..., res=..., cls=..., phi=...)."""
     name = nm.name
@@ -131,6 +176,7 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
         parts.append('<div class="tile"><div class="k">φ<sub>s</sub>·λ<sub>u</sub> (governing)</div><div class="v %s">%.2f</div></div>' % (worst["check"][1], worst["check"][0]))
     parts.append('<div class="tile"><div class="k">DDM checks</div><div class="v">%d / %d pass</div></div>' % (n_pass, len(strength)))
     parts.append('<div class="tile"><div class="k">transfer gate</div><div class="v %s">%s</div></div></div>' % ("PASS" if gate["ok"] else "FAIL", "PASS" if gate["ok"] else "FAIL"))
+    parts.append(member_equivalence_html(member_equivalence(runs, member_table)))
 
     # 1 design basis
     parts.append('<h2>1 · Design of record and what was analysed</h2>')
@@ -288,6 +334,8 @@ def ddm_block(nm, gate, runs, sensitivity, options, member_table):
              "steps": r["res"]["steps"], "seconds": r["res"]["seconds"]} for r in runs],
         "sensitivity": [{k: v for k, v in s.items()} for s in (sensitivity or [])],
         "member_state_at_collapse": member_table,
+        "member_equivalent_DC_limit": [{k: v for k, v in e.items() if k != "worst_DC"} | {"worst_member_DC": (e["worst_DC"][0] if e["worst_DC"] else None)}
+                                       for e in member_equivalence(runs, member_table)],
         "caveats": ["LTB/local buckling of beams outside the fibre model", "collector axial not in rigid-diaphragm model",
                     "connections not modelled", "composite action ignored"] + (["phi_s provisional for some classes used"] if phi_s_provisional(runs) else []),
     }
