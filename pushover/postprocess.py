@@ -1,8 +1,21 @@
 """postprocess.py -- turn a recorded pushover into ASCE 41 NSP quantities, FEMA P-695 factors and
 component acceptance ratios. Pure numpy; no OpenSees here.
 
-Clause numbers quoted are ASCE 41-17 (7.4.3.x, Eq. 7-27..7-32, Tables 7-4/7-5) -- the Grok Bot must
-confirm the ASCE 41-23 numbering through Query file manager before they appear in a stamped report.
+Clause and equation numbers are ASCE 41-23:
+  7.4.3.2.5 idealised force-displacement curve (Figure 7-3)       7.4.3.2.6 Te, Eq. (7-28)
+  7.4.3.3.1 acceptance at the control-node displacement >= delta_t 7.4.3.3.2 delta_t, Eq. (7-29)
+  C1 Eq. (7-30), C2 Eq. (7-31), mu_strength Eq. (7-32), mu_max Eq. (7-33), alpha_e Eq. (7-34)
+  Table 7-4 Cm, Table 7-5 C0 (here C0 = Gamma_1 * phi_roof, the first option of 7.4.3.3.2).
+
+What is evaluated where (NL-09):
+  * delta_t is iterated with the idealisation it depends on; the idealisation runs to
+    Delta_d = min(delta_t, displacement at V_max) -- always a point ON the recorded curve.
+  * component acceptance, storey drifts and the mechanism census are read at the first recorded step whose
+    roof displacement equals or exceeds delta_t (7.4.3.3.1). When the push never got there (collapse,
+    non-convergence, drift cap) the level is reported as TARGET NOT REACHED: no D/C, no drift and
+    `acceptable = False` -- never the last converged point presented as if it were delta_t.
+  * a level with no monitored component (or no monitored beam/column in a frame that has moment-frame
+    members) is NOT EVALUATED: worst D/C None, never 0.00 (NL-01).
 """
 from __future__ import annotations
 import math
@@ -10,6 +23,11 @@ import numpy as np
 _trap = getattr(np, 'trapezoid', None) or getattr(np, 'trapz')
 
 G_IN = 386.4
+
+# acceptance status strings (pushover_package.json acceptance[level]["status"])
+EVALUATED = "evaluated"
+NOT_EVALUATED = "not_evaluated"
+TARGET_NOT_REACHED = "target_not_reached"
 
 
 # --------------------------------------------------------------------------- spectra
@@ -25,33 +43,51 @@ def spectrum_sa(T, SXS, SX1):
 
 # --------------------------------------------------------------------------- idealisation
 def idealize(u, V, u_target):
-    """ASCE 41 7.4.3.2.4 bilinear idealisation of the capacity curve up to u_target:
-    first segment through the point at 0.6*Vy, second segment through (u_target, V(u_target)),
-    Vy iterated so the areas under the actual and idealised curves balance."""
-    u = np.asarray(u); V = np.asarray(V)
-    ud = min(u_target, u[-1])
-    Vd = float(np.interp(ud, u, V))
+    """ASCE 41-23 7.4.3.2.5 / Figure 7-3 bilinear idealisation.
+
+    (Vd, Delta_d) is the point ON the curve at the target displacement or at the displacement of the maximum
+    base shear, whichever is least. The first segment is the secant through the curve at 0.6 Vy (Ke); the
+    second runs from (Delta_y, Vy) to (Vd, Delta_d); Vy is iterated until the areas under the actual and the
+    idealised curves up to Delta_d balance, and is not taken greater than the maximum base shear."""
+    u = np.asarray(u, dtype=float); V = np.asarray(V, dtype=float)
+    i_max = int(np.argmax(V)); Vmax = float(V[i_max]); u_Vmax = float(u[i_max])
+    ud = float(min(u_target, u_Vmax))
+    ud = max(ud, float(u[1]) if len(u) > 1 else ud)
+    Vd = float(np.interp(ud, u[:i_max + 1], V[:i_max + 1])) if i_max > 0 else float(V[0])
     mask = u <= ud
     uu, VV = u[mask], V[mask]
     if uu[-1] < ud:
         uu = np.append(uu, ud); VV = np.append(VV, Vd)
     A_actual = _trap(VV, uu)
-    Vy = Vd
-    for _ in range(60):
-        u06 = float(np.interp(0.6 * Vy, VV, uu)) if 0.6 * Vy <= VV.max() else uu[-1]
-        Ke = 0.6 * Vy / max(u06, 1e-9)
+
+    def u_at(Vt):                                   # displacement where the rising curve first reaches Vt
+        j = int(np.argmax(VV >= Vt)) if (VV >= Vt).any() else len(VV) - 1
+        if j == 0:
+            return float(uu[0])
+        return float(np.interp(Vt, [VV[j - 1], VV[j]], [uu[j - 1], uu[j]]))
+
+    Vy = min(Vd, Vmax)
+    elastic = False
+    for _ in range(80):
+        Ke = 0.6 * Vy / max(u_at(0.6 * Vy), 1e-9)
         uy = Vy / Ke
-        if uy >= ud:                                   # curve still elastic at ud
-            uy = ud; Vy = Vd; A_ideal = 0.5 * ud * Vd; break
+        if uy >= ud:                                   # curve still elastic at Delta_d
+            uy, Vy, elastic = ud, Vd, True
+            break
         A_ideal = 0.5 * uy * Vy + 0.5 * (Vy + Vd) * (ud - uy)
         err = (A_ideal - A_actual) / max(A_actual, 1e-9)
-        if abs(err) < 1e-4:
+        if abs(err) < 1e-5:
             break
-        Vy *= (1 - 0.5 * err)
-    u06 = float(np.interp(0.6 * Vy, VV, uu)) if 0.6 * Vy <= VV.max() else uu[-1]
-    Ke = 0.6 * Vy / max(u06, 1e-9); uy = Vy / Ke
+        Vy_new = min(Vy * (1 - 0.5 * err), Vmax)
+        if abs(Vy_new - Vy) < 1e-9 * max(Vy, 1.0):
+            break
+        Vy = Vy_new
+    Vy = min(Vy, Vmax)
+    Ke = 0.6 * Vy / max(u_at(0.6 * Vy), 1e-9) if not elastic else Vd / max(ud, 1e-9)
+    uy = min(Vy / Ke, ud)
     alpha1 = ((Vd - Vy) / max(ud - uy, 1e-9)) / Ke if ud > uy else 0.0
-    return dict(Vy=float(Vy), uy=float(uy), Ke=float(Ke), ud=float(ud), Vd=float(Vd), alpha1=float(alpha1))
+    return dict(Vy=float(Vy), uy=float(uy), Ke=float(Ke), ud=float(ud), Vd=float(Vd), alpha1=float(alpha1),
+                Vmax=Vmax, u_at_Vmax=u_Vmax, Vy_capped_at_Vmax=bool(Vy >= Vmax - 1e-9))
 
 
 def initial_stiffness(u, V, frac=0.3):
@@ -60,10 +96,49 @@ def initial_stiffness(u, V, frac=0.3):
     return float(V[i] / u[i]) if u[i] > 0 else float("nan")
 
 
+def _alpha2(u, V, ide):
+    """Figure 7-3 third segment: from (Vd, Delta_d) to the point where the base shear degrades to 0.6 Vy.
+    Returns (alpha2, basis). If the curve never degrades to 0.6 Vy, the last recorded point is used (the
+    slope magnitude is then a lower bound); with no descending branch alpha2 = 0."""
+    u = np.asarray(u, dtype=float); V = np.asarray(V, dtype=float)
+    i_max = int(np.argmax(V))
+    Vd, ud, Ke, Vy = ide["Vd"], ide["ud"], ide["Ke"], ide["Vy"]
+    post = np.where((np.arange(len(V)) > i_max) & (V <= 0.6 * Vy))[0]
+    if len(post):
+        j = int(post[0])
+        u6 = float(np.interp(0.6 * Vy, [V[j], V[j - 1]], [u[j], u[j - 1]]))
+        return min(0.0, ((0.6 * Vy - Vd) / max(u6 - ud, 1e-9)) / Ke), "to 0.6 Vy on the descending branch"
+    if i_max < len(u) - 3 and u[-1] > ud:
+        return min(0.0, ((V[-1] - Vd) / max(u[-1] - ud, 1e-9)) / Ke), "to the last recorded point (curve did not degrade to 0.6 Vy)"
+    return 0.0, "no descending branch recorded"
+
+
+def _cm(basis, prm, n_stories, T1):
+    """ASCE 41-23 Table 7-4 effective mass factor: 1.0 for 1-2 storeys; 0.9 for steel moment, concentrically
+    or eccentrically braced frames of 3+ storeys; 1.0 ('Other', e.g. BRBF) otherwise; 1.0 if T > 1.0 s
+    (T = the fundamental period of the model, not Te)."""
+    tab = prm.get("nsp") or {}
+    if n_stories <= 2:
+        return float(tab.get("Cm_1_2_stories", 1.0)), "Table 7-4, 1-2 stories"
+    if T1 > 1.0:
+        return 1.0, "Table 7-4 note: T = %.2f s > 1.0 s" % T1
+    sysname = str(getattr(basis, "system", "") or "").upper()
+    import re
+    if re.search(r"BRB|BUCKLING[- ]RESTRAINED", sysname):
+        return float(tab.get("Cm_other_3plus_stories", 1.0)), "Table 7-4 'Other' (BRBF)"
+    if re.search(r"\b(SMF|IMF|OMF)\b|MOMENT", sysname):
+        return float(tab.get("Cm_steel_MF_3plus_stories", 0.9)), "Table 7-4 steel moment frame"
+    if re.search(r"\bEBF\b|ECCENTRIC", sysname):
+        return float(tab.get("Cm_steel_EBF_3plus_stories", 0.9)), "Table 7-4 steel eccentrically braced frame"
+    if re.search(r"\b(SCBF|OCBF|CBF)\b|CONCENTRIC", sysname):
+        return float(tab.get("Cm_steel_CBF_3plus_stories", 0.9)), "Table 7-4 steel concentrically braced frame"
+    return float(tab.get("Cm_other_3plus_stories", 1.0)), "Table 7-4 'Other' (system %r not recognised)" % sysname[:40]
+
+
 # --------------------------------------------------------------------------- NSP target displacement
 def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
-    """ASCE 41 Eq. 7-28 target displacement for one hazard level (hazard_factor 1.0 = BSE-1N, 1.5 = BSE-2N).
-    Iterates because the idealisation depends on the target it produces."""
+    """ASCE 41-23 Eq. (7-29) target displacement for one hazard level (hazard_factor 1.0 = BSE-1N, 1.5 = BSE-2N).
+    Iterates because the idealisation (to Delta_d = min(delta_t, u at Vmax)) depends on the target it produces."""
     u, V = run["rec"]["u"], run["rec"]["V"]
     W = basis.W_kip or sum(m * G_IN for m in run["pattern"]["masses"].values())
     SXS, SX1 = basis.SDS * hazard_factor, basis.SD1 * hazard_factor
@@ -72,47 +147,49 @@ def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
     phi, mk = run["pattern"]["phi"], run["pattern"]["masses"]
     C0 = sum(mk[k] * phi[k] for k in phi) / sum(mk[k] * phi[k] ** 2 for k in phi) * 1.0     # Gamma1 * phi_roof (=1)
     nst = len(phi)
-    Cm_tab = prm["nsp"]
-    Cm = Cm_tab["Cm_1_2_stories"] if nst <= 2 else Cm_tab["Cm_steel_MF_3plus_stories"]
-    a_site = Cm_tab["C1_site_factor_a"].get(site_class.upper(), 60)
-    ud = max(u) * 0.5
+    Cm, Cm_basis = _cm(basis, prm, nst, T1)
+    a_site = prm["nsp"]["C1_site_factor_a"].get(site_class.upper(), 60)
+    u_end = float(max(u))
+    dt_guess = 0.5 * u_end
     out = None
-    for it in range(25):
-        ide = idealize(u, V, ud)
-        Te = T1 * math.sqrt(Ki / ide["Ke"]) if ide["Ke"] > 0 else T1          # Eq. 7-27
+    for it in range(40):
+        ide = idealize(u, V, dt_guess)
+        Te = T1 * math.sqrt(Ki / ide["Ke"]) if ide["Ke"] > 0 else T1          # Eq. (7-28)
         Sa = spectrum_sa(Te, SXS, SX1)
-        Cm_eff = 1.0 if Te > 1.0 else Cm
-        mu_str = Sa * Cm_eff / (ide["Vy"] / W)                                  # Eq. 7-31
-        Te_c = max(Te, 0.2)
-        C1 = 1.0 if Te > 1.0 else 1.0 + (mu_str - 1.0) / (a_site * Te_c ** 2)   # Eq. 7-29
-        C2 = 1.0 if Te > 0.7 else 1.0 + (1.0 / 800.0) * ((mu_str - 1.0) / Te_c) ** 2   # Eq. 7-30
-        dt = C0 * C1 * C2 * Sa * (Te ** 2 / (4 * math.pi ** 2)) * G_IN         # Eq. 7-28 (in)
-        new_ud = min(dt, u[-1])
+        mu_str = Sa * Cm / (ide["Vy"] / W)                                      # Eq. (7-32)
+        C1 = 1.0 if Te > 1.0 else 1.0 + (mu_str - 1.0) / (a_site * max(Te, 0.2) ** 2)   # Eq. (7-30); T < 0.2 s -> value at 0.2 s
+        C2 = 1.0 if Te > 0.7 else 1.0 + (1.0 / 800.0) * ((mu_str - 1.0) / Te) ** 2      # Eq. (7-31)
+        dt = C0 * C1 * C2 * Sa * (Te ** 2 / (4 * math.pi ** 2)) * G_IN         # Eq. (7-29) (in)
         out = dict(hazard_factor=hazard_factor, SXS=SXS, SX1=SX1, Te=Te, Ki=Ki, Ke=ide["Ke"], Vy=ide["Vy"], uy=ide["uy"],
-                   alpha1=ide["alpha1"], Sa=Sa, C0=C0, C1=C1, C2=C2, Cm=Cm_eff, mu_strength=mu_str,
-                   target_disp_in=dt, target_over_H=dt / run["H"], reached_150pct=(u[-1] >= 1.5 * dt),
-                   reached_target=(u[-1] >= dt), W_kip=W, iterations=it + 1)
-        if abs(new_ud - ud) < 1e-3 * max(ud, 1.0):
+                   alpha1=ide["alpha1"], Delta_d=ide["ud"], V_d=ide["Vd"], Vy_capped_at_Vmax=ide["Vy_capped_at_Vmax"],
+                   Sa=Sa, C0=C0, C1=C1, C2=C2, Cm=Cm, Cm_basis=Cm_basis, mu_strength=mu_str,
+                   target_disp_in=dt, target_over_H=dt / run["H"], reached_150pct=(u_end >= 1.5 * dt),
+                   reached_target=(u_end >= dt), u_end_in=u_end, W_kip=W, iterations=it + 1)
+        if abs(dt - dt_guess) < 1e-4 * max(dt, 1.0):
             break
-        ud = new_ud
-    # Eq. 7-32 maximum strength ratio (NSP applicability). alpha2 from the post-peak slope if captured,
-    # alpha_PDelta approximated by the first-story stability coefficient from the elastic range.
-    Vmax_i = int(np.argmax(V))
-    alpha2 = 0.0
-    if Vmax_i < len(u) - 3:
-        slope = (V[-1] - V[Vmax_i]) / max(u[-1] - u[Vmax_i], 1e-9)
-        alpha2 = min(0.0, slope / out["Ke"])
+        dt_guess = dt
+    ide = idealize(u, V, out["target_disp_in"])
+    # Eq. (7-33) maximum strength ratio (NSP applicability, 7.3.2.1) with alpha_e from Eq. (7-34).
+    alpha2, a2_basis = _alpha2(u, V, ide)
     QG = sum(run["gravity_table_QG"]) if run.get("gravity_table_QG") else W
-    i_el = max(1, int(np.argmax(np.asarray(V) >= 0.3 * max(V))))
+    Varr = np.asarray(V)
+    i_el = max(1, int(np.argmax(Varr >= 0.3 * max(V))))
     story1 = run["rec"]["story_u"][i_el][0]
     theta1 = QG * story1 / (V[i_el] * run["heights"][0]) if V[i_el] > 0 else 0.0
-    alpha_pd = -theta1
-    lam = 0.8 if SX1 >= 0.6 else 0.2
+    alpha_pd = -theta1                               # P-Delta slope ratio ~ -theta (first-storey stability coefficient)
+    hl = (prm.get("nsp") or {}).get("hazard_levels") or {}
+    SX1_bse2n = basis.SD1 * float(hl.get("BSE-2N", 1.5))
+    lam = 0.8 if SX1_bse2n >= 0.6 else 0.2           # near-field factor on S_X1 for BSE-2N (Eq. 7-34)
     alpha_e = alpha_pd + lam * (alpha2 - alpha_pd)
     h = 1.0 + 0.15 * math.log(max(out["Te"], 0.05))
-    mu_max = (out["target_disp_in"] / max(out["uy"], 1e-9)) + (abs(alpha_e) ** (-h)) / 4.0 if alpha_e != 0 else float("inf")
-    out.update(alpha2=alpha2, alpha_PDelta=alpha_pd, alpha_e=alpha_e, lambda_nf=lam, mu_max=mu_max,
-               nsp_permitted=(out["mu_strength"] <= mu_max), theta_story1_elastic=theta1)
+    mu_max = (ide["ud"] / max(ide["uy"], 1e-9)) + (abs(alpha_e) ** (-h)) / 4.0 if alpha_e != 0 else float("inf")
+    permitted = out["mu_strength"] < mu_max
+    out.update(alpha2=alpha2, alpha2_basis=a2_basis, alpha_PDelta=alpha_pd, alpha_e=alpha_e, lambda_nf=lam,
+               SX1_BSE2N=SX1_bse2n, mu_max=mu_max, nsp_permitted=permitted, theta_story1_elastic=theta1,
+               nsp_ok=bool(permitted and out["reached_target"]),
+               target_status=("reached" if out["reached_target"] else
+                              "TARGET NOT REACHED: the push ended at %.2f in < delta_t %.2f in (collapse / non-convergence / drift cap) "
+                              "-- NOT ACCEPTABLE (ASCE 41-23 7.4.3.3.1)" % (u_end, out["target_disp_in"])))
     return out
 
 
@@ -139,17 +216,17 @@ def p695_factors(run, basis, nsp_bse1):
 
 # --------------------------------------------------------------------------- component acceptance
 def step_at(run, disp):
-    u = np.asarray(run["rec"]["u"])
-    return int(min(np.searchsorted(u, disp), len(u) - 1))
+    """First recorded step whose roof displacement equals or exceeds `disp` (ASCE 41-23 7.4.3.3.1), or None
+    when the push never reached it. (The old version clamped to the last step, NL-09.)"""
+    u = np.asarray(run["rec"]["u"], dtype=float)
+    hit = np.where(u >= disp - 1e-9)[0]
+    return int(hit[0]) if len(hit) else None
 
 
-def acceptance(run, hinges, disp, level_name):
-    """Per-hinge plastic rotation at roof displacement `disp`, D/C against IO/LS/CP, grouped by
-    (kind, section, level z). Also the yielded-hinge census that shows the mechanism."""
-    i = step_at(run, disp)
+def _census_drifts(run, hinges, i):
+    """Groups, census, drifts and column axial at recorded step i."""
     pl = run["rec"]["hinge_pl"][i]
-    rows, groups = [], {}
-    census = {}
+    groups, census = {}, {}
     for j, t in enumerate(run["hinge_tags"]):
         h = hinges[t]; s = h["spec"]
         th = abs(pl[j])
@@ -161,7 +238,8 @@ def acceptance(run, hinges, disp, level_name):
         yielded = (th > 0.5 * s.theta_y) if h["kind"] != "brace" else (th > (s.dc if pl[j] < 0 else s.dT))
         key = (h["kind"], h["section"], round(h["z"]))
         g = groups.setdefault(key, dict(kind=h["kind"], section=h["section"], z_in=round(h["z"]), n=0, n_yielded=0,
-                                          theta_pl_max=0.0, IO=s.IO, LS=s.LS, CP=s.CP, DC_IO=0.0, DC_LS=0.0, DC_CP=0.0))
+                                          theta_pl_max=0.0, IO=s.IO, LS=s.LS, CP=s.CP, DC_IO=0.0, DC_LS=0.0, DC_CP=0.0,
+                                          monitor=h.get("form") or ("axial" if h["kind"] == "brace" else "zeroLength")))
         g["n"] += 1; g["n_yielded"] += int(yielded)
         if th > g["theta_pl_max"]:
             g.update(theta_pl_max=th, DC_IO=dc["IO"], DC_LS=dc["LS"], DC_CP=dc["CP"])
@@ -176,13 +254,81 @@ def acceptance(run, hinges, disp, level_name):
         else:
             c["col_hinges"] += 1; c["col_yielded"] += int(yielded)
     table = sorted(groups.values(), key=lambda g: (g["kind"], g["z_in"]))
-    worst = {k: max((g["DC_" + k] for g in table), default=0.0) for k in ("IO", "LS", "CP")}
+    worst = {k: max((g["DC_" + k] for g in table if g["DC_" + k] == g["DC_" + k]), default=None) for k in ("IO", "LS", "CP")}
     story_u = run["rec"]["story_u"][i]
-    drifts = []
-    prev = 0.0
+    drifts, prev = [], 0.0
     for k, (uk, hk) in enumerate(zip(story_u, run["heights"])):
         drifts.append(dict(story=k + 1, drift_ratio=(uk - prev) / hk)); prev = uk
     colN = run["rec"]["col_N"][i] if run["rec"].get("col_N") else []
-    return dict(level=level_name, roof_disp_in=float(run["rec"]["u"][i]), step=i, groups=table, worst_DC=worst,
-                census=sorted(census.values(), key=lambda c: c["z_in"]), story_drifts=drifts,
-                max_story_drift=max(d["drift_ratio"] for d in drifts), col_N_max_kip=float(max(colN)) if colN else None)
+    return table, worst, sorted(census.values(), key=lambda c: c["z_in"]), drifts, (float(max(colN)) if colN else None)
+
+
+def acceptance(run, hinges, disp, level_name):
+    """Per-hinge plastic rotation at the first recorded roof displacement >= `disp` (delta_t), D/C against
+    IO/LS/CP, grouped by (kind, section, level z); the yielded-hinge census that shows the mechanism; the
+    storey drifts. ASCE 41-23 7.4.3.3.1: element deformations at the control-node displacement equalling or
+    exceeding delta_t shall satisfy 7.5.3.
+
+    `status`: "evaluated" | "not_evaluated" (no monitored component, or no monitored beam/column although the
+    frame has moment-frame members: worst_DC None, NEVER 0.00) | "target_not_reached" (the push never got to
+    delta_t: worst_DC None, drifts None, acceptable False). `acceptable` is None unless evaluated or the target
+    was not reached (False); the performance level a Risk Category needs is applied by the consumer.
+    `at_last_converged` (diagnostic only, when the target was not reached) carries the numbers at the last
+    converged step, labelled as such."""
+    kinds = {}
+    for t in run["hinge_tags"]:
+        kinds[hinges[t]["kind"]] = kinds.get(hinges[t]["kind"], 0) + 1
+    n_bc = kinds.get("beam", 0) + kinds.get("col", 0)
+    n_mf = run.get("n_moment_frame_members", 0) or 0
+    monitored = dict(beam=kinds.get("beam", 0), col=kinds.get("col", 0), brace=kinds.get("brace", 0),
+                     other=sum(v for k, v in kinds.items() if k not in ("beam", "col", "brace")))
+    base = dict(level=level_name, target_disp_in=float(disp), monitored=monitored, n_moment_frame_members=n_mf)
+    i = step_at(run, disp)
+    if i is None:
+        j = len(run["rec"]["u"]) - 1
+        table, worst, census, drifts, colN = _census_drifts(run, hinges, j)
+        return dict(base, status=TARGET_NOT_REACHED, evaluated=False, acceptable=False,
+                    note="TARGET NOT REACHED: the push ended at roof u = %.2f in, short of delta_t = %.2f in "
+                         "(collapse, non-convergence or drift cap) -- NOT ACCEPTABLE; component acceptance and drift at "
+                         "delta_t NOT EVALUATED (ASCE 41-23 7.4.3.3.1)." % (float(run["rec"]["u"][j]), disp),
+                    roof_disp_in=None, step=None, groups=[], worst_DC=dict(IO=None, LS=None, CP=None), census=[],
+                    story_drifts=[], max_story_drift=None, col_N_max_kip=None,
+                    at_last_converged=dict(roof_disp_in=float(run["rec"]["u"][j]), step=j, worst_DC=worst,
+                                           max_story_drift=max(d["drift_ratio"] for d in drifts) if drifts else None,
+                                           note="diagnostic only -- NOT the target displacement"))
+    table, worst, census, drifts, colN = _census_drifts(run, hinges, i)
+    out = dict(base, roof_disp_in=float(run["rec"]["u"][i]), step=i, groups=table, worst_DC=worst, census=census,
+               story_drifts=drifts, max_story_drift=max(d["drift_ratio"] for d in drifts), col_N_max_kip=colN)
+    if not table:
+        why = "no monitored component"
+    elif n_mf > 0 and n_bc == 0:
+        why = ("the frame has %d moment-frame beams but no beam or column hinge was monitored "
+               "(only %s)" % (n_mf, ", ".join("%d %s" % (v, k) for k, v in kinds.items())))
+    else:
+        why = None
+    if why:
+        out.update(status=NOT_EVALUATED, evaluated=False, acceptable=None, worst_DC=dict(IO=None, LS=None, CP=None),
+                   note="BPON NOT EVALUATED: %s -- no component acceptance can be claimed (ASCE 41-23 7.5.3)." % why)
+        return out
+    out.update(status=EVALUATED, evaluated=True, acceptable=None,
+               note="%d monitored components (%s) at roof u = %.2f in >= delta_t %.2f in"
+                    % (sum(kinds.values()), ", ".join("%d %s" % (v, k) for k, v in sorted(kinds.items())), out["roof_disp_in"], disp))
+    return out
+
+
+def level_verdict(acc, perf):
+    """True / False / None for one acceptance block against performance level `perf` ("IO"|"LS"|"CP"):
+    False when the target was not reached, None when not evaluated, else worst D/C <= 1.0."""
+    if not acc:
+        return None
+    st = acc.get("status")
+    if st == TARGET_NOT_REACHED:
+        return False
+    if st == NOT_EVALUATED:
+        return None
+    v = (acc.get("worst_DC") or {}).get(perf)
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return None
+    if st is None and not acc.get("groups"):          # package written before the status field: empty = not evaluated
+        return None
+    return bool(v <= 1.0)

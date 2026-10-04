@@ -63,7 +63,7 @@ Keep working while it runs. Do not fill any parameter from memory in the meantim
 - Is the NSP permitted? (μ<sub>strength</sub> ≤ μ<sub>max</sub>; higher modes not significant — if the linear package's MRSA shows story shears > 130% of the first-mode shears, say the NSP must be supplemented by an LDP.) If not permitted, say the building needs a nonlinear response-history analysis (ASCE 7-22 Ch. 16 / ASCE 41 NDP) and stop short of any acceptance claim.
 - Was the curve pushed to at least 1.5 δ<sub>t</sub> at BSE-2N? If not, rerun with a larger `--max-drift`.
 - Mechanism: beam hinging at every level with column hinges only at the base = strong-column behaviour consistent with the AISC 341 SCWB check in Chapter 9 of `report.html`. Column hinges above the base = story mechanism → flag against Chapter 9 and the drift results.
-- Component acceptance: LS at BSE-1N, CP at BSE-2N (BPON). Report the governing hinge group and its D/C. Force-controlled columns: report P/P<sub>ye</sub> and the Eq. 7-38-type check; the tool only reports P.
+- Component acceptance: LS at BSE-1N, CP at BSE-2N (BPON). Report the governing hinge group and its D/C. Read `acceptance[level].status` first: `evaluated` (the D/C is real; `monitored` lists how many beam / column / brace hinges were checked), `not_evaluated` (no beam/column monitored in a moment frame — no pass may be claimed), `target_not_reached` (the push never got to δ<sub>t</sub> — NOT ACCEPTABLE per ASCE 41-23 7.4.3.3.1; `at_last_converged` is diagnostic only). Force-controlled columns: report P/P<sub>ye</sub> and the Eq. 7-38-type check; the tool only reports P.
 - Overstrength Ω = V<sub>max</sub>/V vs Ω<sub>0</sub>; μ<sub>T</sub> vs the R/C<sub>d</sub> the package used. A very high Ω means the sections are drift-governed and Ω<sub>0</sub>Q<sub>E</sub> is not an upper bound for capacity-designed elements — say so.
 - Drift at δ<sub>t</sub> (roof and story) vs the C<sub>d</sub>-amplified design drift in Chapter 8.
 
@@ -71,10 +71,10 @@ Keep working while it runs. Do not fill any parameter from memory in the meantim
 
 | `tail.status` | Meaning | What you do |
 |---|---|---|
-| `captured` / `not_needed` | curve fell to 0.8 V<sub>max</sub> | nothing — δ<sub>u</sub>, μ<sub>T</sub>, α<sub>2</sub> are valid |
+| `captured` | curve fell to 0.8 V<sub>max</sub> (main push or escalation) | nothing — δ<sub>u</sub>, μ<sub>T</sub>, α<sub>2</sub> are valid (`not_needed` in packages written before NL-22 meant the push stopped ABOVE 0.8 V<sub>max</sub>: read it as `lower_bound`) |
 | `component_limit` | hinges reached rotation *b* (loss of gravity capacity) before 20% strength loss | nothing — this is the non-simulated collapse point; δ<sub>u</sub> is taken there per FEMA P-695. Say so in the narrative: the curve ends by component failure, not by global softening |
 | `max_drift` | drift cap reached before 20% loss | rerun with a larger `--max-drift` (no consent needed; no modelling change) |
-| `lower_bound` | rung 1 (`fine_step`: dU/100, relaxed tolerance) and rung 2 (`arclength`) both failed | **stop and ask the user** before rung 3 |
+| `lower_bound` | rung 1 (`fine_step`: dU/100, relaxed tolerance) and rung 2 (`arclength`) both failed, or escalation was disabled (`--tail none`) | **stop and ask the user** before rung 3 |
 
 Rung 3 is a **modelling change**: `--post-cap-ratio 0.5` makes each hinge descend from M<sub>c</sub> to its residual over 50% of *a* instead of the near-vertical ASCE 41 drop. Put the choice to the user in one message: what is affected (δ<sub>u</sub>, μ<sub>T</sub>, α<sub>2</sub>), what is not (δ<sub>t</sub>, acceptance below capping), that the report will disclose the override, and that the alternative is to report μ<sub>T</sub> as a lower bound. Do not run rung 3 without a yes. If rung 3 also fails, report the lower bound and list "descending branch not captured" as an open item — never smooth the curve by hand.
 
