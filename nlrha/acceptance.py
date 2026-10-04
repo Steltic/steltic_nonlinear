@@ -349,30 +349,47 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
     resid = np.array([r["residual_drift"] for r in resid_ok_runs]); mean_resid = suite_stat(resid) if len(resid_ok_runs) else None
     tall240 = hn / 12.0 > ch16["residual_drift"]["height_ft"]
     # ---- deformation-controlled elements (16.4.2.2): mean peak deformation by group vs CP and vs b
+    # Each element is checked against ITS OWN limits: the members of one (kind, section, level) group can carry
+    # different CP / b (columns: Table C3.6 a, b vary with P_G/P_ye; beams: span, Lb, RBS cut), so the element
+    # with the largest mean deformation is not necessarily the governing one. The row shows the governing
+    # element's demand and limits; Qu_*_max is the largest mean deformation in the group.
     groups = {}
+    nan = float("nan")
     for r in acc_runs:
         for t, v in r["peak_def"].items():
             meta = r["hinges_meta"][t]; s = r["specs"][t]
             key = (meta["kind"], meta["section"], round(meta["z"]))
-            g = groups.setdefault(key, dict(kind=meta["kind"], section=meta["section"], z_in=round(meta["z"]), n=0, peaks=[], comp=[], tens=[],
-                                            CP=s.CP, b=s.b_pl, CP_t=getattr(s, "CP_t", None), b_t=getattr(s, "b_t", None)))
+            g = groups.setdefault(key, dict(kind=meta["kind"], section=meta["section"], z_in=round(meta["z"]), n=0, peaks=[], comp=[], tens=[], lims=[]))
             g["peaks"].append(v)
+            g["lims"].append([s.CP, s.b_pl] + [(x if x is not None else nan) for x in (getattr(s, "CP_t", None), getattr(s, "b_t", None))])
             if meta["kind"] == "brace":
                 p, n = r["signed_def"][t]; g["comp"].append(-n); g["tens"].append(p)
+
+    def _ratio(q, lim):
+        return np.where(lim > 0, q / np.where(lim > 0, lim, 1.0), 0.0)
     rows = []
     for g in groups.values():
-        peaks = np.array(g["peaks"]).reshape(len(acc_runs), -1) if len(acc_runs) else np.zeros((0, 1))
-        worst_elem_mean = float(suite_stat(peaks).max()) if peaks.size else 0.0      # per element suite statistic (16.4: mean, or 120% median), then max over elements
+        nr = len(acc_runs)
+        peaks = np.array(g["peaks"]).reshape(nr, -1)
+        lims = np.array(g["lims"], dtype=float).reshape(nr, -1, 4)[0]          # per element: CP, b, CP_t, b_t
+        CP, b, CP_t, b_t = lims[:, 0], lims[:, 1], lims[:, 2], lims[:, 3]
         if g["kind"] == "brace":
-            comp = np.array(g["comp"]).reshape(len(acc_runs), -1); tens = np.array(g["tens"]).reshape(len(acc_runs), -1)
-            qc = float(suite_stat(comp).max()); qt = float(suite_stat(tens).max())
-            rows.append(dict(kind="brace", section=g["section"], z_in=g["z_in"], n=peaks.shape[1], Qu_comp_in=qc, Qu_tens_in=qt,
-                             CP_comp=g["CP"], CP_tens=g["CP_t"], b_comp=g["b"], b_tens=g["b_t"],
-                             DC_CP=max(qc / g["CP"], qt / g["CP_t"]), DC_valid=max(qc / g["b"], qt / g["b_t"])))
+            comp = suite_stat(np.array(g["comp"]).reshape(nr, -1)); tens = suite_stat(np.array(g["tens"]).reshape(nr, -1))
+            dcp_c, dcp_t = _ratio(comp, CP), _ratio(tens, CP_t)
+            dcv_c, dcv_t = _ratio(comp, b), _ratio(tens, b_t)
+            jc, jt = int(np.argmax(dcp_c)), int(np.argmax(dcp_t))
+            rows.append(dict(kind="brace", section=g["section"], z_in=g["z_in"], n=peaks.shape[1],
+                             Qu_comp_in=float(comp[jc]), Qu_tens_in=float(tens[jt]),
+                             Qu_comp_in_max=float(comp.max()), Qu_tens_in_max=float(tens.max()),
+                             CP_comp=float(CP[jc]), CP_tens=float(CP_t[jt]), b_comp=float(b[jc]), b_tens=float(b_t[jt]),
+                             DC_CP=float(max(dcp_c.max(), dcp_t.max())), DC_valid=float(max(dcv_c.max(), dcv_t.max()))))
         else:
-            rows.append(dict(kind=g["kind"], section=g["section"], z_in=g["z_in"], n=peaks.shape[1], Qu_rad=worst_elem_mean,
-                             CP=g["CP"], b=g["b"], DC_CP=worst_elem_mean / g["CP"] if g["CP"] > 0 else 0.0,
-                             DC_valid=worst_elem_mean / g["b"] if g["b"] > 0 else 0.0))
+            means = suite_stat(peaks)                   # per element suite statistic (16.4: mean, or 120% median)
+            dcp, dcv = _ratio(means, CP), _ratio(means, b)
+            j = int(np.argmax(dcp))
+            rows.append(dict(kind=g["kind"], section=g["section"], z_in=g["z_in"], n=peaks.shape[1], Qu_rad=float(means[j]),
+                             Qu_rad_max=float(means.max()), CP=float(CP[j]), b=float(b[j]),
+                             DC_CP=float(dcp.max()), DC_valid=float(dcv.max())))
     rows.sort(key=lambda r: (r["kind"], r["z_in"]))
     # ---- force-controlled columns (16.4.2.1) with concurrent flexure (NL-18)
     fc = ch16["force_controlled"]

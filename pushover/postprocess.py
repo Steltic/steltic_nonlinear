@@ -248,8 +248,18 @@ def _census_drifts(run, hinges, i):
                                           monitor=mon, brb=brb,
                                           units=("in" if h["kind"] in ("brace", "link") else "rad")))
         g["n"] += 1; g["n_yielded"] += int(yielded)
+        # Group D/C = the largest D/C of its members, each against ITS OWN limits. The members of one
+        # (kind, section, level) group can carry different limits (columns: Table C3.6 a/b vary with P_G/P_ye;
+        # beams: span / Lb / RBS cut; braces: tension vs compression), so the member with the largest
+        # deformation is not necessarily the governing one. The limits shown are those of the member that
+        # governs CP (theta_at_governing is its deformation); theta_pl_max stays the largest deformation.
         if th > g["theta_pl_max"]:
-            g.update(theta_pl_max=th, DC_IO=dc["IO"], DC_LS=dc["LS"], DC_CP=dc["CP"])
+            g["theta_pl_max"] = th
+        for k in ("IO", "LS", "CP"):
+            if dc[k] == dc[k] and dc[k] > g["DC_" + k]:
+                g["DC_" + k] = dc[k]
+                if k == "CP":
+                    g.update(IO=lim["IO"], LS=lim["LS"], CP=lim["CP"], theta_at_governing=th)
         c = census.setdefault(round(h["z"]), dict(z_in=round(h["z"]), beam_hinges=0, beam_yielded=0, col_hinges=0, col_yielded=0,
                                                  brace_elements=0, brace_buckled=0, brace_yielded_T=0,
                                                  brb_elements=0, brb_yielded_C=0, brb_yielded_T=0, link_hinges=0, link_yielded=0))
