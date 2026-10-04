@@ -35,7 +35,15 @@ def test_ex18_ingest_and_gate():
     s = ingest.summary(nm)
     assert s["members"] == {"col": 240, "brace": 64, "beam": 392}
     cases = loads.steltic_combos(nm.cfg)
-    assert len(cases) == 35
+    # The count depends on the HR engine version (its combination set grew with the ASCE 7-22 fixes:
+    # opposite-sign 100/30 pairs, wind-companion and roof-uplift cases), so check the structure instead.
+    labels = [c[0] for c in cases]
+    assert "1.4D" in labels and any(l.startswith("1.2D+1.6L") for l in labels)
+    assert any("rhoEX" in l for l in labels) and any("rhoEY" in l for l in labels)
+    assert any("W" in l and l.startswith("0.9D") for l in labels)          # wind uplift / overturning
+    kept = loads.prune(cases)
+    assert 0 < len(kept) <= len(cases)
+    assert not any(c[5] for c in kept)                                       # Om0 column-only cases pruned by default
     latx = [c for c in cases if "EX+t+" in c[0] and c[1] > 1.0][0][4]
     laty = [c for c in cases if "EY+t+" in c[0] and c[1] > 1.0][0][4]
     g = transfer_gate.run(nm, nm.cfg, latx, laty)
