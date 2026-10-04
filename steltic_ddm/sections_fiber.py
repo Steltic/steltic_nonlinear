@@ -151,6 +151,29 @@ class FiberSectionBuilder:
         self._mat_cache[key] = tag
         return tag
 
+    def _mat_spec(self, spec):
+        """Explicit fibre material (NL-10 physical-theory brace): spec = dict(kind="Steel02", Fy, b, R0, fatigue=(eps0, m)).
+        Steel02 (Menegotto-Pinto, cR1 0.925, cR2 0.15) wrapped in a Fatigue material (Coffin-Manson, rainflow counting:
+        the fibre loses its strength when the damage reaches 1 -- Uriz & Mahin 2008)."""
+        fat = tuple(spec.get("fatigue") or ())
+        key = ("spec", spec.get("kind", "Steel02"), round(float(spec["Fy"]), 4), float(spec.get("b", 0.003)),
+               float(spec.get("R0", 20.0)), fat)
+        if key in self._mat_cache:
+            return self._mat_cache[key]
+        tag = self.next_mat; self.next_mat += 1
+        if self.elastic:
+            self.ops.uniaxialMaterial("Elastic", tag, self.E)
+            self._mat_cache[key] = tag
+            return tag
+        self.ops.uniaxialMaterial("Steel02", tag, float(spec["Fy"]), self.E, float(spec.get("b", 0.003)),
+                                  float(spec.get("R0", 20.0)), 0.925, 0.15)
+        if fat:
+            wtag = self.next_mat; self.next_mat += 1
+            self.ops.uniaxialMaterial("Fatigue", wtag, tag, "-E0", float(fat[0]), "-m", float(fat[1]))
+            tag = wtag
+        self._mat_cache[key] = tag
+        return tag
+
     # ---- W-shape ---------------------------------------------------------------------------
     def w_shape(self, secTag, label, axis="y", nf_flange=(8, 2), nf_web=(12, 1), residual=None):
         """Fibre W-section. axis="y": depth along local y (Steltic column); "z": depth along local z (beam)."""
@@ -205,9 +228,10 @@ class FiberSectionBuilder:
                     Iy=2 * tf * bf ** 3 / 12 + hw * tw ** 3 / 12, d=d, bf=bf, tf=tf, tw=tw, nfib=nfib)
 
     # ---- rectangular HSS --------------------------------------------------------------------
-    def hss_rect(self, secTag, label, t_design_factor=0.93, n_per_side=8, n_thick=2, residual=None):
+    def hss_rect(self, secTag, label, t_design_factor=0.93, n_per_side=8, n_thick=2, residual=None, material=None):
         """Fibre rectangular HSS (A500: design thickness = 0.93 t_nom, AISC B4.2). Corners squared off,
-        area then scaled to the CSV gross area by adjusting the fibre areas (keeps A, ~I)."""
+        area then scaled to the CSV gross area by adjusting the fibre areas (keeps A, ~I).
+        material: optional explicit fibre material spec (see _mat_spec; residual stresses are then not applied)."""
         r = shape(label)
         dims = hss_dims(label)
         if dims is None:
@@ -223,7 +247,7 @@ class FiberSectionBuilder:
         scale = (A_csv / A_model) if A_csv else 1.0
         nfib = 0
         def fib(y, z, a, sig):
-            self.ops.fiber(y, z, a * scale, self._mat(sig))
+            self.ops.fiber(y, z, a * scale, self._mat_spec(material) if material else self._mat(sig))
         for sgn in (+1, -1):
             for i in range(n_per_side):
                 zc = -B / 2 + (i + 0.5) * B / n_per_side
