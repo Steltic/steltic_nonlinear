@@ -10,8 +10,11 @@ from __future__ import annotations
 import datetime, html, json, os, re
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-RC_BPON = {"I_II": ("LS", "CP"), "III": ("LS", "CP"), "IV": ("IO", "LS")}     # ASCE 41-23 Table 2-5 structural levels at BSE-1N / BSE-2N
-RC_BPON_NOTE = {"I_II": "Life Safety at BSE-1N, Collapse Prevention at BSE-2N", "III": "Damage Control at BSE-1N (read here as LS), Limited Safety at BSE-2N (read here as CP)", "IV": "Immediate Occupancy at BSE-1N, Life Safety at BSE-2N"}
+from pushover import performance as _PF                                          # noqa: E402
+# ASCE 41-23 Table 2-5 structural levels at BSE-1N / BSE-2N; RC III = Damage Control / Limited Safety, the
+# intermediate levels of Table 2-1 (and Section 7.5.3.2.2) -- the same mapping the pushover report uses.
+RC_BPON = dict(_PF.RC_LEVELS)
+RC_BPON_NOTE = {k: "%s at BSE-1N, %s at BSE-2N" % (_PF.LEVEL_NAMES[a], _PF.LEVEL_NAMES[b]) for k, (a, b) in RC_BPON.items()}
 
 
 def _load_json(path, default=None):
@@ -146,12 +149,14 @@ def build(job, out_name="four_analyses.html", title=None):
     job = os.path.abspath(job)
     st = steltic_facts(job)
     po = _load_json(os.path.join(job, "pushover", "pushover_package.json"))
+    if po:
+        _PF.augment_package(po)                                  # DC / LtdS limits for packages written before them
     nl = _load_json(os.path.join(job, "nlrha", "nlrha_package.json"))
     dd = _load_json(os.path.join(job, "ddm_results.json"))
     prm = _load_json(os.path.join(job, "pushover", "hinge_params_used.json"), {})
     name = st["building"]
     basis = (po or nl or {}).get("basis", {})
-    rc = (nl or {}).get("limits", {}).get("risk_category") or ("IV" if (basis.get("Ie") or 1.0) >= 1.5 else ("III" if (basis.get("Ie") or 1.0) >= 1.25 else "I_II"))
+    rc = _PF.normalise_rc((nl or {}).get("limits", {}).get("risk_category") or (po or {}).get("risk_category") or ("IV" if (basis.get("Ie") or 1.0) >= 1.5 else ("III" if (basis.get("Ie") or 1.0) >= 1.25 else "I_II")))
     date = datetime.date.today().isoformat()
     summary = dict(building=name, date=date, risk_category=rc, basis=basis, steltic={}, pushover={}, nlrha={}, ddm={})
 

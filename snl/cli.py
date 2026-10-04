@@ -86,6 +86,7 @@ def cmd_run(a):
             plast = a.plasticity if a.plasticity else "fibre"
             nseg = a.member_nseg if a.member_nseg is not None else (4 if plast == "fibre" else 1)
             cmd += ["--plasticity", plast, "--member-nseg", str(nseg)]
+            if a.risk_category: cmd += ["--risk-category", a.risk_category]     # BPON levels, ASCE 41-23 Table 2-5
         elif s == "nlrha":
             cmd = [py, "-m", "nlrha", "run", job, "--parallel", str(a.parallel), "--dt", str(a.dt), "--integrator", a.integrator, "--n", str(a.n_records)] + site + params
             if a.records_set: cmd += ["--records-set"] + list(a.records_set)
