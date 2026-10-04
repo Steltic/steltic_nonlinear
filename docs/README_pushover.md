@@ -11,9 +11,9 @@ manager / HR Steel App / CFS Steel App / DDM Steel App (see `prompts/bootstrap_p
 one thing this code refuses to invent: the component modelling parameters and acceptance criteria,
 retrieved verbatim from ASCE/SEI 41-23 → ANSI/AISC 342-22 through Query file manager.
 
-> **Prototype. Not for construction.** `pushover/hinge_params.json` ships with `verified: false` and
-> placeholder values; every report carries a red banner until the bot has replaced them from the
-> licensed standards. All results must be independently checked and sealed by a licensed PE.
+> **Prototype. Not for construction.** `pushover/hinge_params.json` is the template: `verified: false` and every
+> value listed in its group's `unverified` list; every report carries a red banner naming the values the user has
+> not supplied and verified against the licensed standards. All results must be independently checked and sealed by a licensed PE.
 
 ```
 Steltic package (zip / folder)                      pushover/
@@ -67,19 +67,48 @@ writes **`steltic_viewer_bundle.html`** in the package root — one page with th
 first use and kept alive, so flipping is instant); modules missing from the folder are greyed out there too, and the
 module strip inside each embedded viewer switches the tab. The `⧉` chip in a standalone viewer opens the hub.
 
-## Component parameters: the two table forms
+## Component parameters: the ASCE 41-23 / AISC 342-22 schema
 
-`hinge_params.json` is read at run time (`--params my_file.json` for a project copy — keep the repository file a placeholder; the
-bot fills a per-project copy from Query file manager). Beams accept two forms: the member table (`a_over_thetay`,
-`b_over_thetay`, IO/LS/CP as multiples of θ<sub>y</sub> — AISC 342 Table C2.2 form) or, with `"mode": "fr_connection"`, the
-FR-connection table (AISC 342 Table C5.5 form): `a_expr` in `h, tw, bf, tf, Lb, ry, L, d` (e.g. the RBS X₂ expression),
-`a_max`, `b_abs`, `c_residual`, `IO_frac_of_a`, `LS_frac_of_b`, `CP_frac_of_b`, `Lb_over_ry` or `Lb_divisor`, optional
-`rbs_c_frac_bf` / `rbs_c_in` (M<sub>CE</sub> from the reduced section, AISC 358 Eq. 5.8-4) and a `modifiers` list
-(`factor`, `why`, optional `sections`) for the C5.4a.1.a.1 adjustments. Columns accept `a_expr`/`b_expr`/`c_expr` in
-`h/tw`, `L/ry`, `PG/Pye` with `a_max`/`b_max` caps, `theta_y_uses_Mpce` (Eq. C3-15 with M<sub>CE</sub>) and
-`non_highly_ductile_reduction`. A `compactness` block (AISC 341 Table D1.1 form with F<sub>ye</sub>) classifies every
-section as highly / moderately ductile / other. `numerics.post_cap_ratio` (default 0.15 ≈ vertical drop) is the
-tail-protocol rung 3 — raising it is a disclosed modelling change.
+`hinge_params.json` is read at run time (`--params my_file.json` for a project copy -- keep the repository file the
+template). The user verifies every component value against the printed standard in a manual step and supplies it
+in the job copy. The schema (`"schema": "ASCE41-23/AISC342-22"`, see the file's `_README` and
+`pushover/params_schema.py`):
+
+- **Printed form accepted.** A cell may be written as the table prints it -- `"9 θy"`, `"0.25 a"`, `"a"`,
+  `"0.75 b"`, `"b"` (Tables C2.2 / C3.6), `"1.5 Δc"`, `"0.7 n Δc"`, `"n Δc"` (Table C3.4) -- or in the field form
+  (`a_over_thetay`, `IO_frac_of_a`, `LS_frac_of_a`/`_of_b`, `CP_frac_of_a`/`_of_b`, `IO_over_dc`, `LS_frac_of_n` ...).
+  Table C2.2 line 1 IO = 0.25 a = 2.25 θ<sub>y</sub> is therefore representable.
+- **Both printed lines, row chosen per section.** `beam_flexure` (`"mode": "member"`, Table C2.2) and
+  `column_flexure` (Table C3.6) carry `rows.highly_ductile` and `rows.non_moderately_ductile`. Each section is
+  classified by its own flange and web slenderness against AISC 341-22 Table D1.1b (R<sub>y</sub>F<sub>y</sub> →
+  F<sub>ye</sub>, α<sub>s</sub>P<sub>r</sub> → P<sub>G</sub>; web case 11 for moment-frame members, case 14 otherwise)
+  and line 3 is applied: linear interpolation for each element, lowest value used. There is no "moderately
+  ductile" row and the system never selects the row. Without line 2 a non-highly-ductile section gets the flat
+  `noncompact_reduction` / `non_highly_ductile_reduction` -- flagged in the hinge and reported UNVERIFIED.
+- **FR connections.** `"mode": "fr_connection"` = Table C5.5: `a_expr` in `h, tw, bf, tf, Lb, ry, L, d`, `a_max`,
+  `b_abs`, `c_residual`, `IO_frac_of_a`, `LS_frac_of_b`, `CP_frac_of_b`, `Lb_over_ry` or `Lb_divisor`, optional
+  `rbs_c_frac_bf` / `rbs_c_in` and a `modifiers` list (`factor`, `why`, optional `sections`) for C5.4a.1.a.1.
+- **Columns.** Expressions in `h/tw`, `L/ry`, `PG/Pye` (line 2 may also use `bf`, `tf`), caps `a_max`/`b_max`,
+  `Mpce_axial_reduction` = AISC 342-22 Eqs. C3-5/C3-6 `min(1 - PG/(2*Pye), 9/8*(1 - PG/Pye))`. A file that still
+  carries the superseded `1.18*(1-PG/Pye)` (Commentary Eq. C-C3-5) is corrected by the engine and flagged.
+- **Braces.** `brace_axial` `"mode": "table_C3_4"` = Table C3.4 buckling braces: `compression` / `tension` with
+  `n_expr` in `lam_ratio` (λ/λ<sub>hd</sub>) and `slend` ((L<sub>c</sub>/r)/√(E/F<sub>ye</sub>)), `f`, `IO`, `LS`, `CP`
+  (printed), `tension_only` (note [d]). The old stocky/slender ASCE 41-17 form is still read but always reported
+  UNVERIFIED. Buckling-restrained braces (Table C3.3) are not modelled.
+- **Provenance.** Each group has a `source` and an `unverified` list (the template lists every field). A value
+  the user did not supply -- template, MOCK, or a field Collect wrote without a quote -- is listed in the report's
+  red banner by name, and the run's effective `verified` is false whatever the file claims.
+
+`numerics.post_cap_ratio` (default 0.15 ≈ vertical drop) is the tail-protocol rung 3 -- raising it is a disclosed
+modelling change.
+
+## BPON performance levels
+
+`--risk-category` (or cfg.py / I<sub>e</sub>) selects the ASCE 41-23 Table 2-5 levels: RC I/II LS at BSE-1N and CP at
+BSE-2N; RC III Damage Control / Limited Safety; RC IV IO / LS. Damage Control is half-way IO-LS (Table 2-1) but not
+above the `a` point (Section 7.5.3.2.2); Limited Safety is the average of LS and CP. The report, the package
+(`risk_category`, `bpon_levels`, per-group `DC`/`LtdS` limits and D/C) and the four-analyses sheet use the same
+mapping (`pushover/performance.py`).
 
 ## Panel zones (opt-in)
 
@@ -129,8 +158,8 @@ pushover output · `tests/` smoke test · `docs/` the scoping report.
 
 ## Limitations of this prototype (roadmap)
 
-- Braces: phenomenological `corotTruss` + `Hysteretic` axial backbone (ASCE 41 Table 9-8 form, placeholder values,
-  K = 1 on the recorded brace length); no fracture, no cyclic degradation. EBF links, BRB cores and SPSW panels are
+- Braces: phenomenological `corotTruss` + `Hysteretic` axial backbone (AISC 342-22 Table C3.4 form, d = nΔ and f,
+  K = 1 on the recorded brace length); no fracture, no cyclic degradation. Table C3.4 notes [c] and [e] are not applied. EBF links, BRB cores and SPSW panels are
   not modelled. HSS local slenderness is not checked (no wall thickness in aisc_shapes.csv).
 - Panel zones default **rigid**; opt-in `panel_zones.mode=scissors` (joint rotational spring). Bare centreline, no composite slab, no fracture, fixed bases as in the linear model. Full 8-bar Krawinkler is not implemented.
 - Gravity spread equally over each level's column nodes (footprint from node extents); use

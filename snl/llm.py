@@ -33,6 +33,12 @@ def connection() -> dict:
     except ValueError:
         c["max_tokens"] = 16000
     c["mock"] = (not c["model"]) or c["model"].upper() == "MOCK" or not c["base_url"]
+    # why the offline path was taken: asked for (STELTIC_LLM_MODEL=MOCK) or a missing configuration. The
+    # callers must say the second one loudly -- it is not the review/transcription the user asked for.
+    c["mock_requested"] = c["model"].upper() == "MOCK"
+    c["mock_reason"] = ("" if not c["mock"] else "STELTIC_LLM_MODEL=MOCK" if c["mock_requested"] else
+                        "no model is configured (STELTIC_LLM_MODEL is empty)" if not c["model"] else
+                        "STELTIC_LLM_MODEL=%s is set but STELTIC_LLM_BASE_URL is empty" % c["model"])
     return c
 
 

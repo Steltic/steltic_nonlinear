@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from . import params_schema as _PS, performance as _PF
 
 CSS = """
 body{font-family:Georgia,'Times New Roman',serif;max-width:1050px;margin:32px auto;padding:0 20px;color:#1b1b1b;line-height:1.45}
@@ -97,10 +98,13 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
     H.append('<div class="sub">Supplement to the Steltic AISC 360/341 design package <code>%s</code> · generated %s · '
              'Pushover Analyst prototype · analysis time %.0f s</div>' % (pkg.root.name, ts, elapsed_s))
     if not prm.get("verified"):
-        H.append('<div class="banner">UNVERIFIED MODELLING PARAMETERS — hinge_params.json has verified=false. Backbone and acceptance '
-                 'values are placeholders written from memory of ASCE 41-17 Table 9-7.1; they have NOT been retrieved from a licensed '
-                 'ASCE 41-23 / AISC 342-22. Do not rely on any acceptance ratio below until the Query file manager lookup is done. '
-                 'Source note: %s</div>' % prm.get("source", ""))
+        _which = _PS.unverified_text(prm)
+        H.append('<div class="banner">UNVERIFIED MODELLING PARAMETERS — %s Values not supplied and verified by the user: %s. '
+                 'Do not rely on any acceptance ratio below until every value the model uses has been checked against the printed '
+                 'ASCE 41-23 / AISC 342-22 tables. Source note: %s</div>'
+                 % ("the parameter file claims verified=true, but some values the model used are not user-verified."
+                    if prm.get("_verified_claimed") else "the parameter file has verified=false.",
+                    _which or "the whole file (no per-field record)", prm.get("source", "")))
     H.append('<div class="note"><b>Not for construction.</b> Prototype output produced by an AI-driven tool from an automatically converted '
              'analysis model. Every result must be independently checked and sealed by a licensed professional engineer.</div>')
     if hinge_stats and hinge_stats.get("model_warnings"):      # NL-02/03/10: element-model disclosures from the builder
@@ -198,30 +202,36 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
 
         # acceptance
         H.append("<h3>Component acceptance at the target displacements</h3>")
+        _rc = prm.get("_risk_category") or "I_II"
+        H.append("<p>BPON structural performance levels — %s.</p>" % _PF.describe(_rc))
         for lvl, acc in R["acc"].items():
-            perf = "LS" if lvl == "BSE-1N" else "CP"
+            perf = _PF.level_for(_rc, lvl)                           # ASCE 41-23 Table 2-5 by Risk Category
             st = acc.get("status", "evaluated")
             if st != "evaluated":
-                H.append('<p><b>%s → δ<sub>t</sub> = %.2f in · performance level %s: <span class="ng">%s</span></b> — %s</p>'
-                         % (lvl, acc.get("target_disp_in", R["nsp"][lvl]["target_disp_in"]), perf,
+                H.append('<p><b>%s → δ<sub>t</sub> = %.2f in · performance level %s (%s): <span class="ng">%s</span></b> — %s</p>'
+                         % (lvl, acc.get("target_disp_in", R["nsp"][lvl]["target_disp_in"]), perf, _PF.LEVEL_NAMES[perf],
                             "TARGET NOT REACHED — NOT ACCEPTABLE" if st == "target_not_reached" else "NOT EVALUATED", acc.get("note", "")))
                 if acc.get("at_last_converged"):
                     lc = acc["at_last_converged"]
                     H.append('<p class="note">Diagnostic only, NOT at δ<sub>t</sub>: last converged roof u = %.2f in, worst D/C IO %s / LS %s / CP %s.</p>'
                              % (lc["roof_disp_in"], _f(lc["worst_DC"].get("IO")), _f(lc["worst_DC"].get("LS")), _f(lc["worst_DC"].get("CP"))))
                 continue
-            H.append("<p><b>%s → δ<sub>t</sub> = %.2f in (step %d) · performance level checked: %s · worst D/C: IO %.2f, LS %.2f, CP %.2f %s · "
+            if perf not in acc["worst_DC"]:
+                _PF.augment_groups(acc)
+            H.append("<p><b>%s → δ<sub>t</sub> = %.2f in (step %d) · performance level checked: %s (%s) · worst D/C: IO %s, DC %s, LS %s, LtdS %s, CP %s %s · "
                      "max story drift %.2f%% · max column axial %s kip</b> · monitored: %s</p>"
-                     % (lvl, acc["roof_disp_in"], acc["step"], perf, acc["worst_DC"]["IO"], acc["worst_DC"]["LS"], acc["worst_DC"]["CP"],
-                        _tag(acc["worst_DC"][perf] <= 1.0), 100 * acc["max_story_drift"], _f(acc["col_N_max_kip"], 0),
+                     % (lvl, acc["roof_disp_in"], acc["step"], perf, _PF.LEVEL_NAMES[perf], _f(acc["worst_DC"]["IO"]), _f(acc["worst_DC"]["DC"]),
+                        _f(acc["worst_DC"]["LS"]), _f(acc["worst_DC"]["LtdS"]), _f(acc["worst_DC"]["CP"]),
+                        _tag(acc["worst_DC"][perf] is not None and acc["worst_DC"][perf] <= 1.0), 100 * acc["max_story_drift"], _f(acc["col_N_max_kip"], 0),
                         ", ".join("%s %d" % (k, v) for k, v in (acc.get("monitored") or {}).items() if v)))
             H.append("<table><tr><th>Hinge group</th><th>Section</th><th>elev. (in)</th><th>hinges</th><th>yielded</th><th>θ<sub>pl,max</sub> (rad) · braces: |Δ|<sub>max</sub> (in)</th>"
-                     "<th>IO limit</th><th>LS limit</th><th>CP limit</th><th>D/C IO</th><th>D/C LS</th><th>D/C CP</th></tr>")
+                     "<th>IO limit</th><th>LS limit</th><th>CP limit</th><th>%s limit</th><th>D/C IO</th><th>D/C LS</th><th>D/C CP</th><th>D/C %s</th></tr>" % (perf, perf))
             for g in acc["groups"]:
                 if g["n_yielded"] == 0 and g["theta_pl_max"] < 1e-4:
                     continue
-                H.append("<tr><td>%s</td><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td></tr>"
-                         % (g["kind"], g["section"], g["z_in"], g["n"], g["n_yielded"], g["theta_pl_max"], g["IO"], g["LS"], g["CP"], g["DC_IO"], g["DC_LS"], g["DC_CP"]))
+                H.append("<tr><td>%s</td><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td><b>%.2f</b></td></tr>"
+                         % (g["kind"], g["section"], g["z_in"], g["n"], g["n_yielded"], g["theta_pl_max"], g["IO"], g["LS"], g["CP"], g.get(perf) or 0.0,
+                            g["DC_IO"], g["DC_LS"], g["DC_CP"], g.get("DC_" + perf) or 0.0))
             H.append("</table>")
             H.append('<figure><img src="%s"><figcaption>Mechanism census at %s — a beam-hinging (strong-column) mechanism shows blue bars at every level and red '
                      'only at the base; red bars mid-height indicate column hinging (story mechanism) and must be reconciled with the AISC 341 SCWB check in the '
@@ -243,8 +253,9 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                  % (d, 100 * n2["target_over_H"], ("%.2f%%" % (100 * _md)) if _md is not None else "— (δ<sub>t</sub> not reached)"))
         def _lvl(a, k):
             return _f(a["worst_DC"].get(k)) if a.get("status", "evaluated") == "evaluated" else ("TARGET NOT REACHED" if a.get("status") == "target_not_reached" else "NOT EVALUATED")
-        H.append("<tr><td>Component deformation acceptance (%s)</td><td>LS D/C %s at BSE-1N · CP D/C %s at BSE-2N</td><td>Ch. 6 member D/C (strength only)</td></tr>"
-                 % (d, _lvl(R["acc"]["BSE-1N"], "LS"), _lvl(R["acc"]["BSE-2N"], "CP")))
+        _l1, _l2 = _PF.bpon_levels(prm.get("_risk_category") or "I_II")
+        H.append("<tr><td>Component deformation acceptance (%s)</td><td>%s D/C %s at BSE-1N · %s D/C %s at BSE-2N</td><td>Ch. 6 member D/C (strength only)</td></tr>"
+                 % (d, _l1, _lvl(R["acc"]["BSE-1N"], _l1), _l2, _lvl(R["acc"]["BSE-2N"], _l2)))
     H.append("</table>")
 
     # 4 verification list
@@ -261,7 +272,10 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
     else:
         pz_item = ("Panel zones rigid, no composite-slab stiffness, bare centreline model — same idealisation as the linear package; "
                    "set <code>panel_zones.mode=scissors</code> in hinge_params for opt-in flexible PZ (ATC-114); consider NIST GCR 17-917-46v2.")
-    items = ["hinge_params.json is <code>verified=false</code> — retrieve ASCE 41-23 Ch. 9 → AISC 342-22 component tables (beams, columns with P<sub>G</sub>/P<sub>ye</sub>, braces) and overwrite the placeholders.",
+    items = [("Component parameters: values not supplied and verified by the user — %s. Check them against the printed AISC 342-22 tables "
+              "(Tables C2.2 / C3.6 / C3.4 / C5.5, both ductility lines) and remove them from the group's <code>unverified</code> list."
+              % (_PS.unverified_text(prm) or "the file has verified=false")) if not prm.get("verified") else
+             "Component parameters: every value the model used is user-supplied (%s)." % str(prm.get("source") or "")[:200],
              "NSP per ASCE 41-23: idealisation §7.4.3.2.5 (Figure 7-3), T<sub>e</sub> Eq. (7-28), δ<sub>t</sub> Eq. (7-29), C<sub>1</sub> (7-30), C<sub>2</sub> (7-31), μ<sub>strength</sub> (7-32), μ<sub>max</sub> (7-33), α<sub>e</sub> (7-34), C<sub>m</sub> Table 7-4, C<sub>0</sub> = Γ<sub>1</sub>φ<sub>roof</sub> (§7.4.3.3.2 first option); α<sub>PΔ</sub> approximated by the first-storey stability coefficient.",
              "Site class for C<sub>1</sub> assumed %s (a = %d); T<sub>L</sub> ignored in the spectrum; BSE-2N taken as 1.5 × design spectrum — confirm with the project hazard." % (prm["nsp"]["default_site_class"], prm["nsp"]["C1_site_factor_a"][prm["nsp"]["default_site_class"]]),
              "Gravity in the push distributed equally to column nodes per level (footprint from node extents); replace with tributary loads from model_static.py for irregular plans.",
@@ -275,6 +289,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
         f.write(html)
     # JSON package (no per-step arrays except the curves)
     pk = dict(building=pkg.name, generated=ts, params_verified=bool(prm.get("verified")), params_source=prm.get("source"),
+              params_unverified=prm.get("_used_unverified") or {}, params_verified_claimed=bool(prm.get("_verified_claimed")),
+              risk_category=prm.get("_risk_category"), bpon_levels=list(_PF.bpon_levels(prm.get("_risk_category") or "I_II")),
               numerics=prm.get("numerics", {}),
               basis=vars(b) | {"sources": b.sources}, hinge_stats=hinge_stats, gravity=gravity_table, directions={})
     for d, run in runs.items():

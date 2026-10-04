@@ -22,6 +22,10 @@ def _run(args):
     if missing:
         sys.exit("design basis incomplete (%s) -- add cfg.py to the package or pass --sds/--sd1" % missing)
     prm = HM.load_params(args.params)
+    from . import performance as PF
+    rc = PF.risk_category(pkg, getattr(args, "risk_category", None))
+    prm["_risk_category"] = rc
+    print(">> BPON performance levels: " + PF.describe(rc))
     if getattr(args, "plasticity", None):
         os.environ["SNL_PLASTICITY"] = str(args.plasticity)
         prm.setdefault("numerics", {})["plasticity"] = args.plasticity
@@ -45,7 +49,7 @@ def _run(args):
         run = NM.pushover(pkg, hinges, d, loads, prm, max_roof_drift=args.max_drift, gravity_table=gtable, tail_strategies=strategies)
         nsp = {lvl: PP.nsp_target(run, pkg.basis, prm, f, args.site_class) for lvl, f in prm["nsp"]["hazard_levels"].items()}
         p695 = PP.p695_factors(run, pkg.basis, nsp["BSE-1N"])
-        acc = {lvl: PP.acceptance(run, hinges, n["target_disp_in"], lvl) for lvl, n in nsp.items()}
+        acc = {lvl: PF.augment(PP.acceptance(run, hinges, n["target_disp_in"], lvl), run, hinges) for lvl, n in nsp.items()}
         runs[d] = run; results[d] = dict(nsp=nsp, p695=p695, acc=acc, hinges=hinges)
         def _dc(v):
             return "%.2f" % v if isinstance(v, (int, float)) else "n/a"
@@ -65,6 +69,9 @@ def _run(args):
         if t["status"] in ("lower_bound", "max_drift"):
             print("  >> ACTION FOR THE BOT: descending branch not captured. Ask the user before rung 3 "
                   "(--post-cap-ratio 0.5 = modelling change) or a larger --max-drift; see the skill's descending-branch protocol.")
+    if prm.get("_used_unverified"):
+        from . import params_schema as PS
+        print("!! component parameters NOT supplied/verified by the user (report banner): " + PS.unverified_text(prm))
     html = RS.write(out, pkg, prm, runs, results, gtable, stats, time.time() - t0)
     try:
         from . import viewer3d as V3
@@ -115,6 +122,8 @@ def main(argv=None):
     r = sub.add_parser("run"); r.add_argument("package"); r.add_argument("--out"); r.add_argument("--dirs", nargs="+", default=["X", "Y"])
     r.add_argument("--max-drift", type=float, default=0.08); r.add_argument("--site-class", default="D"); r.add_argument("--params")
     r.add_argument("--system")
+    r.add_argument("--risk-category", choices=["I", "II", "III", "IV"],
+                   help="ASCE 7 Risk Category -> BPON performance levels, ASCE 41-23 Table 2-5 (default: cfg.py text, else Ie)")
     r.add_argument("--tail", default="auto", help="descending-branch escalation: auto (fine_step then arclength) | fine_step | arclength | none")
     r.add_argument("--post-cap-ratio", type=float, help="RUNG 3 (modelling change, user consent): fraction of `a` over which hinges descend to residual (default 0.15; try 0.5)")
     r.add_argument("--plasticity", default="fibre", choices=["fibre", "fiber", "imk"], help="fibre=distributed forceBeamColumn (default); imk=concentrated ModIMK")

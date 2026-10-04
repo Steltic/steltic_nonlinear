@@ -66,6 +66,39 @@ def gather(job, params_path=None, risk_category=None):
                 rho=(float(re.search(r"\brho\s*=\s*([0-9.]+)", cfg_text).group(1)) if re.search(r"\brho\s*=\s*([0-9.]+)", cfg_text) else None))
 
 
+def _readable(v, limit=400):
+    """A capacity-design / check record as 'key: value' text, not a raw JSON dump (register item NL-26)."""
+    if isinstance(v, str):
+        out = v
+    elif isinstance(v, dict):
+        bits = []
+        for k, x in v.items():
+            if isinstance(x, (list, dict)):
+                x = ("%d entries" % len(x)) if isinstance(x, list) else ", ".join("%s %s" % (kk, xx) for kk, xx in list(x.items())[:4] if not isinstance(xx, (list, dict)))
+            bits.append("%s %s" % (str(k).replace("_", " "), x))
+        out = "; ".join(bits)
+    elif isinstance(v, list):
+        out = "%d entries" % len(v)
+    else:
+        out = str(v)
+    return out[:limit] + ("..." if len(out) > limit else "")
+
+
+def _params_status(g):
+    """(text naming the values not supplied by the user, effective verified) -- the run's own record when the
+    pushover ran (pushover_package.json), else the parameter file's provenance for the groups this building uses."""
+    from pushover import params_schema as PS
+    prm, po = g["prm"], g.get("po") or {}
+    if "params_verified" in po and "params_unverified" in po:
+        unv = po.get("params_unverified") or {}
+        txt = "; ".join("%s: %s" % (k, ", ".join(v)) for k, v in unv.items()) or "(see pushover report)"
+        return txt[:600], bool(po.get("params_verified"))
+    kinds = {str(v.get("member") or "").lower() for v in (g["pkg"].schedule or {}).values() if isinstance(v, dict)}
+    unv = {k: v for k, v in (prm.get("_unverified") or {}).items() if v and (k != "brace_axial" or "brace" in kinds)}
+    view = dict(prm, _used_unverified=unv)
+    return ((PS.unverified_text(view) if unv else "") or "the file has verified=false"), bool(prm.get("verified")) and not unv
+
+
 # --------------------------------------------------------------------------- the content, once, for both outputs
 class Section:
     def __init__(self, title, level=1):
@@ -160,16 +193,27 @@ def content(g, project=None, engineer=None, reviewer=None):
 
     s = Section("5. Analytical model (16.3)"); S.append(s)
     bf, cf, br = prm.get("beam_flexure") or {}, prm.get("column_flexure") or {}, prm.get("brace_axial") or {}
+    unv_txt, prm_ok = _params_status(g)
+    if bf.get("modifiers"):
+        adj = "; ".join("x%.2f: %s" % (float(m.get("factor")), m.get("why")) for m in bf["modifiers"])
+    elif str(bf.get("mode") or "") == "fr_connection" and not bf.get("modifier_checks"):
+        adj = ("NOT EVALUATED -- the Table C5.5 footnote / Section C5.4a.1.a.1(a)-(d) conditions (continuity plates, panel-zone "
+               "strength ratio, clear span to depth, flange and web slenderness) were not checked, so no modifier was applied "
+               "[engineer to evaluate]")
+    else:
+        adj = "none required by the checks recorded"
+    if bf.get("modifier_checks"):
+        adj += "; checks: " + _readable(bf.get("modifier_checks"))
     mat = prm.get("material") or {}
     nl_damp = ((g["nl"] or {}).get("ch16") or {}).get("damping") or ch16["damping"]
     s.t([["Aspect", "Criterion adopted", "Source / clause"],
          ["Model", "three-dimensional model of the package (nodes, elements, diaphragms and masses replayed from model_opensees.py); hysteretic behaviour per AISC 342 component models", ch16["modeling"]["clause"]],
          ["Expected material", "F_ye = R_y F_y = %s x %s ksi" % (mat.get("Ry_expected"), mat.get("Fy_ksi")), mat.get("note") or "AISC 342 A5.2"],
          ["Beam hinges", (bf.get("basis") or "[beam hinge model]")[:400], "AISC 342 Table C5.5 / C2.2"],
-         ["Adjustments to beam hinges", ("; ".join("x%.2f: %s" % (float(m.get("factor")), m.get("why")) for m in bf.get("modifiers") or []) or "none") + ("; ductility: %s" % json.dumps(bf.get("modifier_checks")) if bf.get("modifier_checks") else ""), "AISC 342 C5.4a.1.a.1"],
+         ["Adjustments to beam hinges", adj, "AISC 342 C5.4a.1.a.1"],
          ["Column hinges", (cf.get("basis") or "[column hinge model]")[:400], "AISC 342 Table C3.6"],
          ["Braces", (br.get("basis") or "n/a")[:300] if br else "no braces in the SFRS", "AISC 342 Table C3.6 / ASCE 41"],
-         ["Panel zones", "%s (mode: %s)" % ("modelled as scissors zones" if (prm.get("panel_zones") or {}).get("mode", "rigid") != "rigid" else "rigid joints (no explicit panel-zone spring)", (prm.get("panel_zones") or {}).get("mode", "rigid")) + ("; design check: %s" % json.dumps(cd.get("panel_zone")) if cd.get("panel_zone") else ""), "AISC 342 C4.3a / AISC 341 E3.6e"],
+         ["Panel zones", "%s (mode: %s)" % ("modelled as scissors zones" if (prm.get("panel_zones") or {}).get("mode", "rigid") != "rigid" else "rigid joints (no explicit panel-zone spring)", (prm.get("panel_zones") or {}).get("mode", "rigid")) + ("; design check: %s" % _readable(cd.get("panel_zone")) if cd.get("panel_zone") else ""), "AISC 342 C4.3a / AISC 341 E3.6e"],
          ["Cyclic deterioration", "not modelled (Lambda = 0) -- 16.3.1 requires it unless shown not to govern [engineer to justify or add]", ch16["component_models"]["note"][:160]],
          ["Gravity loads", ch16["gravity"]["rule"], ch16["gravity"]["clause"]],
          ["P-delta", ch16["p_delta"]["rule"], ch16["p_delta"]["clause"]],
@@ -177,7 +221,8 @@ def content(g, project=None, engineer=None, reviewer=None):
          ["Damping", "%.1f%% Rayleigh on the elastic elements and mass at T_1 and 0.2 T_1 (cap %.1f%%)" % (100 * nl_damp.get("xi_used", 0.025), 100 * nl_damp.get("xi_max", 0.025)), ch16["damping"]["clause"]],
          ["Integration", "%s, dt %s s, adaptive sub-stepping on non-convergence, free vibration after the record" % (str(nl_damp.get("integrator", "hht")).upper(), nl_damp.get("dt_s", 0.01)), "analysis settings"],
          ["Diaphragms / foundations", "rigid diaphragms at each level as in the linear model; column bases as in the package (%s); no soil-structure interaction" % (re.search(r"base\s*=\s*['\"]([^'\"]+)", g["cfg_text"]).group(1) if re.search(r"base\s*=\s*['\"]([^'\"]+)", g["cfg_text"]) else "fixed"), "16.3.6 [engineer to confirm]"],
-         ["Component parameters file", os.path.basename(g["prm_path"]) if g["prm_path"] else "repository placeholder (UNVERIFIED)", ("verified: %s -- %s" % (prm.get("verified"), (prm.get("source") or "")[:200]))]])
+         ["Component parameters file", os.path.basename(g["prm_path"]) if g["prm_path"] else "repository template (UNVERIFIED)",
+          ("verified -- %s" % (prm.get("source") or "")[:200]) if prm_ok else ("UNVERIFIED -- values not supplied by the user: %s" % unv_txt)]])
 
     s = Section("6. Acceptance criteria (16.4)"); S.append(s)
     tab = ch16["transient_drift"]["table_12_12_1_all_other"].get(rc, 0.02)
@@ -208,7 +253,7 @@ def content(g, project=None, engineer=None, reviewer=None):
          ["Design base shear / seismic weight", "%s / %s kip" % (b.V_design_kip, b.W_kip), "report.html"],
          ["Story drift limit of the linear design", ("%.3f h_sx" % g["drift_limit"]) if g["drift_limit"] else "[Table 12.12-1]", "cfg.py drift_limit"],
          ["16.1.2 drift relief", ("IN FORCE: linear target %s from the Chapter 16 result of job %s (mean drift %s vs %s); the relaxed design is provisional until the Chapter 16 analysis is re-run on it" % (rel.get("linear_target"), rel.get("nlrha_job"), rel.get("nlrha_mean_drift"), rel.get("nlrha_limit"))) if rel else ("not applicable (Risk Category IV keeps the 12.12.1 limits)" if rc == "IV" else "not applied -- the 12.12.1 limits govern the linear design"), "cfg.py drift_relief_16_1_2"],
-         ["Capacity design", "; ".join("%s: %s" % (k, (v if isinstance(v, str) else json.dumps(v))[:160]) for k, v in cd.items() if k in ("SCWB", "panel_zone", "redundancy")) or "[per AISC 341]", "calc_package.json capacity_design"]])
+         ["Capacity design", "; ".join("%s: %s" % (k, _readable(v, 160)) for k, v in cd.items() if k in ("SCWB", "panel_zone", "redundancy")) or "[per AISC 341]", "calc_package.json capacity_design"]])
 
     s = Section("8. Independent design review (16.5)"); S.append(s)
     s.p(ch16["design_review"]["rule"] + ". The reviewer's scope, agreed before the analysis:")
@@ -218,7 +263,8 @@ def content(g, project=None, engineer=None, reviewer=None):
 
     s = Section("9. Open items and deviations"); S.append(s)
     items = ["Cyclic strength and stiffness deterioration is not modelled (Lambda = 0); 16.3.1 requires it unless shown not to govern -- the engineer of record must justify this or enable it.",
-             ("Component backbones are UNVERIFIED placeholders (repository hinge_params.json); retrieve the AISC 342 / ASCE 41 tables through Query file manager and re-issue." if not prm.get("verified") else "Component backbones were verified against %s." % ((prm.get("source") or "")[:160])),
+             (("Component parameters not supplied/verified by the user: %s. Check them against the printed AISC 342-22 / ASCE 41-23 tables and re-issue." % unv_txt)
+              if not prm_ok else "Component backbones were verified against %s." % ((prm.get("source") or "")[:160])),
              ("Ground motions are ranked against the site disaggregation; the tectonic regime and any pulse content rest on the library's metadata -- confirm against the project hazard report." if (gm and gm.get("deagg")) else "Ground-motion selection uses spectral-shape fit to the code spectrum; 16.2.2 consistency with the site's controlling M, R and tectonic regime needs the project hazard (run `nlrha hazard`)."),
              "Accidental torsion is applied only where a Type 1 irregularity exists (16.3.4); the no-live-load gravity case is run only when the 16.3.2 exception does not apply.",
              "The force-controlled column check uses AISC 360 E3 with F_y = 50 ksi and K = 1 computed in the tool; connections, splices and base plates are checked from the linear package, not from the nonlinear demands.",
