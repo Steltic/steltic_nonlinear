@@ -220,8 +220,8 @@ def content(g, project=None, engineer=None, reviewer=None):
     items = ["Cyclic strength and stiffness deterioration is not modelled (Lambda = 0); 16.3.1 requires it unless shown not to govern -- the engineer of record must justify this or enable it.",
              ("Component backbones are UNVERIFIED placeholders (repository hinge_params.json); retrieve the AISC 342 / ASCE 41 tables through Query file manager and re-issue." if not prm.get("verified") else "Component backbones were verified against %s." % ((prm.get("source") or "")[:160])),
              ("Ground motions are ranked against the site disaggregation; the tectonic regime and any pulse content rest on the library's metadata -- confirm against the project hazard report." if (gm and gm.get("deagg")) else "Ground-motion selection uses spectral-shape fit to the code spectrum; 16.2.2 consistency with the site's controlling M, R and tectonic regime needs the project hazard (run `nlrha hazard`)."),
-             "Accidental torsion is applied only where a Type 1 irregularity exists (16.3.4); the no-live-load gravity case is run only when the 16.3.2 exception does not apply.",
-             "The force-controlled column check uses AISC 360 E3 with F_y = 50 ksi and K = 1 computed in the tool; connections, splices and base plates are checked from the linear package, not from the nonlinear demands.",
+             "Accidental torsion is applied only where a Type 1 irregularity exists (16.3.4). Gravity follows the framed floor plate (floors at L0, roofs at Lr, quarter-bay tributaries); the 1.0 D analysis without live load is run whenever the 16.3.2 exception (sum 0.5L <= 25% sum D and L0 < 100 psf over >= 75% of the area) does not apply -- the verdict is withheld (INCOMPLETE) if it is required and was not run.",
+             "The force-controlled column check (16.4.2.1, both equations) combines axial force with concurrent flexure (AISC 360 H1-1 = AISC 342 C3-9) using AISC 360 E3 / F2-F6 with the F_y of the component parameters, K = 1, L_b = column length, C_b = 1; connections, splices and base plates are checked from the linear package, not from the nonlinear demands.",
              "Foundations, soil-structure interaction and vertical ground motion (16.1.3) are not modelled.",
              "[Site class and V_s30 from the geotechnical report; project-specific performance objectives beyond the code minimum, if any.]"]
     if rel:
@@ -232,12 +232,13 @@ def content(g, project=None, engineer=None, reviewer=None):
     if g["nl"]:
         s = Section("10. Results on file (for the reviewer)"); S.append(s)
         v, l = g["nl"]["verdict"], g["nl"]["limits"]
+        _pc = lambda x: ("%.2f%%" % (100 * x)) if isinstance(x, (int, float)) and x == x else "not computed"
         s.t([["Check", "Result"],
              ["Unacceptable responses", "%d of %d (allowed %d)" % (v["n_unacceptable"], v["n_records"], v["unacceptable_allowed"])],
-             ["Mean transient story drift", "max %.2f%% vs %.2f%%" % (100 * (v["mean_drift_max"] or 0), 100 * l["mean_limit"])],
+             ["Mean transient story drift", "max %s vs %s" % (_pc(v.get("mean_drift_max")), _pc(l["mean_limit"]))],
              ["Deformation-controlled", "CP %s, valid range %s" % ("ok" if v["deformation_ok"] else "EXCEEDED", "ok" if v["valid_range_ok"] else "EXCEEDED")],
              ["Force-controlled columns", "%s (worst D/C %s)" % ("ok" if v["force_controlled_ok"] else "NG", v.get("worst_FC_DC"))],
-             ["Overall", "ACCEPTABLE" if v["overall"] else "NOT ACCEPTABLE"]])
+             ["Overall", v.get("status") or ("ACCEPTABLE" if v["overall"] else "NOT ACCEPTABLE")]])
         s.n("Generated %s by the Nonlinear module; the report nlrha/nlrha_report.html carries the per-record and per-group tables." % g["nl"].get("generated"))
 
     s = Section("Appendix A. Chapter 16 rules implemented by the analysis tool", 1); S.append(s)

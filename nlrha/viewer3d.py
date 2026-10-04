@@ -82,7 +82,7 @@ function paint(s){
   return st;
 }
 function fmt(v,n){ return (v===null||v===undefined||Number.isNaN(v))?'—':Number(v).toFixed(n===undefined?2:n); }
-function pct(v){ return (100*v).toFixed(2)+'%'; }
+function pct(v){ return (v===null||v===undefined||Number.isNaN(v))?'not computed':(100*v).toFixed(2)+'%'; }
 function update(){
   const rec = R(); const F = rec.frames; const n = F.t.length; step = Math.max(0, Math.min(n-1, step));
   document.getElementById('step').max = n-1; document.getElementById('step').value = step;
@@ -135,14 +135,15 @@ function memberInfo(e){
       lines.push(['Δ axial now (+tens)', `${v.toFixed(3)} in`], ['Record peak tens / comp', `${p[0].toFixed(3)} / ${p[1].toFixed(3)} in`], ['Δc / Δy', `${h.dc.toFixed(3)} / ${h.dT.toFixed(3)} in`], ['CP comp / tens', `${h.CP.toFixed(2)} / ${h.CP_t.toFixed(2)} in`], ['State now · record peak', `${STATE_LABEL[st[i]]} · ${STATE_LABEL[PEAK[i]]}`]); }
     else lines.push([`θpl peak, end ${h.end}`, `${p.toExponential(2)} rad`], ['θy · IO · LS · CP', `${h.thy.toExponential(1)} · ${h.IO.toExponential(1)} · ${h.LS.toExponential(1)} · ${h.CP.toExponential(1)}`], ['D/C CP (this record)', (Math.abs(p)/h.CP).toFixed(2)], ['Record peak state', STATE_LABEL[PEAK[i]]]);
   });
-  const fc = N.force_controlled[e.tag]; if (fc) lines.push(['16.4.2.1 force-controlled (suite mean)', `Qu ${fc.Qu.toFixed(0)} kip · demand ${fc.demand.toFixed(0)} ≤ φBRn ${fc.phiBRn.toFixed(0)} → D/C ${fc.DC.toFixed(2)} ${fc.DC<=1?'<span class="badge ok">ok</span>':'<span class="badge ng">NG</span>'}`]);
+  const fc = N.force_controlled[e.tag]; if (fc) lines.push(['16.4.2.1 force-controlled (suite mean)', `Pu ${fmt(fc.Qu,0)} kip · Pr ${fmt(fc.demand,0)} ≤ φPn ${fmt(fc.phiBRn,0)} · Mu ${fmt(fc.Mu_maj,0)}/${fmt(fc.Mu_min,0)} k-in → D/C ${fmt(fc.DC)} (${fc.governing||''}) ${fc.DC<=1?'<span class="badge ok">ok</span>':'<span class="badge ng">NG</span>'}`]);
   const row = N.schedule[e.tag]; if (row) lines.push(['Steltic governing combo', row.combo], ['Steltic demand P / Mx', `${row.P} kip / ${row.Mx} k-ft`]);
   return rows(lines);
 }
 function suite(){
   const v = N.verdict, L = N.limits; const r = [];
-  r.push(['Overall', v.overall?'<span class="badge ok">ACCEPTABLE</span>':'<span class="badge ng">NOT ACCEPTABLE</span>'], ['Records · unacceptable (allowed)', `${v.n_records} · ${v.n_unacceptable} (${v.unacceptable_allowed})`],
-    ['Mean story drift max ≤ limit', `${pct(v.mean_drift_max||0)} ≤ ${pct(L.mean_limit)} ${v.mean_drift_ok?'<span class="badge ok">ok</span>':'<span class="badge ng">NG</span>'}`],
+  const st = v.status || (v.overall?'ACCEPTABLE':'NOT ACCEPTABLE');
+  r.push(['Overall', `<span class="badge ${st==='ACCEPTABLE'?'ok':'ng'}">${st}</span>`], ['Records · unacceptable (allowed)', `${v.n_records} · ${v.n_unacceptable} (${v.unacceptable_allowed})` + ((v.n_incomplete||v.n_not_run)?` · ${v.n_incomplete||0} incomplete · ${v.n_not_run||0} not run`:'')],
+    ['Mean story drift max ≤ limit', `${pct(v.mean_drift_max)} ≤ ${pct(L.mean_limit)} ${v.mean_drift_ok===null||v.mean_drift_ok===undefined?'':(v.mean_drift_ok?'<span class="badge ok">ok</span>':'<span class="badge ng">NG</span>')}`],
     ['Deformation-controlled · worst D/C CP', `${fmt(N.worst_DC_CP)} ${v.deformation_ok?'<span class="badge ok">ok</span>':'<span class="badge ng">NG</span>'}`], ['Valid range b · worst D/C', `${fmt(N.worst_DC_b)} ${v.valid_range_ok?'<span class="badge ok">ok</span>':'<span class="badge ng">NG</span>'}`],
     ['Force-controlled columns · worst D/C', `${fmt(N.worst_DC_fc)} ${v.force_controlled_ok?'<span class="badge ok">ok</span>':'<span class="badge ng">NG</span>'}`],
     ['Target · damping', `MCE<sub>R</sub> = 1.5 × design (S<sub>MS</sub> ${N.SMS.toFixed(2)} g) · ξ ${(100*N.xi).toFixed(1)}%`], ['Period range · scaling', `${N.period_range[0].toFixed(2)}–${N.period_range[1].toFixed(2)} s · suite mean / target min ${N.scaling_min.toFixed(3)}`],
@@ -220,7 +221,8 @@ def write(outdir, pkg, prm, ch16, gm, results, acc, modal, xi, pushover_pkg=None
                          frames=dict(t=F["t"], dt=(F["t"][1] - F["t"][0]) if len(F["t"]) > 1 else 0.1, story=F["story"], brace=F["brace"],
                                      **({"hinge": F["hinge"]} if F.get("hinge") else {}), ag=ag), hinge_peak=hp))
     v = acc["verdict"]
-    fc = {r["ele"]: dict(Qu=r["Qu"], demand=r["demand"], phiBRn=r["phiBRn"], DC=r["DC"]) for r in acc["force_controlled_columns"]}
+    fc = {r["ele"]: dict(Qu=r["Qu"], demand=r["demand"], phiBRn=r["phiBRn"], DC=r["DC"], Mu_maj=r.get("Mu_maj"), Mu_min=r.get("Mu_min"),
+                         governing=r.get("governing")) for r in acc["force_controlled_columns"]}
     dg = acc["deformation_groups"]
     sched = {t: dict(combo=rw.get("governing_combo", ""), P=round(rw.get("P_comp_kip", 0)), Mx=round(rw.get("Mx_kipft", 0))) for t, rw in pkg.schedule.items()}
     for e in model["elements"]:
@@ -239,9 +241,9 @@ def write(outdir, pkg, prm, ch16, gm, results, acc, modal, xi, pushover_pkg=None
                             T1x=modal["T1x"], T1y=modal["T1y"], params_verified=bool(prm.get("verified")), schedule=sched, pushover_dt=pdt))
     n_ok = sum(1 for r in recs if r["ok"])
     meta = dict(title=f"{pkg.name} · NLRHA (ASCE 7-22 Chapter 16)", subtitle=f"{b.system or ''}",
-                accline=f"Steltic viewer bundle · Non Linear Dynamic Bot · MCE_R target · {len(recs)} records ({n_ok} acceptable) · {'ACCEPTABLE' if v['overall'] else 'NOT ACCEPTABLE'}",
+                accline=f"Steltic viewer bundle · Non Linear Dynamic Bot · MCE_R target · {len(recs)} records ({n_ok} acceptable) · {v.get('status') or ('ACCEPTABLE' if v['overall'] else 'NOT ACCEPTABLE')}",
                 caveat=("Deformed shape from the diaphragm masters (rigid floors) every %.2f s; braces coloured by their instantaneous axial deformation, beams and columns by "
-                        "their peak plastic rotation over the record. Drift bars: record peaks are the 16.4.1.2 edge values, the live value is the master (rigid-body) drift. "
+                        "their peak plastic rotation over the record. Drift bars: record peaks are the 16.4.1.2 values at vertically aligned points, the live value is the master (rigid-body) drift. "
                         % recs[0]["frames"]["dt"]
                         + ("Component parameters UNVERIFIED (placeholders) — see the red banner in nlrha_report.html. " if not prm.get("verified") else "")
                         + "Not for construction."))

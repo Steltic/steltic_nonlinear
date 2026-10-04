@@ -37,7 +37,7 @@ four-analyses narrative.
 See [`docs/PRODUCT_DEFAULTS.md`](docs/PRODUCT_DEFAULTS.md) (rules 1–9) and [`docs/FIBRE_MESH_CONVERGENCE.md`](docs/FIBRE_MESH_CONVERGENCE.md).
 
 - **NSP / HR DDM:** fibre + mesh 10%
-- **NLRHA:** ModIMK → PZ×1 → fibre+mesh; dual-gate; early abort on 2 NC
+- **NLRHA:** ModIMK → PZ×1 → fibre+mesh; dual-gate; mesh-converge early abort on 2 NC once the 16.4.1.1 allowance is exceeded (plain `nlrha run`: full suite; records not run are always listed)
 - **CFS DDM:** Tier 2 fidelity gate (no shell)
 
 ## Install
