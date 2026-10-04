@@ -1,5 +1,16 @@
 """run.py -- one ASCE 7-22 Chapter 16 response history: gravity (16.3.2) -> damping (16.3.5) -> bidirectional
 uniform excitation (16.2.4) -> HHT-alpha (default) or Newmark integration with adaptive time step -> peak/mean bookkeeping for 16.4.
+
+Record status (result["status"]):
+  completed       -- the whole window (Arias 0.1-99.5% + free vibration) was integrated; every step converged.
+  nonconvergence  -- the analytical solution failed to converge (16.4.1.1 item 1): the time step was halved down to
+                     dt/32 or 12 consecutive attempts failed, or the gravity stage failed. Unacceptable response.
+  incomplete      -- every committed step converged but the work budget ran out (step count or wall time). This is NOT
+                     16.4.1.1(1): the solution did not fail to converge, the run was cut short. Peaks are lower bounds.
+                     Earlier builds aborted after 41 converged fallback micro-steps ("crawl abort") and counted that as
+                     non-convergence; now repeated fallback steps shrink the time step instead, and only the explicit
+                     budget can cut a record short -- reported as such, never as non-convergence.
+result["converged"] stays True only for `completed` (callers that only know converged/not keep working).
 """
 from __future__ import annotations
 import math, time
@@ -7,6 +18,7 @@ import numpy as np
 import openseespy.opensees as ops
 from pushover import nonlinear_model as NM
 from . import model as MD
+from . import drift as DR
 
 G_IN = 386.4
 
@@ -25,12 +37,92 @@ def _apply_gravity(loads):
 
 
 def _edge_nodes(pkg):
-    """Two diagonally opposite corner nodes per level, for the 16.4.1.2 'along the edges' drift."""
+    """DEPRECATED (NL-12): two (x, y)-sorted slave nodes per level. Not vertically aligned on set-backs and blind to
+    wings; the drift is now computed at vertically aligned points (nlrha/drift.py). Kept for old scripts only."""
     out = []
     for k, z, master, slaves in NM.levels(pkg):
         pts = sorted(slaves, key=lambda n: (pkg.model.nodes[n][0], pkg.model.nodes[n][1]))
         out.append((k, z, master, pts[0], pts[-1]))
     return out
+
+
+def hht_algorithmic_damping(alpha, dt, T):
+    """Equivalent viscous damping ratio that the HHT-alpha integrator (OpenSees convention: alpha in [2/3, 1],
+    gamma = 1.5 - alpha, beta = (2 - alpha)^2 / 4; alpha = 1 is Newmark average acceleration, no numerical damping)
+    adds to an undamped SDOF of period T at step dt. From the eigenvalues of the one-step amplification matrix:
+    lambda = exp(-xi w dt +- i w_d dt) -> xi = -Re(ln lambda) / |ln lambda|. Disclosed next to the 16.3.5 viscous damping."""
+    if T <= 0 or dt <= 0:
+        return 0.0
+    g = 1.5 - alpha; b = (2.0 - alpha) ** 2 / 4.0
+    w = 2 * math.pi / T; k = w * w; m = 1.0
+    # unknowns x1 = (u1, v1, a1); equations: m a1 + k (alpha u1 + (1 - alpha) u0) = 0 ; Newmark u/v updates
+    Amat = np.array([[alpha * k, 0.0, m], [1.0, 0.0, -b * dt * dt], [0.0, 1.0, -g * dt]])
+    cols = []
+    for x0 in np.eye(3):
+        u0, v0, a0 = x0
+        rhs = np.array([-(1 - alpha) * k * u0, u0 + dt * v0 + dt * dt * (0.5 - b) * a0, v0 + dt * (1 - g) * a0])
+        cols.append(np.linalg.solve(Amat, rhs))
+    lam = np.linalg.eigvals(np.array(cols).T)
+    osc = [l for l in lam if abs(l.imag) > 1e-12]
+    if not osc:
+        return float("nan")
+    l = max(osc, key=lambda z: abs(z)); ln = np.log(l)
+    return float(-ln.real / abs(ln))
+
+
+def _column_info(pkg, hinges, stats, PG=None, prm=None):
+    """Per column element: the element tags at its i and j ends (sub-divided members: first and last segment), the
+    local force indices of the major / minor moments, how each flexural axis is MODELLED (hinge / elastic / fibre) and
+    how it is CLASSIFIED (AISC 342-22 C3.4 / ASCE 41-23 7.5): flexure is deformation-controlled for
+    P_G/P_ye <= 0.6 and force-controlled above (such columns get no hinge, pushover.hinge_models.column_hinge)."""
+    from pushover import hinge_models as HM
+    try:
+        tags = set(ops.getEleTags())
+    except Exception:                                               # noqa: BLE001
+        tags = set()
+    nseg = max(1, int(stats.get("member_nseg") or 1))
+    fibre = stats.get("plasticity") == "fibre"
+    out = {}
+    for e in pkg.model.elements:
+        if "etype" in e or NM.member_kind(pkg, e) != "col":
+            continue
+        c = e["tag"]
+        tj = NM.SEG_ELE_BASE + c * 100 + (nseg - 1) if nseg > 1 else c
+        if tags and tj not in tags:
+            tj = c
+        slot = NM.strong_I_slot(pkg, e, "col")
+        maj = (5, 11) if slot == "Iz" else (4, 10); mnr = (4, 10) if slot == "Iz" else (5, 11)
+        ends = {h["end"] for h in hinges.values() if h.get("ele") == c and h.get("kind") == "col"}
+        fc_col = False
+        sec = pkg.schedule.get(c, {}).get("section")
+        if sec and prm is not None:
+            try:
+                L = math.dist(pkg.model.nodes[e["n1"]], pkg.model.nodes[e["n2"]])
+                fc_col = bool(HM.column_hinge(sec, L, (PG or {}).get(c, 0.0), prm).force_controlled)
+            except Exception:                                       # noqa: BLE001
+                fc_col = False
+        cls = "force" if fc_col else "deformation"
+        modelled = dict(major=("fibre" if fibre else ("hinge" if ends else "elastic")), minor=("fibre" if fibre else "elastic"))
+        try:                                                        # proxy strengths, only to pick the concurrent instants
+            from pushover import sections_db as SDB
+            pp = SDB.props(sec); Fye = float(((prm or {}).get("material") or {}).get("Fy_ksi", 50.0)) * float(((prm or {}).get("material") or {}).get("Ry_expected", 1.1))
+            proxy = (pp["A"] * Fye, pp["Zx"] * Fye, pp["Zy"] * Fye)
+        except Exception:                                           # noqa: BLE001
+            proxy = None
+        out[c] = dict(ti=c, tj=tj, maj=maj, mnr=mnr, hinged_ends=sorted(ends), flexure=dict(major=cls, minor=cls, modelled=modelled), proxy=proxy)
+    return out
+
+
+def _column_forces(ci):
+    """(P compression +, |M major|, |M minor|) envelope over both ends of one column, plus the two end triplets
+    [(P, |Mmaj|, |Mmin|) at end i, at end j] (concurrent values), from localForce."""
+    fi = ops.eleResponse(ci["ti"], "localForce") or []
+    fj = fi if ci["tj"] == ci["ti"] else (ops.eleResponse(ci["tj"], "localForce") or [])
+    if len(fi) < 12 or len(fj) < 12:
+        return None
+    P = fi[0]                                                       # end-i local N: +ve = compression
+    ti = (fi[0], abs(fi[ci["maj"][0]]), abs(fi[ci["mnr"][0]])); tj = (-fj[6], abs(fj[ci["maj"][1]]), abs(fj[ci["mnr"][1]]))
+    return P, max(ti[1], tj[1]), max(ti[2], tj[2]), (ti, tj)
 
 
 def arias_window(a1, a2, dt, lo=0.001, hi=0.995):
@@ -42,13 +134,30 @@ def arias_window(a1, a2, dt, lo=0.001, hi=0.995):
 
 
 def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02, free_vib_s=5.0, rec_every=5, verbose=True,
-               sample_brace=None, integrator="hht"):
-    """Build a fresh model and run one scaled pair. Returns peaks/histories for the acceptance module."""
+               sample_brace=None, integrator="hht", step_budget_factor=40.0, wall_budget_s=None):
+    """Build a fresh model and run one scaled pair. Returns peaks/histories for the acceptance module.
+
+    Work budget (NL-17): at most `step_budget_factor` x the nominal number of steps of ops.analyze calls, and at most
+    `wall_budget_s` seconds (None -> env SNL_NLRHA_RECORD_BUDGET_S, else 1800 s; 0 = unlimited). Running out of budget
+    ends the record as status "incomplete" (not non-convergence)."""
+    import os
     t0 = time.time()
+    if wall_budget_s is None:
+        try:
+            wall_budget_s = float(os.environ.get("SNL_NLRHA_RECORD_BUDGET_S", "1800"))
+        except ValueError:
+            wall_budget_s = 1800.0
     hinges, stats, elastic = MD.build(pkg, prm, ch16, PG)
     ok = _apply_gravity(loads)
     if ok != 0:
-        return dict(record=rec["id"], converged=False, reason="gravity stage failed")
+        return dict(record=rec["id"], label=rec.get("earthquake") or rec["id"], sf=rec.get("sf"), x_comp=rec.get("x_comp"), converged=False,
+                    status="nonconvergence", reason="gravity stage failed", steps=0, fails=0, seconds=time.time() - t0)
+    colinfo = _column_info(pkg, hinges, stats, PG, prm)
+    col_grav = {}
+    for c, ci in colinfo.items():                                   # Qns of 16.4.2.1: the gravity state of THIS model
+        f = _column_forces(ci)
+        if f is not None:
+            col_grav[c] = dict(P=f[0], Mmaj=f[1], Mmin=f[2])
     modal = MD.modal(pkg, 6)
     T1 = max(modal["T1x"], modal["T1y"])
     damp = MD.set_damping(xi, T1, elastic)
@@ -64,22 +173,28 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     ops.test("NormDispIncr", 1e-6, 30, 0); ops.algorithm("Newton")
     if integrator == "newmark":
         ops.integrator("Newmark", 0.5, 0.25)                        # average acceleration, no numerical damping
+        alg_damp = dict(integrator="Newmark average acceleration", alpha=None, xi_T1=0.0, xi_02T1=0.0)
     else:
         ops.integrator("HHT", 0.9)                                  # alpha = 0.9: second-order accurate, damps the spurious high modes of stiff hinge springs
+        alg_damp = dict(integrator="HHT", alpha=0.9, xi_T1=hht_algorithmic_damping(0.9, dt_max, T1),
+                        xi_02T1=hht_algorithmic_damping(0.9, dt_max, 0.2 * T1))
     ops.analysis("Transient")
     dt = dt_max                                                   # Path series interpolates the record; dt_max ~ T_lower/15
-    # HR08 M051: tighten crawl abort — fallback micro-advances can reset consec_fail forever near ModIMK drops (~0.1 s sim/wall-h).
-    dt_cur = dt_max; n_ok_since_cut = 0; consec_fail = 0; crawl_fallback = 0; dt_floor = dt_max / 32.0
+    dt_cur = dt_max; n_ok_since_cut = 0; consec_fail = 0; crawl = 0; n_fallback = 0; dt_floor = dt_max / 32.0; dt_min_used = dt_max
     next_rec = rec_every * dt_max; next_hist = 5 * dt_max                 # time-based recording (the step is adaptive)
     t_start, t_sig = arias_window(ax, ay, dt_rec)
     t_end = t_sig + free_vib_s
     t = 0.0
-    lv = _edge_nodes(pkg); H = [lv[0][1]] + [lv[i][1] - lv[i - 1][1] for i in range(1, len(lv))]
+    lv = NM.levels(pkg)
+    H = [lv[0][1]] + [lv[i][1] - lv[i - 1][1] for i in range(1, len(lv))]
+    pts = DR.drift_points(pkg)                                    # 16.4.1.2: vertically aligned points (NL-12)
+    pnodes = DR.node_set(pts)
     hz = sorted(hinges); K0 = {t: hinges[t]["K0"] for t in hz}
-    cols = [e["tag"] for e in pkg.model.elements if "etype" not in e and NM.member_kind(pkg, e) == "col"]
-    peak_drift = np.zeros((len(lv), 2)); peak_roof = np.zeros(2)
+    cols = list(colinfo)
+    peak_drift = np.zeros((len(lv), 2)); peak_at = [[None, None] for _ in lv]; peak_roof = np.zeros(2)
     peak_def = {t: 0.0 for t in hz}; signed_def = {t: (0.0, 0.0) for t in hz}       # (max positive, max negative)
     peak_colN = {c: 0.0 for c in cols}
+    col_env = {c: dict(Pc=-1e30, Pt=1e30, Mmaj=0.0, Mmin=0.0, conc_c=None, conc_t=None, _uc=-1.0, _ut=-1.0) for c in cols}
     hist_t, hist_roof = [], []
     brace_hist = []
     frames_t, frames_story, frames_brace, frames_ag = [], [], [], []       # viewer frames (every rec_every steps)
@@ -89,17 +204,32 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     # fell back to the record peak: every frame -- t = 0 included -- was painted with the worst the
     # record ever reached, so "play" opened on a structure already fully hinged.
     frames_hinge = []
-    masters = [m for k, z, m, nA, nB in lv]
+    masters = [m for k, z, m, s in lv]
     braces = [t for t in hz if hinges[t]["kind"] == "brace"]
     n_rec = len(ax)
-    step = 0; fails = 0; converged = True; reason = "completed"
+    n_nominal = max(1, int(math.ceil(t_end / dt_max)))
+    step_budget = int(step_budget_factor * n_nominal) if step_budget_factor else 0
+    calls = 0
+    step = 0; fails = 0; status = "completed"; reason = "completed"
+
+    def _analyze(h):
+        nonlocal calls
+        calls += 1
+        return ops.analyze(1, h)
+
     while t < t_end - 1e-9:
-        ok = ops.analyze(1, dt_cur)
+        if (step_budget and calls >= step_budget) or (wall_budget_s and time.time() - t0 > wall_budget_s):
+            status = "incomplete"
+            reason = ("incomplete (time-out) at t=%.2f of %.2f s: work budget exhausted (%d analyze calls, budget %s; %.0f s wall, budget %s); "
+                      "all %d committed steps converged (smallest dt %.2e s) -- NOT a 16.4.1.1(1) non-convergence"
+                      % (t, t_end, calls, step_budget or "none", time.time() - t0, ("%.0f s" % wall_budget_s) if wall_budget_s else "none", step, dt_min_used))
+            break
+        ok = _analyze(dt_cur)
         if ok != 0:
             adv = dt_cur / 4
             for alg in (("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",)):
                 ops.algorithm(*alg); ops.test("NormDispIncr", 1e-5, 100, 0)
-                ok = ops.analyze(1, adv)
+                ok = _analyze(adv)
                 if ok == 0:
                     break
             ops.algorithm("Newton"); ops.test("NormDispIncr", 1e-6, 30, 0)
@@ -108,28 +238,27 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                 fails += 1; consec_fail += 1; n_ok_since_cut = 0
                 dt_cur *= 0.5
                 if dt_cur < dt_floor or consec_fail > 12:
-                    converged = False; reason = "non-convergence at t=%.2f s (dt %.2e s, %d consecutive failures)" % (t, dt_cur * 2, consec_fail); break
+                    status = "nonconvergence"
+                    reason = "non-convergence at t=%.2f s (dt %.2e s, %d consecutive failures)" % (t, dt_cur * 2, consec_fail); break
                 continue
-            t += adv; consec_fail = 0; crawl_fallback += 1
-            # abort soft-crawl: many tiny fallback advances without a clean Newton step
-            if crawl_fallback > 40:
-                converged = False; reason = "crawl abort at t=%.2f s (%d fallback micro-advances)" % (t, crawl_fallback); break
+            # a converged fallback micro-step is a valid equilibrium state (16.4.1.1(1) is about failing to converge,
+            # not about slowness). Repeated fallbacks mean Newton cannot take the current step: shrink it (NL-17)
+            # instead of aborting the record.
+            t += adv; consec_fail = 0; crawl += 1; n_fallback += 1; dt_min_used = min(dt_min_used, adv)
+            if crawl >= 4 and dt_cur > dt_floor:
+                dt_cur = max(dt_cur * 0.5, dt_floor); crawl = 0; n_ok_since_cut = 0
         else:
-            t += dt_cur; consec_fail = 0; n_ok_since_cut += 1
-            # Do not zero crawl_fallback while still on a cut step — otherwise ModIMK/FBC
-            # soft-crawl can reset forever (L2 ConcentratedPlasticity hygiene; cascade order unchanged).
-            if dt_cur >= dt_max * 0.999:
-                crawl_fallback = 0
+            t += dt_cur; consec_fail = 0; n_ok_since_cut += 1; crawl = 0; dt_min_used = min(dt_min_used, dt_cur)
             if dt_cur < dt_max and n_ok_since_cut >= 8:                  # grow back towards the nominal step
                 dt_cur = min(dt_max, dt_cur * 2); n_ok_since_cut = 0
         step += 1
-        # drifts at both edges, both directions (16.4.1.2)
-        prev = np.zeros((2, 2))
-        for i, (k, z, master, nA, nB) in enumerate(lv):
-            uA = np.array([ops.nodeDisp(nA, 1), ops.nodeDisp(nA, 2)]); uB = np.array([ops.nodeDisp(nB, 1), ops.nodeDisp(nB, 2)])
-            dA = np.abs(uA - prev[0]) / H[i]; dB = np.abs(uB - prev[1]) / H[i]
-            peak_drift[i] = np.maximum(peak_drift[i], np.maximum(dA, dB))
-            prev = np.array([uA, uB])
+        # 16.4.1.2 drift at vertically aligned points, both directions (NL-12)
+        disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
+        dnow, at = DR.story_drifts(pts, disp)
+        for i in range(len(lv)):
+            for c in (0, 1):
+                if dnow[i, c] > peak_drift[i, c]:
+                    peak_drift[i, c] = dnow[i, c]; peak_at[i][c] = at[i][c]
         roof = lv[-1][2]; ur = np.array([ops.nodeDisp(roof, 1), ops.nodeDisp(roof, 2)])
         peak_roof = np.maximum(peak_roof, np.abs(ur))
         if t >= next_hist - 1e-9:
@@ -163,41 +292,65 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                 hinge_row.append(round(v, 6))
             frames_hinge.append(hinge_row)
             for c in cols:
-                f = ops.eleResponse(c, "localForce"); peak_colN[c] = max(peak_colN[c], f[0] if f else 0.0)
+                f = _column_forces(colinfo[c])
+                if f is None:
+                    continue
+                ev = col_env[c]
+                ev["Pc"] = max(ev["Pc"], f[0]); ev["Pt"] = min(ev["Pt"], f[0]); ev["Mmaj"] = max(ev["Mmaj"], f[1]); ev["Mmin"] = max(ev["Mmin"], f[2])
+                px = colinfo[c].get("proxy")
+                if px:                                              # concurrent (P, Mmaj, Mmin) at the most utilised instant / end
+                    for trip in f[3]:
+                        mm = trip[1] / px[1] + trip[2] / px[2]
+                        uc = max(trip[0], 0.0) / px[0] + mm; ut = max(-trip[0], 0.0) / px[0] + mm
+                        if uc > ev["_uc"]:
+                            ev["_uc"] = uc; ev["conc_c"] = trip
+                        if trip[0] < 0 and ut > ev["_ut"]:
+                            ev["_ut"] = ut; ev["conc_t"] = trip
+                peak_colN[c] = max(peak_colN[c], f[0])
             if sample_brace and sample_brace in hinges:
                 d = ops.eleResponse(sample_brace, "deformation"); f = ops.eleResponse(sample_brace, "axialForce")
                 brace_hist.append((d[0] if d else 0.0, f[0] if f else 0.0))
-    # residual drift (structure at rest after free vibration)
-    prev = np.zeros((2, 2)); resid = np.zeros(len(lv))
-    for i, (k, z, master, nA, nB) in enumerate(lv):
-        uA = np.array([ops.nodeDisp(nA, 1), ops.nodeDisp(nA, 2)]); uB = np.array([ops.nodeDisp(nB, 1), ops.nodeDisp(nB, 2)])
-        resid[i] = max(np.max(np.abs(uA - prev[0])), np.max(np.abs(uB - prev[1]))) / H[i]; prev = np.array([uA, uB])
+    # residual drift (structure at rest after free vibration) -- only meaningful when the record completed
+    if status == "completed":
+        disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
+        rd, _ = DR.story_drifts(pts, disp); resid = rd.max(axis=1)
+    else:
+        resid = np.full(len(lv), np.nan)
+    col_env = {c: dict(Pc=(v["Pc"] if v["Pc"] > -1e29 else None), Pt=(v["Pt"] if v["Pt"] < 1e29 else None), Mmaj=v["Mmaj"], Mmin=v["Mmin"],
+                       conc_c=v["conc_c"], conc_t=v["conc_t"]) for c, v in col_env.items()}
     out = dict(record=rec["id"], label="%s %s (%s)" % (rec.get("earthquake") or rec["id"], rec.get("station") or "", rec.get("year") or "?"), sf=sf, x_comp=rec["x_comp"],
-               converged=converged, reason=reason, steps=step, fails=fails, seconds=time.time() - t0, t_window=(t_start, t_sig), T1x=modal["T1x"], T1y=modal["T1y"],
-               damping=damp, peak_story_drift=peak_drift.tolist(), peak_roof_in=peak_roof.tolist(), residual_drift=resid.tolist(),
-               peak_def=peak_def, signed_def=signed_def, peak_colN=peak_colN, hist_t=hist_t, hist_roof=hist_roof, brace_hist=brace_hist,
+               converged=(status == "completed"), status=status, reason=reason, steps=step, fails=fails, fallback_steps=n_fallback, analyze_calls=calls,
+               dt_min=dt_min_used, t_reached=t, t_end=t_end, seconds=time.time() - t0, t_window=(t_start, t_sig), T1x=modal["T1x"], T1y=modal["T1y"],
+               damping=damp, algorithmic_damping=alg_damp, peak_story_drift=peak_drift.tolist(), peak_drift_at=peak_at, drift_method="aligned_points",
+               drift_points=DR.summary(pts), peak_roof_in=peak_roof.tolist(), residual_drift=resid.tolist(),
+               peak_def=peak_def, signed_def=signed_def, peak_colN=peak_colN, col_env=col_env, col_grav=col_grav,
+               col_flexure={c: ci["flexure"] for c, ci in colinfo.items()}, hist_t=hist_t, hist_roof=hist_roof, brace_hist=brace_hist,
                frames=dict(t=frames_t, story=frames_story, brace_tags=braces, brace=frames_brace, ag=frames_ag,
                            hinge_tags=list(hz), hinge=frames_hinge, masters=masters),
                hinges_meta={t: dict(kind=hinges[t]["kind"], section=hinges[t]["section"], z=hinges[t]["z"], ele=hinges[t]["ele"], end=hinges[t]["end"]) for t in hz},
                specs={t: hinges[t]["spec"] for t in hz}, heights=H, stats=stats)
     if verbose:
-        print("[nlrha] %-40s sf=%.2f  %s  steps=%d fails=%d  max drift X %.2f%% Y %.2f%%  roof %.1f/%.1f in  (%.0f s)"
-              % (out["label"][:40], sf, "ok " if converged else "NC ", step, fails, 100 * peak_drift[:, 0].max(), 100 * peak_drift[:, 1].max(),
-                 peak_roof[0], peak_roof[1], out["seconds"]))
+        print("[nlrha] %-40s sf=%.2f  %s  steps=%d fails=%d fallback=%d  max drift X %.2f%% Y %.2f%%  roof %.1f/%.1f in  (%.0f s)%s"
+              % (out["label"][:40], sf, {"completed": "ok ", "nonconvergence": "NC ", "incomplete": "INC"}[status], step, fails, n_fallback,
+                 100 * peak_drift[:, 0].max(), 100 * peak_drift[:, 1].max(), peak_roof[0], peak_roof[1], out["seconds"],
+                 "" if status == "completed" else "  -- " + reason))
     return out
 
 
 def run_record_worker(args):
-    """multiprocessing entry: (package_path, params_path, ch16, PG, loads, rec, xi, dt, free_vib, sample_brace) -> result dict."""
+    """multiprocessing entry: (package_path, params_path, ch16, PG, loads, rec, xi, dt, free_vib, sample_brace[, integrator[, budget]])
+    -> result dict. budget = dict(step_budget_factor=.., wall_budget_s=..)."""
     package_path, params_path, ch16, PG, loads, rec, xi, dt, free_vib, sample_brace = args[:10]
     integrator = args[10] if len(args) > 10 else "hht"
+    budget = (args[11] if len(args) > 11 else None) or {}
     from pushover import package_reader as PR, hinge_models as HM
     pkg = PR.load(package_path); prm = HM.load_params(params_path)
-    out = run_record(pkg, prm, ch16, PG, loads, rec, xi, None, dt_max=dt, free_vib_s=free_vib, sample_brace=sample_brace, integrator=integrator)
-    if not out.get("converged") and "gravity" not in out.get("reason", ""):
-        # one automatic retry at half the time step: separates numerical loss of convergence from a genuine dynamic instability
-        # (16.4.1.1 counts the record as unacceptable only if it fails again). Disclosed in the record's `retry` field.
-        first = dict(reason=out.get("reason"), dt=dt, fails=out.get("fails"))
-        out = run_record(pkg, prm, ch16, PG, loads, rec, xi, None, dt_max=dt / 2, free_vib_s=free_vib, sample_brace=sample_brace, integrator=integrator)
-        out["retry"] = dict(first_attempt=first, dt=dt / 2, converged=out.get("converged"))
+    out = run_record(pkg, prm, ch16, PG, loads, rec, xi, None, dt_max=dt, free_vib_s=free_vib, sample_brace=sample_brace, integrator=integrator, **budget)
+    if out.get("status") in ("nonconvergence", "incomplete") and "gravity" not in out.get("reason", ""):
+        # one automatic retry at half the time step: separates numerical loss of convergence (or a time-out) from a
+        # genuine dynamic instability (16.4.1.1 counts the record as unacceptable only if it fails to converge again).
+        # Disclosed in the record's `retry` field.
+        first = dict(reason=out.get("reason"), status=out.get("status"), dt=dt, fails=out.get("fails"))
+        out = run_record(pkg, prm, ch16, PG, loads, rec, xi, None, dt_max=dt / 2, free_vib_s=free_vib, sample_brace=sample_brace, integrator=integrator, **budget)
+        out["retry"] = dict(first_attempt=first, dt=dt / 2, converged=out.get("converged"), status=out.get("status"))
     return out

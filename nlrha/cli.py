@@ -167,20 +167,128 @@ def cmd_scale(args):
     print("wrote", os.path.join(out, "gm_scaling.json"))
 
 
+def _fmt_pct(v, nd=2):
+    """'1.23%' or 'not computed' -- NaN / None never printed as a number (NL-20)."""
+    from .acceptance import _f
+    x = _f(v)
+    return ("%.*f%%" % (nd, 100 * x)) if x is not None else "not computed"
+
+
+def _legacy_drift_fix(pkg, results):
+    """Results written before NL-12 hold drifts from two (x, y)-sorted corner nodes per level. Recompute them at
+    vertically aligned points from the recorded master frames (rigid-body kinematics; frame sampling, so a peak can
+    be slightly below the per-step value). Returns the number of records corrected."""
+    from . import drift as DR
+    n = 0
+    pts = None
+    for r in results:
+        if r.get("drift_method") or not (r.get("frames") or {}).get("story"):
+            continue
+        pts = pts or DR.drift_points(pkg)
+        peak, resid = DR.drifts_from_master_frames(pkg, r["frames"]["story"], pts)
+        r["peak_story_drift_legacy"] = r.get("peak_story_drift")
+        r["peak_story_drift"] = peak.tolist()
+        r["residual_drift"] = resid.tolist()
+        r["drift_method"] = "aligned_points"
+        r["drift_note"] = "recomputed from master frames at vertically aligned points (results predate NL-12)"
+        n += 1
+    return n
+
+
 def cmd_report(args):
-    """Rebuild the report from raw_results.pkl (after a report-code fix; no re-analysis)."""
+    """Rebuild the report from raw_results.pkl (after a report-code fix; no re-analysis). Results from builds before
+    NL-12 get their drifts recomputed at vertically aligned points from the recorded master frames."""
     import pickle
     from . import acceptance as AC, report as RP
     pkg, prm, ch16, TL = _load(args)
     out = args.out or os.path.join(str(pkg.root), "nlrha")
     d = pickle.load(open(os.path.join(out, "raw_results.pkl"), "rb"))
+    n_fix = _legacy_drift_fix(pkg, d["results"]) + _legacy_drift_fix(pkg, d.get("results_no_live") or [])
+    if n_fix:
+        print("[16.4.1.2] %d record(s) predate the aligned-point drift: recomputed from the master frames" % n_fix)
     rc = AC.risk_category(pkg, args.risk_category); print("[16.4] Risk Category", rc.replace("_", "/"))
-    acc = AC.evaluate(d["results"], pkg, d["ch16"], d["PG"], d["split"], 1.5 * pkg.basis.SDS, Ie=pkg.basis.Ie or 1.0, rc=rc)
+    SMS = 1.5 * pkg.basis.SDS; Ie = pkg.basis.Ie or 1.0
+    meta = d.get("meta") or {}
+    acc = AC.evaluate(d["results"], pkg, d["ch16"], d["PG"], d["split"], SMS, Ie=Ie, rc=rc, prm=prm, planned=meta.get("planned"),
+                      suite_size=meta.get("suite_size", len(d["gm"].get("selected") or [])), early_abort=meta.get("early_abort"))
+    acc_nl = None
+    if d.get("results_no_live") is not None:
+        acc_nl = AC.evaluate(d["results_no_live"], pkg, d["ch16"], d.get("PG_no_live") or d["PG"], d["split_no_live"], SMS, Ie=Ie, rc=rc, prm=prm,
+                             planned=meta.get("planned"), suite_size=meta.get("suite_size", len(d["gm"].get("selected") or [])),
+                             early_abort=meta.get("early_abort_no_live"))
+    required = d["split"].get("no_live_case_needed")
+    if "share_L0_lt_100" not in d["split"]:
+        # results analysed with the pre-NL-13 bounding-box gravity: decide the 16.3.2 requirement from the framed areas
+        from . import model as MD
+        _, _, split_now = MD.ch16_gravity(pkg, d["ch16"])
+        required = split_now["no_live_case_needed"]
+        meta = dict(meta, legacy_gravity=dict(split_analysed=d["split"], split_framed=split_now))
+        print("[gravity 16.3.2] these results used the pre-NL-13 bounding-box gravity (ratio %.2f); framed areas give ratio %.2f -> no-live case %s"
+              % (d["split"]["ratio"], split_now["ratio"], "REQUIRED" if required else "not required"))
+    AC.combine_no_live(acc, acc_nl, required)
+    acc.setdefault("meta", {}).update(meta)
+    if meta.get("legacy_gravity"):
+        acc["verdict"].setdefault("not_evaluated", [])
+        acc["verdict"]["notes"] = ["gravity of these results: pre-NL-13 bounding-box areas and a 20 psf top-roof live load -- re-run for the framed-area loads"]
     pdir = args.pushover_dir or os.path.join(str(pkg.root), "pushover"); pp = None
     if os.path.exists(os.path.join(pdir, "pushover_package.json")):
         pp = json.load(open(os.path.join(pdir, "pushover_package.json")))
-    print("wrote", RP.write(out, pkg, d["ch16"], prm, d["gm"], d["results"], acc, d["gtab"], d["split"], d["modal"], sum(r["seconds"] for r in d["results"]), pushover_pkg=pp))
+    _print_verdict(acc)
+    print("wrote", RP.write(out, pkg, d["ch16"], prm, d["gm"], d["results"], acc, d["gtab"], d["split"], d["modal"], sum((r.get("seconds") or 0) for r in d["results"]), pushover_pkg=pp))
     _viewer(out, pkg, prm, d["ch16"], d["gm"], d["results"], acc, d["modal"], d["ch16"]["damping"].get("xi_used", 0.025), pp)
+
+
+def _print_verdict(acc):
+    v = acc["verdict"]
+    print("[16.4] unacceptable %d/%d (allowed %d) | mean drift max %s vs %s -> %s | deformation CP ok %s valid-range ok %s | force-controlled ok %s | OVERALL %s"
+          % (v["n_unacceptable"], v["n_records"], v["unacceptable_allowed"], _fmt_pct(v.get("mean_drift_max")), _fmt_pct(acc["limits"]["mean_limit"]),
+             v["mean_drift_ok"], v["deformation_ok"], v["valid_range_ok"], v["force_controlled_ok"], v.get("status") or ("ACCEPTABLE" if v["overall"] else "NOT ACCEPTABLE")))
+    for why in v.get("not_evaluated") or []:
+        print("[16.4]   not evaluated: %s" % why)
+    nr = acc.get("records_not_run") or []
+    if nr:
+        print("[16.4]   records NOT run (%d): %s" % (len(nr), "; ".join(str(x.get("label")) for x in nr)))
+
+
+def _run_suite(jobs, labels, early_nc, allowed, parallel, tag=""):
+    """Run the record jobs. Early abort (off by default) only once the verdict is decided: genuine non-convergence
+    (16.4.1.1 item 1) on more records than 16.4.1.1 permits for the Risk Category -- the remaining records cannot
+    change NOT ACCEPTABLE. Incomplete (time-out) records never trigger it. Returns (results, early_abort info|None);
+    the records not run are listed by the caller (`planned` minus results)."""
+    from . import run as RN, acceptance as AC
+    results = []
+    thr = max(int(early_nc), int(allowed) + 1) if early_nc and early_nc > 0 else 0
+    def check():
+        n_nc = sum(1 for r in results if AC.record_status(r) == "nonconvergence")
+        if thr and n_nc >= thr and len(results) < len(jobs):
+            return dict(n_nc=n_nc, threshold=thr, n_run=len(results), n_skipped=len(jobs) - len(results),
+                        basis=("ASCE 7-22 16.4.1.1: %d record(s) failed to converge (item 1) > %d unacceptable permitted for this Risk Category; "
+                               "the verdict is NOT ACCEPTABLE whatever the remaining %d record(s) give" % (n_nc, allowed, len(jobs) - len(results))))
+        return None
+    early = None
+    if parallel > 1:
+        import multiprocessing as mp
+        with mp.get_context("spawn").Pool(parallel) as pool:
+            if not thr:
+                results = pool.map(RN.run_record_worker, jobs)
+            else:
+                for out in pool.imap(RN.run_record_worker, jobs):
+                    results.append(out)
+                    early = check()
+                    if early:
+                        pool.terminate(); break
+    else:
+        for j in jobs:
+            results.append(RN.run_record_worker(j))
+            if thr:
+                early = check()
+                if early:
+                    break
+    if early:
+        done = {r.get("record") for r in results}
+        early["records_not_run"] = [lab for rid, lab in labels if rid not in done]
+        print("[nlrha]%s early abort: %s. Records NOT run: %s" % (tag, early["basis"], "; ".join(early["records_not_run"])), flush=True)
+    return results, early
 
 
 def cmd_run(args):
@@ -200,7 +308,13 @@ def cmd_run(args):
         sys.exit("xi %.3f exceeds the 16.3.5 cap of %.3f" % (args.xi, ch16["damping"]["xi_max"]))
     ch16["damping"]["xi_used"] = args.xi
     loads, gtab, split = MD.ch16_gravity(pkg, ch16)
-    print("[gravity 16.3.2] sum D %.0f kip, sum 0.5L %.0f kip, ratio %.2f -> no-live case %s" % (split["sum_D"], split["sum_Lexp"], split["ratio"], "REQUIRED" if split["no_live_case_needed"] else "not required"))
+    nl_mode = getattr(args, "no_live_case", "auto") or "auto"
+    run_nl = (nl_mode == "run") or (nl_mode == "auto" and split["no_live_case_needed"])
+    print("[gravity 16.3.2] framed area %.0f ft2; sum D %.0f kip, sum 0.5L %.0f kip, ratio %.2f (<= 0.25: %s), L0 < 100 psf over %.0f%% of the area (>= 75%%: %s) "
+          "-> no-live case %s%s"
+          % (sum(t["area_ft2"] for t in gtab), split["sum_D"], split["sum_Lexp"], split["ratio"], split["ratio"] <= ch16["gravity"]["exception_live_over_dead"],
+             100 * split["share_L0_lt_100"], split["share_L0_lt_100"] >= 0.75, "REQUIRED" if split["no_live_case_needed"] else "not required (exception)",
+             {"run": " -- will be run", "skip": " -- SKIPPED (--no-live-case skip): verdict cannot be ACCEPTABLE" if split["no_live_case_needed"] else "", "auto": " -- will be run" if run_nl else ""}[nl_mode]))
     PG, modal, lo, hi = _modal_and_range(pkg, prm, ch16, loads)
     sets, recs = _library(args)
     tgt, deagg, pf, hz = _target(args, pkg)
@@ -215,51 +329,39 @@ def cmd_run(args):
     elif args.records:
         a, b = args.records.split("-"); sel = range(int(a), int(b) + 1)
     sample_brace = next((t for t, e in ((e["tag"], e) for e in pkg.model.elements) if pkg.schedule.get(t, {}).get("member") == "brace"), None)
-    results = []
-    jobs = [(str(pkg.root), args.params, ch16, PG, loads, chosen[i - 1], args.xi, args.dt, args.free_vib, sample_brace, args.integrator) for i in sel]
+    budget = dict(step_budget_factor=float(getattr(args, "step_budget", 40.0)), wall_budget_s=float(getattr(args, "record_budget_s", 1800.0)))
+    planned = [dict(record=chosen[i - 1]["id"], label="%s %s" % (chosen[i - 1].get("earthquake") or chosen[i - 1]["id"], chosen[i - 1].get("station") or "")) for i in sel]
+    labels = [(q["record"], q["label"]) for q in planned]
+    jobs = [(str(pkg.root), args.params, ch16, PG, loads, chosen[i - 1], args.xi, args.dt, args.free_vib, sample_brace, args.integrator, budget) for i in sel]
     ch16["damping"]["integrator"] = args.integrator; ch16["damping"]["dt_s"] = args.dt
     early_nc = int(getattr(args, "early_abort_nc", 0) or 0)
-    early_aborted = False
-    if args.parallel > 1 and early_nc <= 0:
-        import multiprocessing as mp
-        with mp.get_context("spawn").Pool(args.parallel) as pool:
-            results = pool.map(RN.run_record_worker, jobs)
-    elif args.parallel > 1 and early_nc > 0:
-        import multiprocessing as mp
-        with mp.get_context("spawn").Pool(args.parallel) as pool:
-            for out in pool.imap(RN.run_record_worker, jobs):
-                results.append(out)
-                n_nc = sum(1 for r in results if not r.get("converged"))
-                if n_nc >= early_nc:
-                    early_aborted = True
-                    print("[nlrha] early abort: %d NC (≥%d) — abandoning remaining records; next mesh/method"
-                          % (n_nc, early_nc), flush=True)
-                    pool.terminate()
-                    break
-    else:
-        for j in jobs:
-            results.append(RN.run_record_worker(j))
-            if early_nc > 0:
-                n_nc = sum(1 for r in results if not r.get("converged"))
-                if n_nc >= early_nc:
-                    early_aborted = True
-                    print("[nlrha] early abort: %d NC (≥%d) — abandoning remaining records; next mesh/method"
-                          % (n_nc, early_nc), flush=True)
-                    break
+    rc = AC.risk_category(pkg, args.risk_category); print("[16.4] Risk Category", rc.replace("_", "/"))
+    allowed = ch16["unacceptable_response"].get("max_unacceptable", {}).get(rc, ch16["unacceptable_response"]["max_unacceptable_RC_I_II"])
+    results, early = _run_suite(jobs, labels, early_nc, allowed, args.parallel)
+    results_nl = early_nl = loads_nl = gtab_nl = split_nl = PG_nl = None
+    if run_nl:
+        print("[gravity 16.3.2] analysis WITHOUT live load (1.0 D) on the same %d record(s)" % len(jobs), flush=True)
+        loads_nl, gtab_nl, split_nl = MD.ch16_gravity(pkg, ch16, with_live=False)
+        PG_nl = NM.column_gravity_axials(pkg, loads_nl)
+        jobs_nl = [j[:3] + (PG_nl, loads_nl) + j[5:] for j in jobs]
+        results_nl, early_nl = _run_suite(jobs_nl, labels, early_nc, allowed, args.parallel, tag=" [no-live]")
     out = args.out or os.path.join(str(pkg.root), "nlrha"); os.makedirs(out, exist_ok=True)
+    meta = dict(planned=planned, suite_size=len(chosen), early_abort=early, early_abort_no_live=early_nl, early_aborted=bool(early or early_nl),
+                early_abort_nc=early_nc, budget=budget, no_live_mode=nl_mode)
     import pickle
     with open(os.path.join(out, "raw_results.pkl"), "wb") as f:            # never lose a 30-minute suite to a report bug
-        pickle.dump(dict(results=results, gm=gm, modal=modal, gtab=gtab, split=split, PG=PG, ch16=ch16), f)
-    SMS = 1.5 * pkg.basis.SDS
-    rc = AC.risk_category(pkg, args.risk_category); print("[16.4] Risk Category", rc.replace("_", "/"))
-    acc = AC.evaluate(results, pkg, ch16, PG, split, SMS, Ie=pkg.basis.Ie or 1.0, rc=rc)
-    acc.setdefault("meta", {})["early_aborted"] = bool(early_aborted)
-    acc["meta"]["early_abort_nc"] = early_nc
-    acc["meta"]["n_nc"] = sum(1 for r in results if not r.get("converged"))
-    v = acc["verdict"]
-    print("[16.4] unacceptable %d/%d (allowed %d) | mean drift max %.2f%% vs %.2f%% -> %s | deformation CP ok %s valid-range ok %s | force-controlled ok %s | OVERALL %s"
-          % (v["n_unacceptable"], v["n_records"], v["unacceptable_allowed"], 100 * (v["mean_drift_max"] or 0), 100 * acc["limits"]["mean_limit"], v["mean_drift_ok"],
-             v["deformation_ok"], v["valid_range_ok"], v["force_controlled_ok"], "ACCEPTABLE" if v["overall"] else "NOT ACCEPTABLE"))
+        pickle.dump(dict(results=results, gm=gm, modal=modal, gtab=gtab, split=split, PG=PG, ch16=ch16, meta=meta,
+                         results_no_live=results_nl, gtab_no_live=gtab_nl, split_no_live=split_nl, PG_no_live=PG_nl), f)
+    SMS = 1.5 * pkg.basis.SDS; Ie = pkg.basis.Ie or 1.0
+    acc = AC.evaluate(results, pkg, ch16, PG, split, SMS, Ie=Ie, rc=rc, prm=prm, planned=planned, suite_size=len(chosen), early_abort=early)
+    acc_nl = None
+    if results_nl is not None:
+        acc_nl = AC.evaluate(results_nl, pkg, ch16, PG_nl, split_nl, SMS, Ie=Ie, rc=rc, prm=prm, planned=planned, suite_size=len(chosen), early_abort=early_nl)
+    AC.combine_no_live(acc, acc_nl, split["no_live_case_needed"])
+    acc.setdefault("meta", {}).update(meta)
+    acc["meta"]["n_nc"] = sum(1 for r in results if AC.record_status(r) == "nonconvergence")
+    acc["meta"]["n_incomplete"] = sum(1 for r in results if AC.record_status(r) == "incomplete")
+    _print_verdict(acc)
     pp = None
     pdir = args.pushover_dir or os.path.join(str(pkg.root), "pushover")
     if os.path.exists(os.path.join(pdir, "pushover_package.json")):
@@ -279,8 +381,11 @@ def _viewer(out, pkg, prm, ch16, gm, results, acc, modal, xi, pp):
 
 
 def _sf_bounds(args):
+    """--sf-bounds lo-hi | none. Default (option absent): ground_motions.SF_BOUNDS_DEFAULT (0.25-4)."""
     v = getattr(args, "sf_bounds", None)
     if not v:
+        return "default"
+    if str(v).strip().lower() in ("none", "off", "0"):
         return None
     lo, hi = str(v).split("-") if "-" in str(v) else str(v).split(",")
     return (float(lo), float(hi))
@@ -298,7 +403,7 @@ def main(argv=None):
             p.add_argument("--site-hazard", help="site_hazard.json written by `nlrha hazard` (default <package>/nlrha/site_hazard.json)")
             p.add_argument("--cs-period", type=float, help="which conditioning period of the site hazard to use with --target cs (default: the first)")
             p.add_argument("--pulse-fraction", type=float, default=None, help="share of the suite reserved for pulse-type records (default: the near-fault screen of the site hazard, else 0)")
-            p.add_argument("--sf-bounds", help="keep only records whose shape-fit scale factor lies in lo-hi (e.g. 0.25-4)")
+            p.add_argument("--sf-bounds", help="keep only records whose shape-fit scale factor lies in lo-hi (default 0.25-4; 'none' = unbounded)")
         if name == "hazard":
             p.add_argument("--lat", type=float, required=True); p.add_argument("--lon", type=float, required=True)
             p.add_argument("--vs30", type=float, help="Vs30 for the disaggregation (default: the USGS site-class value)")
@@ -319,7 +424,15 @@ def main(argv=None):
             p.add_argument("--integrator", default="hht", choices=["hht", "newmark"], help="HHT alpha=0.9 (default; damps spurious high modes) or Newmark average acceleration")
             p.add_argument("--member-nseg", type=int, default=None, help="member subdivisions (default: 4 fibre / 1 imk)")
             p.add_argument("--plasticity", default="imk", choices=["fibre", "fiber", "imk"], help="product default imk=ModIMK; fibre=distributed forceBeamColumn (ladder climb)")
-            p.add_argument("--early-abort-nc", type=int, default=2, help="abandon remaining records once N are NC (0=disable; product default 2)")
+            p.add_argument("--early-abort-nc", type=int, default=0,
+                           help="abandon the remaining records once at least N records fail to CONVERGE and that already exceeds the 16.4.1.1 "
+                                "allowance for the Risk Category (verdict decided). 0 = off (default): the full suite is run. Records not run are listed in the report.")
+            p.add_argument("--no-live-case", default="auto", choices=["auto", "run", "skip"],
+                           help="16.3.2 analysis without live load (1.0 D): auto = run it when the exception does not apply (default); run = always; "
+                                "skip = never (the verdict then cannot be ACCEPTABLE when the case is required)")
+            p.add_argument("--record-budget-s", type=float, default=1800.0, help="wall-time budget per record (s; 0 = none). A record that runs out is "
+                           "reported 'incomplete (time-out)', never as non-convergence")
+            p.add_argument("--step-budget", type=float, default=40.0, help="analyze-call budget per record, as a multiple of its nominal step count (0 = none)")
     lib = sub.add_parser("library", help="index a folder of PEER .AT2 / CSV record pairs (writes index.json; reads PEER _SearchResults.csv metadata when present)")
     lib.add_argument("folder")
     cr = sub.add_parser("criteria", help="draft the 16.1.4 design criteria document (docx + html) from the package and whatever analyses exist")

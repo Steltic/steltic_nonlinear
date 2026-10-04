@@ -93,8 +93,11 @@ def period_range(T1x, T1y, T90, factor_upper=2.0):
 
 
 # --------------------------------------------------------------------------- selection + scaling
+SF_BOUNDS_DEFAULT = (0.25, 4.0)      # common practice bound on amplitude scale factors (ASCE 7-22 C16.2.3 discusses limiting them)
+
+
 def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=None, verbose=True,
-                     target=None, deagg=None, pulse_fraction=0.0, sf_bounds=None, sets=None):
+                     target=None, deagg=None, pulse_fraction=0.0, sf_bounds="default", sets=None):
     """Amplitude scaling per 16.2.3.2: one factor per pair (both components), such that the suite mean of the
     maximum-direction spectra generally matches or exceeds the target and is >= 90% of it at every period in
     [T_lower, T_upper]. Selection: the n pairs whose RotD100 shape best fits the target (smallest log-ratio
@@ -103,7 +106,14 @@ def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=
     Site-specific extras (nlrha/site_hazard.py): `target` = (periods, sa, label) replaces the code spectrum
     (multi-period MCE_R or a conditional spectrum); `deagg` adds a soft M / R consistency penalty to the ranking
     (16.2.2); `pulse_fraction` reserves that share of the suite for records flagged pulse=True in their index;
-    `sf_bounds` = (lo, hi) drops records whose shape-fit factor falls outside it before the suite is formed."""
+    `sf_bounds` = (lo, hi) drops records whose shape-fit factor falls outside it before the suite is formed; default
+    (0.25, 4.0) (NL-25: earlier builds were unbounded and produced factors up to 5.7); None / False = unbounded. If
+    fewer than n records lie inside, the nearest ones outside are taken and the suite says so (`sf_note`); final
+    factors outside the bounds after the common multiplier are flagged too."""
+    if isinstance(sf_bounds, str) and sf_bounds == "default":
+        sf_bounds = SF_BOUNDS_DEFAULT
+    if not sf_bounds:
+        sf_bounds = None
     periods = periods if periods is not None else np.geomspace(max(0.05, 0.5 * T_lower), 1.2 * T_upper, 40)
     inrange = (periods >= T_lower) & (periods <= T_upper)
     if target is None:
@@ -123,7 +133,17 @@ def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=
             from . import site_hazard as SH
             r["consistency_penalty"] = SH.consistency_penalty(r, deagg)
         r["rank_score"] = r["shape_misfit"] + r["consistency_penalty"]
-    pool = [r for r in recs if not sf_bounds or (sf_bounds[0] <= r["sf_shape"] <= sf_bounds[1])] or list(recs)
+    sf_notes = []
+    pool = [r for r in recs if not sf_bounds or (sf_bounds[0] <= r["sf_shape"] <= sf_bounds[1])]
+    if sf_bounds and len(pool) < n_select:
+        out_b = sorted((r for r in recs if r not in pool),
+                       key=lambda r: abs(np.log(r["sf_shape"] / min(max(r["sf_shape"], sf_bounds[0]), sf_bounds[1]))))
+        add = out_b[:n_select - len(pool)]
+        if add:
+            sf_notes.append("only %d library records have a shape-fit factor within %.2f-%.2f; %d taken from outside (nearest): %s"
+                            % (len(pool), sf_bounds[0], sf_bounds[1], len(add), ", ".join("%s %.2f" % (r["id"], r["sf_shape"]) for r in add)))
+        pool = pool + add
+    pool = pool or list(recs)
     ranked = sorted(pool, key=lambda r: r["rank_score"])
     n_pulse = int(round(pulse_fraction * n_select)) if pulse_fraction else 0
     pulses = [r for r in ranked if r.get("pulse")][:n_pulse]
@@ -142,6 +162,11 @@ def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=
         r["sf"] *= k
     mean = suite_mean()
     ratio = mean[inrange] / tgt[inrange]
+    if sf_bounds:
+        outside = [r for r in chosen if not (sf_bounds[0] - 1e-9 <= r["sf"] <= sf_bounds[1] + 1e-9)]
+        if outside:
+            sf_notes.append("final scale factor outside %.2f-%.2f after the common multiplier %.2f: %s"
+                            % (sf_bounds[0], sf_bounds[1], k, ", ".join("%s %.2f" % (r["id"], r["sf"]) for r in outside)))
     # 16.2.4 orientation: alternate comp1 -> X / Y so the per-direction mean component spectra stay within +-10% of the overall mean
     for i, r in enumerate(chosen):
         r["x_comp"] = 1 if i % 2 == 0 else 2
@@ -173,7 +198,7 @@ def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=
                orientation_ok=(max(devx, devy) <= 0.10), common_multiplier=k,
                sets=sets or [dict(set="FEMA P-695 far-field set (22 pairs)", n=len(recs))], n_library=len(recs), n_pool=len(pool),
                deagg=({"M": (deagg.get("mean") or {}).get("M"), "R_km": (deagg.get("mean") or {}).get("R_km"), "eps": (deagg.get("mean") or {}).get("eps")} if deagg else None),
-               pulse_fraction=pulse_fraction, n_pulse=len(pulses), pulse_note=pulse_note, sf_bounds=list(sf_bounds) if sf_bounds else None,
+               pulse_fraction=pulse_fraction, n_pulse=len(pulses), pulse_note=pulse_note, sf_bounds=list(sf_bounds) if sf_bounds else None, sf_note="; ".join(sf_notes) or None,
                selected=[dict(id=r["id"], earthquake=r.get("earthquake"), station=r.get("station"), M=r.get("M"), r_rup_km=r.get("r_rup_km"),
                               site_class=r.get("site_class"), dt=r["dt"], duration_s=r["duration_s"], sf=r["sf"], shape_misfit=r["shape_misfit"],
                               consistency_penalty=r.get("consistency_penalty", 0.0), pulse=bool(r.get("pulse")), year=r.get("year"),
@@ -184,4 +209,6 @@ def select_and_scale(recs, SDS, SD1, TL, T_lower, T_upper, n_select=11, periods=
               "orientation dev X %.2f Y %.2f (<=0.10: %s); scale factors %.2f-%.2f"
               % (len(chosen), T_lower, T_upper, ratio.min(), ratio.mean(), out["passes_90pct"], devx, devy, out["orientation_ok"],
                  min(r["sf"] for r in chosen), max(r["sf"] for r in chosen)))
+        if out["sf_note"]:
+            print("[gm] !! " + out["sf_note"])
     return out, chosen
