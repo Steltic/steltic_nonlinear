@@ -83,6 +83,11 @@ def fig_hinges(run, hinges, acc, lvl):
     return _png(fig)
 
 
+def _fdc(x):
+    """D/C with enough digits that a small non-zero ratio never prints as 0.00 (read as 'nothing monitored')."""
+    return _f(x, 3) if isinstance(x, (int, float)) and 0 < x < 0.01 else _f(x)
+
+
 def _f(x, nd=2):
     if x is None: return "—"
     if isinstance(x, float) and (math.isnan(x) or math.isinf(x)): return "∞" if x == float("inf") else "—"
@@ -225,8 +230,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                 _PF.augment_groups(acc)
             H.append("<p><b>%s → δ<sub>t</sub> = %.2f in (step %d) · performance level checked: %s (%s) · worst D/C: IO %s, DC %s, LS %s, LtdS %s, CP %s %s · "
                      "max story drift %.2f%% · max column axial %s kip</b> · monitored: %s</p>"
-                     % (lvl, acc["roof_disp_in"], acc["step"], perf, _PF.LEVEL_NAMES[perf], _f(acc["worst_DC"]["IO"]), _f(acc["worst_DC"]["DC"]),
-                        _f(acc["worst_DC"]["LS"]), _f(acc["worst_DC"]["LtdS"]), _f(acc["worst_DC"]["CP"]),
+                     % (lvl, acc["roof_disp_in"], acc["step"], perf, _PF.LEVEL_NAMES[perf], _fdc(acc["worst_DC"]["IO"]), _fdc(acc["worst_DC"]["DC"]),
+                        _fdc(acc["worst_DC"]["LS"]), _fdc(acc["worst_DC"]["LtdS"]), _fdc(acc["worst_DC"]["CP"]),
                         _tag(acc["worst_DC"][perf] is not None and acc["worst_DC"][perf] <= 1.0), 100 * acc["max_story_drift"], _f(acc["col_N_max_kip"], 0),
                         ", ".join("%s %d" % (k, v) for k, v in (acc.get("monitored") or {}).items() if v)))
             H.append("<table><tr><th>Hinge group</th><th>Section</th><th>elev. (in)</th><th>hinges</th><th>yielded</th><th>θ<sub>pl,max</sub> (rad) · braces: |Δ|<sub>max</sub> (in) · BRB: total |Δ| (in) · links: γ<sub>p</sub>·e (in)</th>"
@@ -257,7 +262,7 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
         H.append("<tr><td>Inelastic drift demand at MCE<sub>R</sub> (%s)</td><td>roof δ<sub>t</sub>/H = %.2f%%, max story %s</td><td>Ch. 8 drift (C<sub>d</sub>δ<sub>e</sub>/I<sub>e</sub>)</td></tr>"
                  % (d, 100 * n2["target_over_H"], ("%.2f%%" % (100 * _md)) if _md is not None else "— (δ<sub>t</sub> not reached)"))
         def _lvl(a, k):
-            return _f(a["worst_DC"].get(k)) if a.get("status", "evaluated") == "evaluated" else ("TARGET NOT REACHED" if a.get("status") == "target_not_reached" else "NOT EVALUATED")
+            return _fdc(a["worst_DC"].get(k)) if a.get("status", "evaluated") == "evaluated" else ("TARGET NOT REACHED" if a.get("status") == "target_not_reached" else "NOT EVALUATED")
         _l1, _l2 = _PF.bpon_levels(prm.get("_risk_category") or "I_II")
         H.append("<tr><td>Component deformation acceptance (%s)</td><td>%s D/C %s at BSE-1N · %s D/C %s at BSE-2N</td><td>Ch. 6 member D/C (strength only)</td></tr>"
                  % (d, _l1, _lvl(R["acc"]["BSE-1N"], _l1), _l2, _lvl(R["acc"]["BSE-2N"], _l2)))
