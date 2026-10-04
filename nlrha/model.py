@@ -1,6 +1,11 @@
 """model.py -- the NLRHA model is the Pushover Analyst's hinge model (steltic_pushover.nonlinear_model) plus
 Chapter 16 gravity (16.3.2), Rayleigh damping <= 2.5% (16.3.5) on the elastic elements + mass, and modal data
 for the period range (16.2.3.1). Nothing is re-derived from the Steltic package here -- one model, three analyses.
+
+The builder is told it is building for the NLRHA (prm["_analysis"] = "nlrha"), which switches the CBF braces to the
+physical-theory fibre brace with fatigue when brace_axial.nlrha_element = "physical_theory" (NL-10). BRBs (NL-02) and
+EBF links (NL-03) come from the same builder. degradation_statement() writes the ASCE 7-22 16.3.1 statement of what
+strength / stiffness degradation the model contains (stats["degradation_16_3_1"]) for the report.
 """
 from __future__ import annotations
 import math
@@ -45,8 +50,10 @@ def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
         os.environ["SNL_MEMBER_NSEG"] = str(member_nseg)
     if plasticity is not None:
         os.environ["SNL_PLASTICITY"] = str(plasticity)
-    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=True,
+    prm_b = dict(prm); prm_b["_analysis"] = "nlrha"                 # NL-10: physical-theory braces etc. for the NLRHA only
+    hinges, stats = NM.build_nonlinear(pkg, prm_b, PG, verbose=True,
                                        member_nseg=member_nseg, plasticity=plasticity)
+    stats["degradation_16_3_1"] = degradation_statement(prm, stats)
     # Fibre: all forceBeamColumn tags for Rayleigh region. IMK: elastic_ele_tags (RBS extras) or pack tags.
     if stats.get("plasticity") == "fibre" and stats.get("fibre_eles"):
         elastic_eles = list(stats["fibre_eles"])
@@ -63,6 +70,38 @@ def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
                 for si in range(1, nseg):
                     elastic_eles.append(SEG_ELE_BASE + e["tag"] * 100 + si)
     return hinges, stats, elastic_eles
+
+
+def degradation_statement(prm, stats):
+    """ASCE 7-22 16.3.1 statement (NL-10): 'Degradation in element strength or stiffness shall be included in the
+    hysteretic models unless it can be demonstrated that response is not sufficient to produce these effects.'
+
+    Returns dict(items=[(component, modelled text, ok)], demonstrated=bool, text=str). `demonstrated` is True only when
+    every component family present has its degradation modelled (or, for BRBs, is covered by AISC 342-22 Commentary E3:
+    no strength/stiffness degradation expected). It never claims a demonstration the model does not make."""
+    deg = stats.get("degradation") or {}
+    items = []
+    plast = deg.get("plasticity", stats.get("plasticity"))
+    lam_mode = str((prm.get("cyclic_deterioration") or {}).get("mode") or "").lower()
+    if plast == "fibre":
+        items.append(("Beams / columns", deg.get("members", "fibre: no strength degradation"), False))
+    else:
+        on = "deterioration ON" in deg.get("members", "")
+        items.append(("Beams / columns (IMK hinges)", deg.get("members", "?") + ("" if on else
+                      " -- 16.3.1 NOT satisfied for these members unless the record peaks stay below the capping rotation a"), on))
+    if "braces" in deg:
+        items.append(("Buckling braces", deg["braces"], "physical-theory" in deg["braces"]))
+    if "brb" in deg:
+        items.append(("Buckling-restrained braces", deg["brb"], True))
+    if "links" in deg:
+        items.append(("EBF links (shear)", deg["links"], True))
+    demonstrated = all(ok for _, _, ok in items)
+    text = ("ASCE 7-22 16.3.1 -- degradation in the hysteretic models: " + "; ".join("%s: %s" % (c, t) for c, t, _ in items)
+            + (". All component families present include strength/stiffness degradation." if demonstrated else
+               ". NOT DEMONSTRATED for: %s." % ", ".join(c for c, _, ok in items if not ok)))
+    if lam_mode == "" and plast != "fibre":
+        text += " (cyclic_deterioration taken from the repository template -- literature Lambda expressions, verify.)"
+    return dict(items=[dict(component=c, modelled=t, ok=ok) for c, t, ok in items], demonstrated=demonstrated, text=text)
 
 
 def modal(pkg, nmodes=12):

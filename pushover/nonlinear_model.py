@@ -29,6 +29,7 @@ from __future__ import annotations
 import math
 import openseespy.opensees as ops
 from . import hinge_models as HM
+from . import sections_db as SDB
 from . import rbs_remesh as RBS
 from . import fbc_concentrated as FBC
 
@@ -44,6 +45,14 @@ PZ_NODE_BASE = 50_000_000     # scissors beam-side node: PZ_NODE_BASE + joint_no
 PZ_ZL_BASE = 60_000_000       # scissors PZ zeroLength: PZ_ZL_BASE + joint_node
 SEG_NODE_BASE = 70_000_000     # intermediate mesh nodes: SEG_NODE_BASE + ele*100 + i
 SEG_ELE_BASE = 80_000_000      # sub-element tags (i>0): SEG_ELE_BASE + ele*100 + i
+# NL-02 / NL-03 / NL-10 element families (tags chosen clear of every base above and of fibre_model's 90-93M)
+PT_NODE_BASE = 94_000_000      # physical-theory brace: end pin nodes ele*10+(1|2), camber nodes ele*10+2+i
+PT_ELE_BASE = 95_000_000       # physical-theory brace fibre segments: ele*10 + i
+PT_ZL_BASE = 96_000_000        # physical-theory brace end pins: ele*10 + (1|2)
+PT_SEC_BASE = 97_000_000       # physical-theory brace fibre sections / integrations
+PT_TRANSF_BASE = 9_000_000     # physical-theory brace corotational transforms: + ele
+PT_MAT0 = 47_000_000           # fibre materials of physical-theory braces
+LINK_END = 3                   # link shear spring: node HN_BASE + ele*10 + 3, zeroLength ZL_BASE + ele*10 + 3
 
 
 def _dir_vec(p1, p2):
@@ -302,6 +311,220 @@ def _build_rbs7_beam(pkg, e, prm, sec, spec, slot, dof, p1, p2, L, geo, beam_sid
     return mat
 
 
+# --------------------------------------------------------------------------- NL-02 / NL-03 / NL-10 element builders
+def element_context(pkg, prm):
+    """Per-build data for the special elements: BRB package data (NL-02) and the EBF link census (NL-03)."""
+    links = HM.find_links_pkg(pkg, prm, member_kind)
+    return dict(brb=HM.brb_package_data(pkg.calc), links=links, pt_secs={}, pt_builder=None, pt_count=0)
+
+
+def _note(stats, msg):
+    w = stats.setdefault("model_warnings", [])
+    if msg not in w:
+        w.append(msg)
+
+
+def _brace_hinge(e, sec, p1, p2, spec, mat, K0, **extra):
+    return dict(ele=e["tag"], end=0, kind="brace", section=sec, dof=0, K0=K0, mat=mat, node=e["n1"], z=max(p1[2], p2[2]),
+                spec=spec, **extra)
+
+
+def build_brace(pkg, e, sec, prm, mat, hinges, stats, ctx):
+    """Nonlinear brace for element e (a raw Truss or an elasticBeamColumn tagged 'brace'). Returns the material counter.
+
+    BRB label (NL-02)          -> corotTruss with the C3.3 BRB material (hinge_models.brb_spec / make_brb_material);
+                                  stiffness area = the HR truss area (KF*Asc), yielding area = Asc.
+    buckling brace, NSP        -> corotTruss + Hysteretic on the Table C3.4 (or placeholder) backbone (unchanged).
+    buckling brace, NLRHA with brace_axial.nlrha_element = physical_theory (NL-10) -> cambered corotational fibre brace,
+                                  Steel02 + Fatigue (rectangular HSS only; other shapes keep the truss and are flagged)."""
+    m = pkg.model
+    p1, p2 = m.nodes[e["n1"]], m.nodes[e["n2"]]; _, L = _dir_vec(p1, p2)
+    if SDB.is_brb(sec):
+        A_model = float(e["raw"][4]) if "etype" in e else float(e["A"])
+        spec = HM.brb_spec(sec, L, prm, A_model=A_model, pkg_data=ctx["brb"])
+        mat += 1; name = HM.make_brb_material(mat, spec, prm)
+        ops.element("corotTruss", e["tag"], e["n1"], e["n2"], spec.A_model, mat)
+        hinges[e["tag"]] = _brace_hinge(e, sec, p1, p2, spec, mat, spec.K_axial, brb=True, material=name)
+        stats["brb"] = stats.get("brb", 0) + 1; stats["brace_nonlinear"] += 1
+        for f in spec.flags:
+            if f.startswith("WARNING") or "FALLBACK" in f or "TEMPLATE" in f:
+                _note(stats, "BRB %s: %s" % (sec, f))
+        return mat
+    spec = HM.brace_spec(sec, L, prm)
+    if HM.brace_element_form(prm) == "physical_theory":
+        if str(sec).upper().startswith("HSS") and HM._hss_outside_and_tdes(sec)[0]:
+            mat = _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges, stats, ctx)
+            stats["brace_nonlinear"] += 1
+            return mat
+        _note(stats, "physical-theory brace needs a rectangular HSS; %s kept as Hysteretic truss (no cyclic degradation)" % sec)
+    mat += 1; HM.make_brace_material(mat, spec, prm)
+    ops.element("corotTruss", e["tag"], e["n1"], e["n2"], spec.A, mat)
+    hinges[e["tag"]] = _brace_hinge(e, sec, p1, p2, spec, mat, E_KSI_AL(spec))
+    stats["brace_nonlinear"] += 1
+    return mat
+
+
+def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges, stats, ctx):
+    """NL-10: Uriz & Mahin (2008) physical-theory brace for the NLRHA.
+
+    n1 -[pin: zeroLength, rigid translations + torsion, bending released]- a -[nseg corotational forceBeamColumn, camber
+    camber_over_L*L half-sine out of the frame plane]- b -[pin]- n2. Fibre section = rectangular HSS (0.93 t_nom) of
+    Steel02 (Fy = Ry Fy, b, R0) wrapped in Fatigue (eps0, m). The registered tag e['tag'] is a zero-stiffness
+    corotTruss n1-n2 that measures the end-to-end axial deformation for the monitors; the force comes from the first
+    fibre segment (hinge_models.brace_axial_force via hinges[tag]['force_ele'])."""
+    from steltic_ddm.sections_fiber import FiberSectionBuilder
+    tag = e["tag"]
+    fp = HM.brace_fatigue_params(sec, spec.KL_r, spec.Fye_ksi, prm)
+    if ctx.get("pt_builder") is None:
+        ctx["pt_builder"] = FiberSectionBuilder(ops, Fy=spec.Fye_ksi, hardening=fp["b"], residual="none", elastic=False, mat_tag0=PT_MAT0)
+    bld = ctx["pt_builder"]
+    key = (str(sec).upper(), round(spec.Fye_ksi, 3), round(fp["eps0"], 5), fp["m"])
+    if key not in ctx["pt_secs"]:
+        st = PT_SEC_BASE + len(ctx["pt_secs"]) + 1
+        bld.hss_rect(st, str(sec).upper(), n_per_side=8, n_thick=2, residual="none",
+                     material=dict(kind="Steel02", Fy=spec.Fye_ksi, b=fp["b"], R0=fp["R0"], fatigue=(fp["eps0"], fp["m"])))
+        ops.beamIntegration("Lobatto", st, st, max(3, fp["nip"]))
+        ctx["pt_secs"][key] = st
+    st = ctx["pt_secs"][key]
+    ax = [(p2[i] - p1[i]) / L for i in range(3)]
+    w = [ax[1], -ax[0], 0.0]                                   # horizontal, perpendicular to the brace: out of the frame plane
+    nw = math.sqrt(w[0] ** 2 + w[1] ** 2)
+    w = [1.0, 0.0, 0.0] if nw < 1e-9 else [v / nw for v in w]
+    tr = PT_TRANSF_BASE + tag
+    ops.geomTransf("Corotational", tr, *w)
+    na, nb = PT_NODE_BASE + tag * 10 + 1, PT_NODE_BASE + tag * 10 + 2
+    ops.node(na, *p1); ops.node(nb, *p2)
+    ref = (0.0, 0.0, 1.0) if abs(ax[2]) < 0.9 else (1.0, 0.0, 0.0)
+    yv = (ref[1] * ax[2] - ref[2] * ax[1], ref[2] * ax[0] - ref[0] * ax[2], ref[0] * ax[1] - ref[1] * ax[0])
+    for k, (ng, nd) in enumerate(((e["n1"], na), (e["n2"], nb)), start=1):
+        ops.element("zeroLength", PT_ZL_BASE + tag * 10 + k, ng, nd, "-mat", 1, 1, 1, 2, "-dir", 1, 2, 3, 4,
+                    "-orient", *ax, *yv)                          # local 4 = brace torsion kept; bending (5, 6) released
+    nseg = max(2, min(fp["nseg"], 8))
+    chain = [na]
+    for i in range(1, nseg):
+        f = i / nseg
+        off = fp["camber"] * L * math.sin(math.pi * f)
+        nt = PT_NODE_BASE + tag * 10 + 2 + i
+        ops.node(nt, *[p1[q] + (p2[q] - p1[q]) * f + w[q] * off for q in range(3)])
+        chain.append(nt)
+    chain.append(nb)
+    segs = []
+    etype = fp.get("element", "forceBeamColumn")
+    for i in range(nseg):
+        et = PT_ELE_BASE + tag * 10 + i
+        if etype == "dispBeamColumn":
+            ops.element("dispBeamColumn", et, chain[i], chain[i + 1], tr, st)
+        else:
+            ops.element("forceBeamColumn", et, chain[i], chain[i + 1], tr, st, "-iter", 50, 1e-6)
+        segs.append(et)
+    mat += 1
+    ops.uniaxialMaterial("Elastic", mat, 1.0e-6)
+    ops.element("corotTruss", tag, e["n1"], e["n2"], 1.0, mat)  # deformation monitor (no stiffness)
+    hinges[tag] = _brace_hinge(e, sec, p1, p2, spec, mat, E_KSI_AL(spec), form="physical_theory", force_ele=segs[0],
+                               segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"])
+    stats["brace_physical_theory"] = stats.get("brace_physical_theory", 0) + 1
+    stats.setdefault("pt_ele_tags", []).extend(segs)
+    for f in fp["flags"]:
+        _note(stats, "physical-theory brace %s: %s" % (sec, f))
+    return mat
+
+
+def build_link_imk(pkg, e, sec, prm, mat, hinges, stats, ctx, beam_side=None):
+    """NL-03 EBF link, concentrated-plasticity form:
+        n1 -[zeroLength: shear spring on global Z (link shear), rigid elsewhere]- s -[IMK flexural spring]- ni
+           == elastic interior (I x (n+1)/n) == nj -[IMK flexural spring]- n2
+    Shear spring: hinge_models.link_specs / make_link_shear_material (Table C2.4 backbone, Vp = 0.6 Fye Alw), registered
+    as kind 'link' (deformation = transverse displacement; limits = gamma x e). Flexural springs: Table C2.2 values,
+    registered as kind 'beam' with section '<sec> link'."""
+    m = pkg.model
+    tag = e["tag"]; p1, p2 = m.nodes[e["n1"]], m.nodes[e["n2"]]; _, L = _dir_vec(p1, p2)
+    shear, flex, info = HM.link_specs(sec, L, prm)
+    sn = HN_BASE + tag * 10 + LINK_END
+    ops.node(sn, *p1)
+    mat += 1; HM.make_link_shear_material(mat, shear, prm)
+    mats = {1: 1, 2: 1, 3: mat, 4: 2, 5: 2, 6: 2}
+    zl = ZL_BASE + tag * 10 + LINK_END
+    n1_attach = beam_side.get(e["n1"], e["n1"]) if beam_side else e["n1"]
+    ops.element("zeroLength", zl, n1_attach, sn, "-mat", *[mats[k] for k in (1, 2, 3, 4, 5, 6)], "-dir", 1, 2, 3, 4, 5, 6)
+    hinges[zl] = dict(ele=tag, end=0, kind="link", section=sec, dof=3, K0=shear.Ks, mat=mat, node=e["n1"], z=p1[2], spec=shear, link=info)
+    slot = strong_I_slot(pkg, e, "beam"); dof = strong_rot_dof(pkg, e, "beam")
+    I = e[slot]
+    ni, nj = HN_BASE + tag * 10 + 1, HN_BASE + tag * 10 + 2
+    ops.node(ni, *p1); ops.node(nj, *p2)
+    args = dict(A=e["A"], E=e["E"], G=e["G"], J=e["J"], Iy=e["Iy"], Iz=e["Iz"])
+    args[slot] = I * (N_STIFF + 1.0) / N_STIFF
+    ops.element("elasticBeamColumn", tag, ni, nj, args["A"], args["E"], args["G"], args["J"], args["Iy"], args["Iz"], e["transf"])
+    stats.setdefault("elastic_ele_tags", []).append(tag)
+    K0 = N_STIFF * 6.0 * e["E"] * I / L
+    post = prm.get("numerics", {}).get("post_cap_ratio", 0.15)
+    other_rot = 4 if dof == 5 else 5
+    n2_attach = beam_side.get(e["n2"], e["n2"]) if beam_side else e["n2"]
+    for end, attach, nn, z in ((1, sn, ni, p1[2]), (2, n2_attach, nj, p2[2])):
+        mat += 1
+        HM.make_imk_material(mat, flex, K0, post_cap_ratio=post)
+        mz = {1: 1, 2: 1, 3: 1, other_rot: 2, 6: 2, dof: mat}
+        zt = ZL_BASE + tag * 10 + end
+        ops.element("zeroLength", zt, attach, nn, "-mat", *[mz[k] for k in (1, 2, 3, 4, 5, 6)], "-dir", 1, 2, 3, 4, 5, 6)
+        hinges[zt] = dict(ele=tag, end=end, kind="beam", section="%s link" % sec, dof=dof, K0=K0, mat=mat,
+                          node=e["n1"] if end == 1 else e["n2"], z=z, spec=flex, link=info)
+    stats["links"] = stats.get("links", 0) + 1
+    return mat
+
+
+def link_shear_spring(e, p1, p2, sec, prm, mat, hinges, stats, tiny=None):
+    """NL-03 shear spring only (fibre path): n1 -[zeroLength shear on global Z]- s. Returns (s, mat); the caller runs
+    the fibre chain from s to n2 (flexural yielding is distributed in the fibres)."""
+    tag = e["tag"]
+    L = math.dist(p1, p2)
+    shear, flex, info = HM.link_specs(sec, L, prm)
+    sn = HN_BASE + tag * 10 + LINK_END
+    ops.node(sn, *p1)
+    if tiny:
+        ops.mass(sn, *([tiny] * 6))
+    mat += 1; HM.make_link_shear_material(mat, shear, prm)
+    mats = {1: 1, 2: 1, 3: mat, 4: 2, 5: 2, 6: 2}
+    zl = ZL_BASE + tag * 10 + LINK_END
+    ops.element("zeroLength", zl, e["n1"], sn, "-mat", *[mats[k] for k in (1, 2, 3, 4, 5, 6)], "-dir", 1, 2, 3, 4, 5, 6)
+    hinges[zl] = dict(ele=tag, end=0, kind="link", section=sec, dof=3, K0=shear.Ks, mat=mat, node=e["n1"], z=p1[2], spec=shear, link=info)
+    stats["links"] = stats.get("links", 0) + 1
+    return sn, mat
+
+
+def finish_stats(stats, ctx, prm, plasticity):
+    """Census + degradation disclosure common to both builders (NL-02 / NL-03 / NL-10)."""
+    links = ctx.get("links") or {}
+    stats["link_census"] = HM.link_census_summary(links)
+    for v in links.values():
+        if v.get("skipped"):
+            _note(stats, "link %s (%s): %s" % (v["tag"], v["section"], v["skipped"]))
+    if stats["link_census"]["n"]:
+        _note(stats, "EBF links (%d): link axial force (AISC 342-22 E2.4c, PUF/Pye > 0.6 -> elastic) is NOT checked" % stats["link_census"]["n"])
+    deg = dict(plasticity=plasticity)
+    lam_mode = str((HM.param_group(prm, "cyclic_deterioration")[0]).get("mode", "none")).lower()
+    if plasticity == "fibre":
+        deg["members"] = ("NONE: fibre forceBeamColumn sections are Steel01 with 1% hardening -- no local buckling, no in-cycle or "
+                          "cyclic strength degradation, no fracture; the capacity curve has no member-level strength loss, so Vmax, "
+                          "Omega and mu_T are upper/lower bounds respectively")
+        _note(stats, "FIBRE NSP: member strength degradation is NOT modelled (no local buckling / fracture in the fibres); "
+                     "use --plasticity imk for the AISC 342 backbones with post-capping strength loss")
+    else:
+        deg["members"] = ("IMK hinges: in-cycle post-capping strength loss to c*My per the AISC 342 backbone; cyclic (energy-based) "
+                          "deterioration %s" % ("ON (cyclic_deterioration.mode=%s)" % lam_mode if lam_mode not in ("none", "off") else "OFF"))
+    nb = stats.get("brace_nonlinear", 0) - stats.get("brb", 0)
+    if nb > 0:
+        deg["braces"] = ("physical-theory fibre braces with Steel02 + Fatigue: buckling, cyclic degradation and low-cycle-fatigue "
+                         "fracture (%d braces)" % stats.get("brace_physical_theory", 0)) if stats.get("brace_physical_theory") else \
+            "Hysteretic truss on the Table C3.4 backbone: in-cycle post-buckling loss only, NO cyclic degradation (damage = 0)"
+    if stats.get("brb"):
+        deg["brb"] = ("BRB (%d): no cyclic degradation modelled -- AISC 342-22 Commentary E3: BRBs 'are expected to withstand significant "
+                      "inelastic deformations without strength or stiffness degradation'; strength is lost beyond b (Table C3.3)" % stats["brb"])
+    if stats.get("links"):
+        deg["links"] = ("EBF link shear springs (%d): Table C2.4 backbone with post-capping loss to c*Vp and loss beyond b; cyclic damage "
+                        "per ebf_link.shear.damage1/2" % stats["links"])
+    stats["degradation"] = deg
+    return stats
+
+
 def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=None,
                     fibre_nip=5, fibre_nf_flange=(8, 4), fibre_nf_web=(16, 2), fibre_residual="none"):
     """Build the nonlinear model. Returns (hinges, stats).
@@ -386,17 +609,12 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
             beam_side[nj] = bn
             ops.node(bn, *m.nodes[nj])
             ops.mass(bn, *([tiny] * 6))
+    ctx = element_context(pkg, prm)
     for e in m.elements:
         if "etype" in e:                                    # raw (non-elasticBeamColumn) element
             kind = member_kind(pkg, e); sec = pkg.schedule.get(e["tag"], {}).get("section")
             if e["etype"] in ("Truss", "truss", "corotTruss") and kind == "brace" and sec and str(sec).upper() != "GHOST":
-                p1, p2 = m.nodes[e["n1"]], m.nodes[e["n2"]]; _, L = _dir_vec(p1, p2)
-                spec = HM.brace_spec(sec, L, prm)
-                mat += 1; HM.make_brace_material(mat, spec, prm)
-                ops.element("corotTruss", e["tag"], e["n1"], e["n2"], spec.A, mat)
-                hinges[e["tag"]] = dict(ele=e["tag"], end=0, kind="brace", section=sec, dof=0, K0=E_KSI_AL(spec), mat=mat,
-                                        node=e["n1"], z=max(p1[2], p2[2]), spec=spec)
-                stats["brace_nonlinear"] += 1
+                mat = build_brace(pkg, e, sec, prm, mat, hinges, stats, ctx)
             else:
                 ops.element(*e["raw"])
             stats["brace"] += 1; continue
@@ -405,12 +623,12 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
         p1, p2 = m.nodes[e["n1"]], m.nodes[e["n2"]]
         d, L = _dir_vec(p1, p2)
         if kind == "brace" and sec:                          # elasticBeamColumn brace (steltic default builder) -> pin-ended nonlinear truss
-            spec = HM.brace_spec(sec, L, prm)
-            mat += 1; HM.make_brace_material(mat, spec, prm)
-            ops.element("corotTruss", e["tag"], e["n1"], e["n2"], spec.A, mat)
-            hinges[e["tag"]] = dict(ele=e["tag"], end=0, kind="brace", section=sec, dof=0, K0=E_KSI_AL(spec), mat=mat,
-                                    node=e["n1"], z=max(p1[2], p2[2]), spec=spec)
-            stats["brace"] += 1; stats["brace_nonlinear"] += 1
+            mat = build_brace(pkg, e, sec, prm, mat, hinges, stats, ctx)
+            stats["brace"] += 1
+            continue
+        lk = ctx["links"].get(e["tag"])
+        if lk and not lk.get("skipped") and kind == "beam" and sec:                 # NL-03 EBF link
+            mat = build_link_imk(pkg, e, sec, prm, mat, hinges, stats, ctx, beam_side=beam_side)
             continue
         if sec is None or kind not in ("col", "beam"):
             args = [e["A"], e["E"], e["G"], e["J"], e["Iy"], e["Iz"], e["transf"]] + (e["release"] or [])
@@ -502,11 +720,16 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     stats["panel_zone_registry"] = pz_registry
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
+    finish_stats(stats, ctx, prm, "imk")
     if verbose:
-        print("[nonlinear_model] hinges: %d  (cols %d, beams %d, brace elements %d of which nonlinear %d, force-controlled cols %d, released ends %d, panel_zones %s=%d, rbs7=%d, fbc_cp=%d, elastic_eles=%d)"
-              % (len(hinges), stats["col"], stats["beam"], stats["brace"], stats["brace_nonlinear"], stats["force_controlled"], stats["released_ends"],
+        print("[nonlinear_model] hinges: %d  (cols %d, beams %d, brace elements %d of which nonlinear %d [BRB %d, physical-theory %d], "
+              "EBF links %d, force-controlled cols %d, released ends %d, panel_zones %s=%d, rbs7=%d, fbc_cp=%d, elastic_eles=%d)"
+              % (len(hinges), stats["col"], stats["beam"], stats["brace"], stats["brace_nonlinear"], stats.get("brb", 0),
+                 stats.get("brace_physical_theory", 0), stats.get("links", 0), stats["force_controlled"], stats["released_ends"],
                  stats["panel_zone_mode"], stats["panel_zones"], stats.get("rbs_remesh_beams", 0),
                  stats.get("fbc_cp_members", 0), len(stats.get("elastic_ele_tags") or [])))
+        for w in stats.get("model_warnings") or []:
+            print("  !! " + w)
     return hinges, stats
 
 
