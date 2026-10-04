@@ -1,8 +1,23 @@
 """hinge_models.py -- turn (section, length, axial load) into a concentrated-plasticity hinge definition.
 
-Every number comes from hinge_params.json (which the Grok Bot fills from retrieved spec text). This module
-only does the arithmetic and hands back a HingeSpec the model builder turns into a ModIMKPeakOriented
-uniaxialMaterial. Cyclic deterioration is disabled (monotonic pushover) -- Lambda = 0.
+Every number comes from hinge_params.json (filled by the user from the standards in a MANUAL, RAG-assisted step).
+This module only does the arithmetic and hands back specs the model builders turn into OpenSees materials:
+
+  * HingeSpec      beams / columns -> IMKPeakOriented (ModIMKPeakOriented fallback). Cyclic deterioration (NL-10):
+                   Lambda (Et = Lambda*My) from hinge_params `cyclic_deterioration` (Lignos & Krawinkler 2011 beams,
+                   Lignos et al. 2019 columns, or user-supplied). IMKPeakOriented only deteriorates on load reversals, so
+                   the monotonic pushover backbone is unchanged; the NLRHA gets cyclic strength/stiffness deterioration.
+  * BraceSpec      buckling braces (AISC 342-22 Table C3.4 or the legacy placeholder) -> Hysteretic corotTruss, or
+                   (NLRHA, brace_axial.nlrha_element = "physical_theory") a cambered fibre brace with Steel02 + Fatigue
+                   (Uriz & Mahin 2008; Hsiao, Lehman & Roeder 2012) that buckles, degrades and fractures.
+  * BRBSpec        buckling-restrained braces (NL-02): AISC 342-22 C3.3 / Table C3.3, Q_CE = Fye*A_core, point C at
+                   omega*Q_CE (tension) and beta*omega*Q_CE (compression), Delta_y per Eq. C3-3 -> Steel4 (+MinMax) or
+                   Hysteretic corotTruss. Group `brb_axial`.
+  * LinkShearSpec  EBF shear links (NL-03): AISC 342-22 C2.1 classification (e vs 1.6 / 2.6 MCE/VCE), Table C2.4 shear
+                   backbone and acceptance on the link plastic rotation, Vp = 0.6 Fye Alw; flexure per Table C2.2.
+                   Group `ebf_link`.
+Groups missing from a job's (collected) params file fall back to the repository template block and every spec built
+from a template value carries a flag saying so -- nothing is silently assumed.
 """
 from __future__ import annotations
 import json, math, os
@@ -35,9 +50,76 @@ class HingeSpec:
     PG_over_Pye: float = 0.0
     compact: bool = True
     flags: tuple = ()
+    Lambda: float = 0.0    # IMK cyclic deterioration (Et = Lambda * My, rad); 0 = none (NL-10)
+    c_det: float = 1.0     # IMK deterioration exponent c
 
     def as_dict(self):
         return asdict(self)
+
+
+_TEMPLATE = None
+
+
+def template_params() -> dict:
+    """The repository hinge_params.json (template blocks for groups a job's params file may lack)."""
+    global _TEMPLATE
+    if _TEMPLATE is None:
+        _TEMPLATE = load_params()
+    return _TEMPLATE
+
+
+def param_group(prm: dict, name: str):
+    """(group dict, from_template) -- the job's group if present, else the repository template block."""
+    g = prm.get(name)
+    if isinstance(g, dict) and g:
+        return g, False
+    return template_params().get(name) or {}, True
+
+
+def _gv(g: dict, key: str, tmpl_group: str, default=None):
+    """Group value with per-key fallback to the template (a partially filled group keeps the other keys)."""
+    v = g.get(key)
+    if v is None:
+        v = (template_params().get(tmpl_group) or {}).get(key, default)
+    return default if v is None else v
+
+
+def cyclic_lambda(member: str, p: dict, Fye: float, L_in: float, prm: dict, PG_over_Pye: float = 0.0,
+                  rbs: bool = False, Lb_in: float = None) -> tuple:
+    """(Lambda, c, flag) for an IMK hinge -- NL-10 / ASCE 7-22 16.3.1.
+
+    hinge_params `cyclic_deterioration.mode`:
+      "none"      -> (0, 1): no cyclic deterioration (must then be justified under 16.3.1 -- the report says so)
+      "supplied"  -> Lambda_beam / Lambda_column given by the user
+      "expressions" (default) -> the template's literature regressions, evaluated with h/tw, bf/2tf, Lb/ry, PG/Pye and
+                     Fye (MPa) -- Lignos & Krawinkler (2011) for beams (RBS and other), Lignos et al. (2019) for columns.
+    The value is capped at Lambda_max. A group taken from the template is flagged."""
+    g, tmpl = param_group(prm, "cyclic_deterioration")
+    mode = str(g.get("mode", "none")).lower()
+    if mode in ("none", "off", "0", ""):
+        return 0.0, 1.0, "cyclic deterioration OFF (cyclic_deterioration.mode=none)"
+    c = float(_gv(g, "c_exponent", "cyclic_deterioration", 1.0))
+    if mode == "supplied":
+        key = "Lambda_column" if member == "column" else ("Lambda_beam_rbs" if rbs and g.get("Lambda_beam_rbs") else "Lambda_beam")
+        lam = g.get(key)
+        if lam is None:
+            return 0.0, 1.0, "cyclic deterioration: mode=supplied but %s missing -> OFF" % key
+        return float(lam), c, "cyclic deterioration Lambda=%.3f (%s, supplied)" % (float(lam), key)
+    key = "column_expr" if member == "column" else ("beam_rbs_expr" if rbs else "beam_expr")
+    expr = _gv(g, key, "cyclic_deterioration")
+    if not expr:
+        return 0.0, 1.0, "cyclic deterioration: no %s -> OFF" % key
+    Lb = Lb_in if Lb_in else L_in
+    env = {"h_tw": max(p.get("h_tw", 30.0), 1.0), "bf_2tf": max(p.get("bf_2tf", 6.0), 1.0), "Lb_ry": max(Lb / p["ry"], 1.0),
+           "PG_Pye": min(max(PG_over_Pye, 0.0), 0.95), "Fye_MPa": Fye * 6.894757, "L_d": L_in / p["d"], "math": math}
+    try:
+        lam = float(eval(expr, {"__builtins__": {}}, env))
+    except Exception as ex:
+        return 0.0, 1.0, "cyclic deterioration: %s failed (%s) -> OFF" % (key, ex)
+    lam_max = float(_gv(g, "Lambda_max", "cyclic_deterioration", 1e9))
+    lam = max(0.0, min(lam, lam_max))
+    return lam, c, "cyclic deterioration Lambda=%.3f rad (%s%s, c=%.2f%s)" % (
+        lam, key, ", capped" if lam >= lam_max else "", c, "; TEMPLATE literature values -- verify" if tmpl else "")
 
 
 def _theta_y(Zx, Fye, L, I, axial_factor=1.0):
@@ -95,16 +177,21 @@ def beam_hinge(section: str, L_in: float, prm: dict) -> HingeSpec:
         Mce = Z * Fye
         ty = Mce * L_in / (6.0 * E_KSI * p["Ix"])                        # AISC 342 Eq. C2-2, eta = 0, L_CL = span
         flags.append("FR connection table: a=%.4f b=%.4f rad (Lb/ry=%.1f, L/d=%.1f, Z=%.0f in3)" % (a, b, Lb / p["ry"], L_in / p["d"], Z))
+        lam, cdet, fl = cyclic_lambda("beam", p, Fye, L_in, prm, rbs=c_rbs > 0, Lb_in=Lb)
+        flags.append(fl)
         return HingeSpec("beam", section, L_in, Fye, Mce, ty, a, b, c, bp["Mc_over_My"],
-                         IO=bp["IO_frac_of_a"] * a, LS=bp["LS_frac_of_b"] * b, CP=bp["CP_frac_of_b"] * b, compact=compact, flags=tuple(flags))
+                         IO=bp["IO_frac_of_a"] * a, LS=bp["LS_frac_of_b"] * b, CP=bp["CP_frac_of_b"] * b, compact=compact, flags=tuple(flags),
+                         Lambda=lam, c_det=cdet)
     red = 1.0 if compact else bp.get("noncompact_reduction", 0.5)
     if not compact:
         flags.append("%s-ductile: flat %.2f reduction applied (interpolate per standard)" % (duct, red))
     ty = _theta_y(p["Zx"], Fye, L_in, p["Ix"])
     a, b = bp["a_over_thetay"] * ty * red, bp["b_over_thetay"] * ty * red
+    lam, cdet, fl = cyclic_lambda("beam", p, Fye, L_in, prm)
+    flags.append(fl)
     return HingeSpec("beam", section, L_in, Fye, p["Zx"] * Fye, ty, a, b, bp["c_residual"], bp["Mc_over_My"],
                      IO=bp["IO_over_thetay"] * ty * red, LS=bp["LS_over_thetay"] * ty * red,
-                     CP=bp["CP_over_thetay"] * ty * red, compact=compact, flags=tuple(flags))
+                     CP=bp["CP_over_thetay"] * ty * red, compact=compact, flags=tuple(flags), Lambda=lam, c_det=cdet)
 
 
 def column_hinge(section: str, L_in: float, PG_kip: float, prm: dict) -> HingeSpec:
@@ -132,13 +219,16 @@ def column_hinge(section: str, L_in: float, PG_kip: float, prm: dict) -> HingeSp
     ty = _theta_y(p["Zx"], Fye, L_in, p["Ix"], red if cp.get("theta_y_uses_Mpce") else 1 - r)   # Eq. C3-15 with M_CE (tau_b = 1)
     if p.get("h_tw_approx"):
         flags.append("h/tw approximated as (d-2tf)/tw")
+    lam, cdet, fl = cyclic_lambda("column", p, Fye, L_in, prm, PG_over_Pye=r)
+    flags.append(fl)
     return HingeSpec("column", section, L_in, Fye, Mpe, ty, a, b, c, cp["Mc_over_My"],
                      IO=cp["IO_frac_of_a"] * a, LS=cp["LS_frac_of_b"] * b, CP=cp["CP_frac_of_b"] * b,
-                     force_controlled=False, PG_over_Pye=r, compact=True, flags=tuple(flags))
+                     force_controlled=False, PG_over_Pye=r, compact=True, flags=tuple(flags), Lambda=lam, c_det=cdet)
 
 
 def modimk_args(h: HingeSpec, K0: float, post_cap_ratio: float = 0.15) -> list:
-    """ModIMKPeakOriented argument list (after the tag). Monotonic: all Lambda = 0 (no cyclic deterioration).
+    """ModIMKPeakOriented argument list (after the tag). Lambda_S/C/A/K = h.Lambda (0 = no cyclic deterioration;
+    NOTE the legacy ModIMK treats Lambda = 0 as 'no deterioration' too), exponents c = h.c_det.
     theta_pc is set so the descent from Mc reaches the residual c*My over post_cap_ratio*a of rotation."""
     My = h.Mpe_kipin
     Mc = h.Mc_over_My * My
@@ -146,7 +236,8 @@ def modimk_args(h: HingeSpec, K0: float, post_cap_ratio: float = 0.15) -> list:
     a_s = min(max(a_s, 1e-4), 0.05)
     drop = h.Mc_over_My - h.c_res
     theta_pc = max(post_cap_ratio * h.a_pl * h.Mc_over_My / max(drop, 1e-3), 1e-3)
-    return [K0, a_s, a_s, My, -My, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0,
+    lam = float(getattr(h, "Lambda", 0.0) or 0.0); c = float(getattr(h, "c_det", 1.0) or 1.0)
+    return [K0, a_s, a_s, My, -My, lam, lam, lam, lam, c, c, c, c,
             h.a_pl, h.a_pl, theta_pc, theta_pc, h.c_res, h.c_res, h.b_pl, h.b_pl, 1.0, 1.0]
 
 
@@ -161,9 +252,10 @@ def make_imk_material(tag: int, h: HingeSpec, K0: float, post_cap_ratio: float =
     K0_, a_s, _, My, _, *_rest = a
     theta_p, theta_pc, res, theta_u = a[13], a[15], a[17], a[19]
     # IMKPeakOriented: Ke dp+ dpc+ du+ Fy+ FmaxFy+ ResF+ dp- dpc- du- Fy- FmaxFy- ResF- LS LC LA LK cS cC cA cK D+ D-
+    lam = float(getattr(h, "Lambda", 0.0) or 0.0); c = float(getattr(h, "c_det", 1.0) or 1.0)
     new = [K0_, theta_p, theta_pc, theta_u, My, h.Mc_over_My, res,
            theta_p, theta_pc, theta_u, My, h.Mc_over_My, res,
-           0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+           lam, lam, lam, lam, c, c, c, c, 1.0, 1.0]           # NL-10: Et = Lambda*My (0 -> no cyclic deterioration)
     try:
         ops.uniaxialMaterial("IMKPeakOriented", tag, *new)
         return "IMKPeakOriented"
@@ -425,3 +517,443 @@ def make_panel_zone_material(tag: int, spec: PanelZoneSpec):
         return "Hysteretic"
     ops.uniaxialMaterial("Elastic", tag, spec.K_theta)
     return "Elastic"
+
+
+# =========================================================================== NL-02 buckling-restrained braces
+@dataclass
+class BRBSpec(BraceSpec):
+    """Buckling-restrained brace (AISC 342-22 C3.3 / E3). Duck-types BraceSpec so the brace monitors and the ASCE 41 /
+    Chapter 16 acceptance code treat it like any brace. ALL deformations stored here are TOTAL axial deformations
+    (Delta_y + plastic), because the brace monitors record the total axial deformation of the truss:
+        IO = (1 + IO_over_dy) Delta_y, LS = (1 + LS_over_dy) Delta_y, CP = (1 + CP_over_dy) Delta_y   (Table C3.3 plastic
+        limits shifted by Delta_y), a_c = a_t = (1 + a_over_dy) Delta_y, b_c = b_t = (1 + b_over_dy) Delta_y.
+    dc = dT = Delta_y (Eq. C3-3). Pye_kip = Pcre_kip = Q_CE = Fye*A_core (C3.3a.1: P_CE = T_CE = core area x Fye)."""
+    Asc: float = 0.0             # yielding core area (in^2) -- NOT the HR truss area
+    Fysc_ksi: float = 0.0
+    Ry: float = 1.0
+    omega: float = 1.0           # strain-hardening adjustment (tension point C = omega*Q_CE)
+    beta: float = 1.0            # compression adjustment (compression point C = beta*omega*Q_CE)
+    K_axial: float = 0.0         # elastic axial stiffness (kip/in) = Q_CE / Delta_y
+    A_model: float = 0.0         # element area used in the corotTruss (stress = force / A_model)
+    material: str = "Steel4"
+    sources: tuple = ()
+
+
+def brb_package_data(calc: dict) -> dict:
+    """Structured BRB data from the HR calc package (design/calc_package.json):
+      per label  -> {Asc, Fysc_ksi, KF, model_area}  from members[*].inputs (kind brace, section BRB-*)
+      "_global"  -> {omega, beta, Ry, basis} from capacity_design.adjusted_brace_strengths:
+                    beta = adjusted_C / adjusted_T (F4.2a: C = beta*omega*Ry*Pysc, T = omega*Ry*Pysc),
+                    omega*Ry = adjusted_T / Pysc, omega parsed from the basis text ("omega=1.36") -> Ry = (omega*Ry)/omega.
+    Missing items are simply absent (the caller falls back to hinge_params and says so)."""
+    import re
+    out = {}
+    for m in (calc or {}).get("members") or []:
+        inp = m.get("inputs") or {}
+        sec = str(inp.get("section") or "")
+        if not SDB.is_brb(sec):
+            continue
+        d = out.setdefault(sec.strip().upper().replace(" ", ""), {})
+        for k_src, k in (("Asc_in2", "Asc"), ("Fysc_ksi", "Fysc_ksi"), ("KF", "KF"), ("model_area_in2", "model_area")):
+            if isinstance(inp.get(k_src), (int, float)):
+                d[k] = float(inp[k_src])
+    g = {}
+    adj = ((calc or {}).get("capacity_design") or {}).get("adjusted_brace_strengths") or {}
+    rows = [r for r in adj.get("by_story") or [] if all(isinstance(r.get(k), (int, float)) and r.get(k) for k in ("Pysc_kip", "adjusted_T_kip", "adjusted_C_kip"))]
+    basis = str(adj.get("basis") or "")
+    if rows:
+        r = rows[0]
+        g["beta"] = r["adjusted_C_kip"] / r["adjusted_T_kip"]
+        g["omega_Ry"] = r["adjusted_T_kip"] / r["Pysc_kip"]
+        mo = re.search(r"omega\s*=\s*([0-9]+(?:\.[0-9]+)?)", basis, re.I)
+        if mo:
+            g["omega"] = float(mo.group(1))
+            g["Ry"] = g["omega_Ry"] / g["omega"]
+        mb = re.search(r"beta\s*=\s*([0-9]+(?:\.[0-9]+)?)", basis, re.I)
+        if mb:
+            g["beta_text"] = float(mb.group(1))
+        g["basis"] = basis[:300]
+    if g:
+        out["_global"] = g
+    return out
+
+
+def brb_spec(section: str, L_in: float, prm: dict, A_model: float = None, pkg_data: dict = None) -> BRBSpec:
+    """BRB backbone + acceptance (NL-02). Value precedence for every quantity: hinge_params `brb_axial` (the user's
+    manually verified values; per-section overrides in brb_axial.sections[label]) > the HR package (calc_package
+    inputs / adjusted strengths) > the label (Asc) > documented fallbacks that are FLAGGED.
+
+    Core area Asc: label "BRB-Asc22.5" / package Asc_in2 / sections[label].Asc. The HR truss area (KF*Asc) is used only
+    as the stiffness area, never as the yielding area.
+    Delta_y (AISC 342-22 Eq. C3-3): with brb_axial.Lcore_over_L and Aconn_over_Acore given,
+        Delta_y = Q_CE*Lcore/(E*Acore) + 2*Q_CE*Lconn/(E*Aconn), Lconn = (L - Lcore)/2;
+      otherwise Delta_y = Q_CE / K with K = E*A_model/L (the HR elastic truss: A_model = KF*Asc), or E*KF*Asc/L.
+    Backbone (Figure C1.1, Table C3.3): B = (Delta_y, Q_CE); C = (Delta_y + a, omega*Q_CE) tension and
+    (Delta_y + a, beta*omega*Q_CE) compression; a = b = 13.3 Delta_y, c = 1.0 -> loss of strength at b (E3.2b(c))."""
+    g, tmpl = param_group(prm, "brb_axial")
+    lab = str(section).strip().upper().replace(" ", "")
+    per = {str(k).strip().upper().replace(" ", ""): v for k, v in (g.get("sections") or {}).items()}.get(lab) or {}
+    pkd = (pkg_data or {}).get(lab) or {}
+    glob = (pkg_data or {}).get("_global") or {}
+    flags = []
+    if tmpl:
+        flags.append("brb_axial group not in this params file -> repository TEMPLATE values (AISC 342-22 Table C3.3 as transcribed; verify)")
+
+    def pick(key, pkg_val=None, what=""):
+        for src, v in (("hinge_params sections[%s]" % lab, per.get(key)), ("hinge_params brb_axial", g.get(key)),
+                       ("HR package", pkg_val)):
+            if v is not None:
+                return float(v), src
+        return None, None
+
+    Asc, src = pick("Asc", pkd.get("Asc"))
+    if Asc is None:
+        Asc = SDB.parse_brb_label(lab); src = "label %s" % section if Asc else None
+    if not Asc:
+        raise ValueError("BRB %r: core area Asc unknown (no number in the label, no package Asc_in2, no "
+                         "brb_axial.sections[%r].Asc) -- cannot build the BRB (NL-02)" % (section, section))
+    flags.append("Asc=%.3f in2 (%s)" % (Asc, src))
+    Fysc, src = pick("Fysc_ksi", pkd.get("Fysc_ksi"))
+    if Fysc is None:
+        raise ValueError("BRB %r: core yield stress Fysc unknown (set brb_axial.Fysc_ksi or a package Fysc_ksi) -- refusing to "
+                         "guess (NL-02)" % section)
+    flags.append("Fysc=%.1f ksi (%s)" % (Fysc, src))
+    omega, s_om = pick("omega", glob.get("omega"))
+    beta, s_be = pick("beta", glob.get("beta"))
+    Ry, s_ry = pick("Ry", glob.get("Ry"))
+    fb = g.get("omega_beta_fallback") or (template_params().get("brb_axial") or {}).get("omega_beta_fallback") or {}
+    if omega is None:
+        omega, s_om = float(fb.get("omega", 1.3)), "FALLBACK AISC 342-22 C3.3a.1 linear-analysis value (no test data supplied)"
+    if beta is None:
+        beta, s_be = float(fb.get("beta", 1.1)), "FALLBACK AISC 342-22 C3.3a.1 linear-analysis value (no test data supplied)"
+    if Ry is None:
+        Ry, s_ry = 1.0, "FALLBACK 1.0 (no Ry supplied; Fysc taken as expected)"
+    for nm_, v, s_ in (("omega", omega, s_om), ("beta", beta, s_be), ("Ry", Ry, s_ry)):
+        flags.append("%s=%.3f (%s)" % (nm_, v, s_))
+    if "FALLBACK" in (s_om or "") or "FALLBACK" in (s_be or ""):
+        flags.append("WARNING: omega/beta not from qualification testing -- AISC 342-22 C3.3a.1 permits 1.3/1.1 for LINEAR analysis only")
+    Fye = Ry * Fysc
+    Qce = Fye * Asc                                                       # C3.3a.1: P_CE = T_CE = A_core * Fye
+    KF, s_kf = pick("KF", pkd.get("KF"))
+    Lc_L = g.get("Lcore_over_L", per.get("Lcore_over_L")); Ac_r = g.get("Aconn_over_Acore", per.get("Aconn_over_Acore"))
+    if Lc_L and Ac_r:
+        Lcore = float(Lc_L) * L_in; Lconn = 0.5 * (L_in - Lcore); Aconn = float(Ac_r) * Asc
+        dy = Qce * Lcore / (E_KSI * Asc) + 2.0 * Qce * Lconn / (E_KSI * Aconn)          # Eq. C3-3
+        flags.append("Delta_y by Eq. C3-3 (Lcore/L=%.3f, Aconn/Acore=%.2f)" % (float(Lc_L), float(Ac_r)))
+    elif KF is not None:
+        dy = Qce * L_in / (E_KSI * KF * Asc)
+        flags.append("Delta_y = Q_CE*L/(E*KF*Asc), KF=%.3f (%s) -- Eq. C3-3 with core/connection lengths folded into KF" % (KF, s_kf))
+    elif A_model:
+        dy = Qce * L_in / (E_KSI * A_model)
+        flags.append("Delta_y = Q_CE*L/(E*A_model), A_model=%.3f in2 = HR elastic truss area (KF=%.3f implied)" % (A_model, A_model / Asc))
+    else:
+        dy = Qce * L_in / (E_KSI * Asc)
+        flags.append("WARNING: no KF / truss area / core length -> Delta_y over the full work-point length with A=Asc (too flexible)")
+    K = Qce / dy
+    A_el = float(A_model) if A_model else Asc * (KF or 1.0)
+    num = lambda k, d: float(_gv(g, k, "brb_axial", d))
+    a, b, c = num("a_over_dy", 13.3) * dy, num("b_over_dy", 13.3) * dy, num("c_residual", 1.0)
+    IO, LS, CP = (1 + num("IO_over_dy", 3.0)) * dy, (1 + num("LS_over_dy", 10.0)) * dy, (1 + num("CP_over_dy", 13.3)) * dy
+    mat = str(_gv(g, "material", "brb_axial", "Steel4"))
+    flags.append("BRB C3.3: Q_CE=%.0f kip, Delta_y=%.3f in, point C T=%.0f / C=%.0f kip at %.2f in; IO/LS/CP (total) %.2f/%.2f/%.2f in; %s"
+                 % (Qce, dy, omega * Qce, beta * omega * Qce, dy + a, IO, LS, CP, mat))
+    return BRBSpec("brace", section, L_in, A_el, 0.0, 0.0, Fye, Qce, Qce, dy, dy,
+                   a_c=dy + a, b_c=dy + b, c_c=c, a_t=dy + a, b_t=dy + b, c_t=c,
+                   IO=IO, LS=LS, CP=CP, IO_t=IO, LS_t=LS, CP_t=CP, slenderness_class="BRB", flags=tuple(flags),
+                   Asc=Asc, Fysc_ksi=Fysc, Ry=Ry, omega=omega, beta=beta, K_axial=K, A_model=A_el, material=mat,
+                   sources=(s_om, s_be, s_ry))
+
+
+INNER_MAT_OFFSET = 3_000_000      # base material of a wrapped (MinMax / Fatigue) material: tag + offset
+
+
+def make_brb_material(tag: int, b: BRBSpec, prm: dict) -> str:
+    """Uniaxial stress-strain material for a BRB corotTruss of area b.A_model and length b.L_in
+    (stress = force / A_model, strain = deformation / L).
+
+    "Steel4" (default; Zsarnoczay's BRB material): asymmetric kinematic hardening calibrated so the MONOTONIC curve
+       passes through B (Q_CE at Delta_y) and C: tension omega*Q_CE, compression beta*omega*Q_CE at Delta_y + a
+       (b_k = (omega - 1)/a_over_dy, b_kc = (beta*omega - 1)/a_over_dy); Bauschinger loops (R0); wrapped in MinMax at the
+       total deformation Delta_y + b (Table C3.3 b) -> strength lost beyond b (Figure C1.1 point E).
+    "Hysteretic": exact trilinear C3.3 envelope with the E3.2b(c) post-b descent at the negative elastic slope to ~0."""
+    import openseespy.opensees as ops
+    g, _ = param_group(prm, "brb_axial")
+    A, L = b.A_model, b.L_in
+    E_mat = b.K_axial * L / A                                    # material modulus reproducing K = Q_CE / Delta_y
+    fy = b.Pye_kip / A
+    ey = b.dT / L
+    a_dy = (b.a_t - b.dT) / b.dT
+    if b.material.lower() == "hysteretic":
+        s1, e1 = fy, ey
+        e2 = b.a_t / L
+        e3 = e2 + 0.98 * b.omega * fy / E_mat
+        e3n = e2 + 0.98 * b.beta * b.omega * fy / E_mat
+        ops.uniaxialMaterial("Hysteretic", tag, s1, e1, b.omega * fy, e2, 0.02 * b.omega * fy, e3,
+                             -s1, -e1, -b.beta * b.omega * fy, -e2, -0.02 * b.beta * b.omega * fy, -e3n, 1.0, 1.0, 0.0, 0.0, 0.0)
+        return "Hysteretic"
+    R0 = float(_gv(g, "R0", "brb_axial", 20.0))
+    bk = max((b.omega - 1.0) / a_dy, 1e-5); bkc = max((b.beta * b.omega - 1.0) / a_dy, 1e-5)
+    inner = tag + INNER_MAT_OFFSET
+    ops.uniaxialMaterial("Steel4", inner, fy, E_mat, "-asym", "-kin", bk, R0, 0.925, 0.15, bkc, R0, 0.925, 0.15)
+    eu = b.b_t / L
+    ops.uniaxialMaterial("MinMax", tag, inner, "-min", -eu, "-max", eu)
+    return "Steel4+MinMax"
+
+
+# =========================================================================== NL-03 EBF links
+@dataclass
+class LinkShearSpec:
+    """Shear spring of an EBF link (AISC 342-22 C2 / E2; Table C2.4). Deformation unit = relative transverse displacement
+    of the link ends (in); the acceptance limits are the Table C2.4 plastic shear deformations (rad) x e, so a D/C on
+    this spring is the link plastic rotation gamma_p over the permissible gamma_p.
+    theta_y (Delta_y), a_pl, b_pl, IO, LS, CP: inches (plastic, beyond Delta_y) -- the monitors subtract V/K0."""
+    member: str
+    section: str
+    e_in: float
+    Fye_ksi: float
+    Vp_kip: float          # V_CE = Vpe = 0.6 Fye Alw
+    Mp_kipin: float        # M_CE = Zx Fye
+    rho: float             # e / (M_CE / V_CE)
+    link_class: str        # "shear" | "intermediate" | "flexure"
+    Ks: float              # spring stiffness G*As/e (kip/in)
+    Ke: float              # link elastic shear stiffness 12EI/(e^3 (1+eta)) (Eq. C-E2-1) -- the alpha_h reference
+    theta_y: float         # Delta_y = Vp / Ks (in)
+    a_pl: float
+    b_pl: float
+    c_res: float
+    Vc_over_Vy: float
+    IO: float; LS: float; CP: float
+    gamma: dict = None     # the rotation limits actually applied (rad)
+    flags: tuple = ()
+
+    def as_dict(self):
+        return asdict(self)
+
+
+def _interp_factors(rho: float, g: dict):
+    """(f_shear, f_flex): weights of the Table C2.4 (shear) and Table C2.2 (flexure) values for e/(M/V) = rho.
+    AISC 342-22 C2.1: shear-controlled rho <= 1.6, flexure-controlled rho >= 2.6, shear-flexure between. The tables'
+    footnotes (Table C2.2 [c]: 'Linearly interpolate values to 0.0 when Lv <= 1.6 MCE/VCE') give the linear transition;
+    the C2.4 counterpart is taken as the mirror image. mode "none" applies both tables unscaled."""
+    mode = str(g.get("interpolation", "linear_1.6_2.6")).lower()
+    if mode == "none":
+        return 1.0, 1.0
+    f_flex = min(max((rho - 1.6) / 1.0, 0.0), 1.0)
+    return 1.0 - f_flex, f_flex
+
+
+def link_specs(section: str, e_in: float, prm: dict):
+    """(LinkShearSpec, HingeSpec for the two flexural end springs, info dict) for an EBF link of length e.
+
+    Expected strengths (C2.3a): Fye = Ry*Fy (hinge_params material); V_CE = 0.6 Fye Alw (Alw = (d-2tf) tw), M_CE = Zx Fye.
+    Classification (C2.1): rho = e/(M_CE/V_CE): <= 1.6 shear, >= 2.6 flexure, else shear-flexure.
+    Shear spring: Ks = G*As/e (As = d*tw, Commentary Eq. C-E2-2) so the series flexure + spring stiffness equals Eq.
+    C-E2-1. Backbone (Figure C1.1): B (Vp, Delta_y = Vp/Ks), C = B + a*e with slope alpha_h*Ke (C2.4a.2.b: alpha_h = 6%
+    of the elastic slope permitted), capped at Vc_over_Vy_max*Vp; descent to c*Vp; strength lost beyond b*e.
+    Flexural end springs: Table C2.2 row 1 (a = 9 theta_y, b = 11 theta_y, c = 0.6, IO 0.25a, LS a, CP b) with
+    theta_y = Mp e/(6EI), scaled by f_flex; for a shear-controlled link the flexural acceptance tends to 0, i.e. flexural
+    yielding of a shear link is not a permitted deformation (limit 1e-5 rad), while the modelling a/b are kept unscaled
+    so the spring stays numerically regular."""
+    g, tmpl = param_group(prm, "ebf_link")
+    mt = prm.get("material") or {}
+    Fye = float(mt.get("Fy_ksi", 50.0)) * float(mt.get("Ry_expected", 1.1))
+    lp = SDB.link_shear_props(section, Fye)
+    p = SDB.props(section)
+    Vp, Mp = lp["Vp"], lp["Mp"]
+    rho = e_in / (Mp / Vp)
+    cls = "shear" if rho <= 1.6 else ("flexure" if rho >= 2.6 else "intermediate")
+    f_sh, f_fl = _interp_factors(rho, g)
+    G = 11200.0                                                                  # AISC 342-22 Commentary C-E2-2 (ksi)
+    Ks = G * lp["As"] / e_in
+    EI = E_KSI * p["Ix"]
+    eta = 12.0 * EI / (e_in ** 2 * G * lp["As"])                                 # Eq. C-E2-2
+    Ke = 12.0 * EI / (e_in ** 3 * (1.0 + eta))                                   # Eq. C-E2-1
+    sh = g.get("shear") or {}
+    tsh = (template_params().get("ebf_link") or {}).get("shear") or {}
+    gv = lambda k, d: float(sh.get(k, tsh.get(k, d)) if sh.get(k, tsh.get(k, d)) is not None else d)
+    a_r, b_r, c_r = gv("a", 0.15), gv("b", 0.17), gv("c", 0.8)
+    IO_r, LS_r, CP_r = gv("IO", 0.005), gv("LS", 0.14), gv("CP", 0.16)
+    alpha_h, cap = gv("alpha_h", 0.06), gv("Vc_over_Vy_max", 1.5)
+    flags = ["link e=%.1f in, rho=e/(Mce/Vce)=%.2f -> %s-controlled (AISC 342-22 C2.1); Vp=%.0f kip, Mp=%.0f kip-in, Fye=%.1f ksi"
+             % (e_in, rho, cls, Vp, Mp, Fye)]
+    if tmpl:
+        flags.append("ebf_link group not in this params file -> repository TEMPLATE values (Tables C2.4 / C2.2 as transcribed; verify)")
+    dy = Vp / Ks
+    a_in, b_in = a_r * e_in, b_r * e_in
+    Vc = min(1.0 + alpha_h * Ke * a_in / Vp, cap)
+    flags.append("shear spring: Ks=%.0f kip/in (G*d*tw/e), Ke=%.0f kip/in (Eq. C-E2-1, eta=%.2f), Vc/Vy=%.2f (alpha_h=%.2f, cap %.2f)"
+                 % (Ks, Ke, eta, Vc, alpha_h, cap))
+    eps = 1e-5
+    gam = dict(a=a_r, b=b_r, IO=IO_r * f_sh, LS=LS_r * f_sh, CP=CP_r * f_sh)
+    if f_sh < 1.0:
+        flags.append("shear-flexure interpolation f_shear=%.2f on the Table C2.4 ACCEPTANCE values (%s); modelling a/b kept as "
+                     "printed (physical web capacity)" % (f_sh, g.get("interpolation", "linear_1.6_2.6")))
+    shear = LinkShearSpec("link", section, e_in, Fye, Vp, Mp, rho, cls, Ks, Ke, dy,
+                          a_pl=a_in, b_pl=b_in, c_res=c_r, Vc_over_Vy=Vc,
+                          IO=max(IO_r * f_sh * e_in, eps), LS=max(LS_r * f_sh * e_in, eps), CP=max(CP_r * f_sh * e_in, eps),
+                          gamma=gam, flags=tuple(flags))
+    fx = g.get("flexure") or {}
+    tfx = (template_params().get("ebf_link") or {}).get("flexure") or {}
+    fv = lambda k, d: float(fx.get(k, tfx.get(k, d)) if fx.get(k, tfx.get(k, d)) is not None else d)
+    ty = Mp * e_in / (6.0 * EI)
+    a_f, b_f = fv("a_over_thetay", 9.0) * ty, fv("b_over_thetay", 11.0) * ty
+    IOf = max(fv("IO_frac_of_a", 0.25) * a_f * f_fl, eps); LSf = max(fv("LS_frac_of_a", 1.0) * a_f * f_fl, eps)
+    CPf = max(fv("CP_frac_of_b", 1.0) * b_f * f_fl, eps)
+    fflags = ["link flexural end spring (Table C2.2 row 1, theta_y=Mp e/(6EI)=%.5f), acceptance x f_flex=%.2f%s"
+              % (ty, f_fl, " -> flexural yielding of a shear-controlled link not permitted (limit 1e-5 rad)" if f_fl <= 0 else "")]
+    lam, cdet, fl = cyclic_lambda("beam", p, Fye, e_in, prm)
+    fflags.append(fl)
+    flex = HingeSpec("beam", section, e_in, Fye, Mp, ty, a_f, b_f, fv("c", 0.6), fv("Mc_over_My", 1.1),
+                     IO=IOf, LS=LSf, CP=CPf, compact=True, flags=tuple(fflags), Lambda=lam, c_det=cdet)
+    info = dict(section=section, e_in=round(e_in, 2), rho=round(rho, 3), link_class=cls, Vp_kip=round(Vp, 1), Mp_kipin=round(Mp),
+                f_shear=round(f_sh, 3), f_flex=round(f_fl, 3), Ks=round(Ks), Ke=round(Ke), Vc_over_Vy=round(Vc, 3))
+    return shear, flex, info
+
+
+def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
+    """Force-deformation (kip, in) material of the link shear spring: Hysteretic (full, non-pinched loops; shear links
+    show stable hysteresis until web fracture) with the Figure C1.1 envelope B-C-D, wrapped in MinMax at Delta_y + b*e
+    (loss of strength beyond b). Optional cyclic damage via ebf_link.shear.damage1 / damage2 (Hysteretic damfc1/2)."""
+    import openseespy.opensees as ops
+    g, _ = param_group(prm, "ebf_link")
+    sh = g.get("shear") or {}
+    Vy, dy = s.Vp_kip, s.theta_y
+    e2 = dy + s.a_pl
+    drop = max(float(sh.get("post_cap_frac_of_a", 0.1)) * s.a_pl, 1e-4)
+    e3 = e2 + drop
+    d1, d2 = float(sh.get("damage1", 0.0) or 0.0), float(sh.get("damage2", 0.0) or 0.0)
+    inner = tag + INNER_MAT_OFFSET
+    ops.uniaxialMaterial("Hysteretic", inner, Vy, dy, s.Vc_over_Vy * Vy, e2, s.c_res * Vy, e3,
+                         -Vy, -dy, -s.Vc_over_Vy * Vy, -e2, -s.c_res * Vy, -e3, 1.0, 1.0, d1, d2, 0.0)
+    eu = dy + s.b_pl
+    ops.uniaxialMaterial("MinMax", tag, inner, "-min", -eu, "-max", eu)
+    return "Hysteretic+MinMax"
+
+
+def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dict:
+    """EBF link census (NL-03). members: iterable of dicts {tag, kind ('col'|'beam'|'brace'|...), section, n1, n2,
+    released (bool: major-axis end release present)}. Returns {tag: info} for the beam segments taken as links:
+
+      split-K / V EBF (centre link): an unreleased beam segment whose BOTH end nodes are brace work points and neither
+        end is a column node -- 'the component between these points' of AISC 342-22 E2.1;
+      D / column-adjacent EBF (only when the system is declared eccentrically braced): an unreleased beam segment from a
+        column node to a node where exactly one brace lands and no column, with e <= 2.6 Mp/Vp (a longer segment is a
+        flexure-controlled beam and is modelled as one);
+      plus hinge_params ebf_link.element_tags (manual), minus ebf_link.exclude_tags. ebf_link.detect = "off" disables
+      the automatic rules."""
+    import collections
+    g, _ = param_group(prm, "ebf_link")
+    mode = str(g.get("detect", "auto")).lower()
+    manual = {int(t) for t in (g.get("element_tags") or [])}
+    excl = {int(t) for t in (g.get("exclude_tags") or [])}
+    braces_at = collections.Counter(); col_nodes = set()
+    for m in members:
+        if m["kind"] == "brace":
+            braces_at[m["n1"]] += 1; braces_at[m["n2"]] += 1
+        elif m["kind"] == "col":
+            col_nodes.update((m["n1"], m["n2"]))
+    ebf = bool(system) and any(t in str(system).upper() for t in ("EBF", "ECCENTRIC"))
+    mt = prm.get("material") or {}
+    Fye = float(mt.get("Fy_ksi", 50.0)) * float(mt.get("Ry_expected", 1.1))
+    out = {}
+    for m in members:
+        if m["kind"] != "beam" or m["tag"] in excl:
+            continue
+        sec = m.get("section")
+        if not sec or str(sec).upper() in ("GHOST", "?"):
+            continue
+        p1, p2 = nodes[m["n1"]], nodes[m["n2"]]
+        e = math.dist(p1, p2)
+        rule = None
+        if m["tag"] in manual:
+            rule = "manual (ebf_link.element_tags)"
+        elif mode != "off" and not m.get("released"):
+            b1, b2 = braces_at[m["n1"]], braces_at[m["n2"]]
+            c1, c2 = m["n1"] in col_nodes, m["n2"] in col_nodes
+            if b1 and b2 and not c1 and not c2:
+                rule = "between brace work points"
+            elif ebf and ((c1 and not c2 and b2 == 1) or (c2 and not c1 and b1 == 1)):
+                try:
+                    lp = SDB.link_shear_props(sec, Fye)
+                except KeyError:
+                    continue
+                if e <= 2.6 * lp["Mp"] / lp["Vp"]:
+                    rule = "column-adjacent link (EBF, e <= 2.6 Mp/Vp)"
+        if rule is None:
+            continue
+        if abs(p2[2] - p1[2]) > 0.05 * e:
+            out[m["tag"]] = dict(tag=m["tag"], section=sec, e_in=e, rule=rule, skipped="link not horizontal -- modelled as a beam (flagged)")
+            continue
+        try:
+            lp = SDB.link_shear_props(sec, Fye)
+        except KeyError:
+            continue
+        rho = e / (lp["Mp"] / lp["Vp"])
+        out[m["tag"]] = dict(tag=m["tag"], section=sec, e_in=round(e, 2), rule=rule, rho=round(rho, 3),
+                             link_class="shear" if rho <= 1.6 else ("flexure" if rho >= 2.6 else "intermediate"))
+    return out
+
+
+def find_links_pkg(pkg, prm: dict, member_kind) -> dict:
+    """find_links on a pushover Package (elasticBeamColumn beams; braces may be raw trusses)."""
+    mem = []
+    for e in pkg.model.elements:
+        k = member_kind(pkg, e)
+        rel = e.get("release") or []
+        mem.append(dict(tag=e["tag"], kind=k, section=pkg.schedule.get(e["tag"], {}).get("section"), n1=e["n1"], n2=e["n2"],
+                        released=("-releasey" in rel and int(rel[rel.index("-releasey") + 1]) != 0)))
+    return find_links(pkg.model.nodes, mem, prm, pkg.basis.system)
+
+
+def link_census_summary(links: dict) -> dict:
+    import collections
+    c = collections.Counter((v["section"], v.get("e_in"), v.get("link_class", "?")) for v in links.values() if not v.get("skipped"))
+    return dict(n=sum(c.values()), skipped=sum(1 for v in links.values() if v.get("skipped")),
+                groups=[dict(section=s, e_in=e, link_class=k, n=n) for (s, e, k), n in sorted(c.items(), key=str)])
+
+
+# =========================================================================== NL-10 physical-theory brace (NLRHA)
+def brace_element_form(prm: dict) -> str:
+    """'truss' (Hysteretic corotTruss, the ASCE 41 / AISC 342 backbone -- NSP) or 'physical_theory' (cambered fibre brace
+    with Steel02 + Fatigue -- NLRHA when brace_axial.nlrha_element says so and the builder runs for the NLRHA)."""
+    if str(prm.get("_analysis", "")).lower() != "nlrha":
+        return "truss"
+    bp = prm.get("brace_axial") or {}
+    v = bp.get("nlrha_element")
+    if v is None:
+        v = (template_params().get("brace_axial") or {}).get("nlrha_element", "truss")
+    return "physical_theory" if str(v).lower() in ("physical_theory", "fibre", "fiber", "fatigue") else "truss"
+
+
+def brace_fatigue_params(section: str, KLr: float, Fye: float, prm: dict) -> dict:
+    """Fatigue (Coffin-Manson) parameters for the physical-theory brace fibres: brace_axial.physical_theory.{eps0, m}
+    or the eps0 expression (template: Hsiao, Lehman & Roeder 2012 for rectangular HSS,
+    eps0 = 0.291 (KL/r)^-0.484 (w/t)^-0.613 (E/Fy)^0.303, m = -0.3). Flagged as literature values."""
+    bp = prm.get("brace_axial") or {}
+    pt = dict((template_params().get("brace_axial") or {}).get("physical_theory") or {})
+    pt.update(bp.get("physical_theory") or {})
+    flags = []
+    B, tdes = _hss_outside_and_tdes(section)
+    wt = ((B - 3.0 * tdes) / tdes) if (B and tdes) else 20.0
+    if pt.get("eps0") is not None:
+        eps0 = float(pt["eps0"]); flags.append("Fatigue eps0=%.4f (supplied)" % eps0)
+    else:
+        env = dict(KLr=max(KLr, 1.0), wt=max(wt, 1.0), E=E_KSI, Fy=Fye, math=math)
+        eps0 = float(eval(pt.get("eps0_expr", "0.091"), {"__builtins__": {}}, env))
+        flags.append("Fatigue eps0=%.4f from %s (literature; verify)" % (eps0, pt.get("eps0_expr")))
+    m = float(pt.get("m", -0.3))
+    return dict(eps0=eps0, m=m, camber=float(pt.get("camber_over_L", 1.0 / 1000.0)), nseg=int(pt.get("nseg", 4)),
+                nip=int(pt.get("nip", 4)), b=float(pt.get("hardening", 0.003)), R0=float(pt.get("R0", 20.0)), flags=flags,
+                element="dispBeamColumn" if str(pt.get("element", "forceBeamColumn")).lower().startswith("disp") else "forceBeamColumn")
+
+
+def brace_axial_force(tag: int, h: dict) -> float:
+    """Axial force (kip, +tension) of a registered brace: the truss's axialForce, or, for a physical-theory brace
+    (h['force_ele'] set), the basic axial force of its first fibre segment (the registered tag is a zero-stiffness
+    monitor truss that only measures the end-to-end deformation)."""
+    import openseespy.opensees as ops
+    if h.get("force_ele"):
+        f = ops.eleResponse(h["force_ele"], "basicForce")
+        return f[0] if f else 0.0
+    f = ops.eleResponse(tag, "axialForce")
+    return f[0] if f else 0.0
