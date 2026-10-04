@@ -145,6 +145,8 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                 h = hinges[tg]
                 if h["kind"] == "brace":
                     d = ops.eleResponse(tg, "deformation"); v = d[0] if d else 0.0
+                elif h.get("form") == "fibre_end":            # fibre beam/column end region (pushover NL-01)
+                    v = NM.fibre_end_rotation(h)
                 elif h.get("form") == "fbc_cp":
                     # ConcentratedPlasticity end IP: Uniaxial M–θ_p (comp 0). Subtract My/Ke elastic.
                     ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
