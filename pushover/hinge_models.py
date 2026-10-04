@@ -8,14 +8,18 @@ from __future__ import annotations
 import json, math, os
 from dataclasses import dataclass, asdict
 from . import sections_db as SDB
+from . import params_schema as PS
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 E_KSI = 29000.0
 
 
 def load_params(path: str | None = None) -> dict:
+    """Read the parameter file and annotate its provenance (params_schema.annotate): which value fields
+    the user did not supply (prm['_unverified']); the superseded column P-M reduction is replaced by
+    AISC 342-22 Eqs. C3-5/C3-6. A builder that USES such a group drops prm['verified'] (mark_used)."""
     with open(path or os.path.join(_HERE, "hinge_params.json"), encoding="utf-8") as f:
-        return json.load(f)
+        return PS.annotate(json.load(f))
 
 
 @dataclass
@@ -45,26 +49,12 @@ def _theta_y(Zx, Fye, L, I, axial_factor=1.0):
 
 
 def _ductility_class(p: dict, Fye: float, prm: dict, Ca: float = 0.0) -> tuple:
-    """'highly' | 'moderately' | 'other' from the flange and web width-to-thickness limits in prm["compactness"]
-    (AISC 341 Table D1.1 form, Fye in place of RyFy, Ca = PG/Pye for webs). Falls back to the legacy 52/sqrt(Fye) rule."""
-    cp = prm.get("compactness")
-    if not cp:
-        lam_f, lam_w = 52.0 / math.sqrt(Fye), 418.0 / math.sqrt(Fye)
-        return ("highly" if (p.get("bf_2tf", 0) <= lam_f and p.get("h_tw", 0) <= lam_w) else "other"), lam_f, lam_w
-    k = math.sqrt(E_KSI / Fye)
-    f_hd, f_md = cp["flange_hd"] * k, cp["flange_md"] * k
-    if Ca <= cp.get("web_Ca_break", 0.114):
-        w_hd = cp["web_hd_lowCa"] * (1 - cp.get("web_hd_lowCa_k", 1.04) * Ca) * k
-        w_md = cp["web_md_lowCa"] * (1 - cp.get("web_md_lowCa_k", 1.04) * Ca) * k
-    else:
-        w_hd = max(cp["web_hd_highCa"] * (cp.get("web_hd_highCa_c", 2.68) - Ca), cp["web_hd_floor"]) * k
-        w_md = max(cp["web_md_highCa"] * (cp.get("web_md_highCa_c", 2.68) - Ca), cp["web_md_floor"]) * k
-    bf, hw = p.get("bf_2tf", 0), p.get("h_tw", 0)
-    if bf <= f_hd and hw <= w_hd:
-        return "highly", f_hd, w_hd
-    if bf <= f_md and hw <= w_md:
-        return "moderately", f_md, w_md
-    return "other", f_md, w_md
+    """'highly' | 'moderately' (between lambda_hd and lambda_md) | 'other' (at or beyond lambda_md), with the
+    governing flange / web limits. Limits: AISC 341-22 Table D1.1b with Fye for RyFy and Ca = PG/Pye
+    (params_schema.element_slenderness; a user `compactness` block overrides)."""
+    el, _ = PS.element_slenderness(p, Fye, Ca, prm)
+    cls = {"highly": "highly", "other": "moderately", "non_moderately": "other"}[PS.ductility_class(el)]
+    return cls, el["flange"][1] if cls == "highly" else el["flange"][2], el["web"][1] if cls == "highly" else el["web"][2]
 
 
 def beam_hinge(section: str, L_in: float, prm: dict) -> HingeSpec:
@@ -95,16 +85,75 @@ def beam_hinge(section: str, L_in: float, prm: dict) -> HingeSpec:
         Mce = Z * Fye
         ty = Mce * L_in / (6.0 * E_KSI * p["Ix"])                        # AISC 342 Eq. C2-2, eta = 0, L_CL = span
         flags.append("FR connection table: a=%.4f b=%.4f rad (Lb/ry=%.1f, L/d=%.1f, Z=%.0f in3)" % (a, b, Lb / p["ry"], L_in / p["d"], Z))
+        PS.mark_used(prm, "beam_flexure"); PS.mark_used(prm, "material")
         return HingeSpec("beam", section, L_in, Fye, Mce, ty, a, b, c, bp["Mc_over_My"],
                          IO=bp["IO_frac_of_a"] * a, LS=bp["LS_frac_of_b"] * b, CP=bp["CP_frac_of_b"] * b, compact=compact, flags=tuple(flags))
-    red = 1.0 if compact else bp.get("noncompact_reduction", 0.5)
-    if not compact:
-        flags.append("%s-ductile: flat %.2f reduction applied (interpolate per standard)" % (duct, red))
-    ty = _theta_y(p["Zx"], Fye, L_in, p["Ix"])
-    a, b = bp["a_over_thetay"] * ty * red, bp["b_over_thetay"] * ty * red
-    return HingeSpec("beam", section, L_in, Fye, p["Zx"] * Fye, ty, a, b, bp["c_residual"], bp["Mc_over_My"],
-                     IO=bp["IO_over_thetay"] * ty * red, LS=bp["LS_over_thetay"] * ty * red,
-                     CP=bp["CP_over_thetay"] * ty * red, compact=compact, flags=tuple(flags))
+    # AISC 342-22 Table C2.2 (member hinge): the row is chosen by the section's flange / web slenderness
+    # (line 1 highly ductile, line 2 non-moderately ductile, line 3 interpolate -- lowest value), never by
+    # the seismic system. Cells may be given as printed ("9 θy", "0.25 a", "b") or in the field form.
+    ty = _theta_y(p["Zx"], Fye, L_in, p["Ix"])                      # AISC 342 Eq. C2-2, eta = 0
+    v, extra = _member_row_values(bp, ty, p, Fye, prm, 0.0, flags, kind="beam")
+    PS.mark_used(prm, "beam_flexure", extra); PS.mark_used(prm, "material")
+    return HingeSpec("beam", section, L_in, Fye, p["Zx"] * Fye, ty, v["a"], v["b"], v["c"], bp["Mc_over_My"],
+                     IO=v["IO"], LS=v["LS"], CP=v["CP"], compact=compact, flags=tuple(flags))
+
+
+def _row_abs(row: dict, ty: float, env: dict | None = None) -> dict:
+    """a, b, c, IO, LS, CP (rad) of one Table C2.2 / C3.6 line. Expressions (a_expr ...) use `env`."""
+    def ev(key):
+        e = row.get(key)
+        if e is None:
+            return None
+        if isinstance(e, (int, float)):
+            return float(e)
+        e = e.replace("PG/Pye", "(PG/Pye)").replace("h/tw", "(h/tw)").replace("L/ry", "(L/ry)")
+        return float(eval(e, {}, dict(env or {})))
+    a = ev("a_expr") if row.get("a_expr") is not None else PS.row_value(row, "a", thetay=ty)
+    b = ev("b_expr") if row.get("b_expr") is not None else PS.row_value(row, "b", thetay=ty)
+    c = ev("c_expr") if row.get("c_expr") is not None else PS.row_value(row, "c")
+    if a is not None:
+        a = max(a, float(row.get("a_min", 0.0) or 0.0))
+        if row.get("a_max") is not None: a = min(a, float(row["a_max"]))
+    if b is not None:
+        b = max(b, float(row.get("b_min", 0.0) or 0.0))
+        if row.get("b_max") is not None: b = min(b, float(row["b_max"]))
+    if c is not None:
+        c = max(0.0, c)
+    out = dict(a=a, b=b, c=c)
+    for lvl in ("IO", "LS", "CP"):
+        out[lvl] = PS.row_value(row, lvl, a=a, b=b, thetay=ty) if a is not None and b is not None else None
+    return out
+
+
+def _member_row_values(blk: dict, ty: float, p: dict, Fye: float, prm: dict, Ca: float, flags: list,
+                       kind: str, env: dict | None = None) -> tuple:
+    """Line 1 / line 2 / interpolation of AISC 342-22 Table C2.2 (beams) or C3.6 (columns) for this section.
+    -> (values, extra unverified notes). When line 2 is not in the file, a section that is not highly
+    ductile gets the file's flat reduction -- an approximation, flagged and reported as UNVERIFIED."""
+    r1, r2 = PS.rows_of(blk)
+    elements, lim_note = PS.element_slenderness(p, Fye, Ca, prm)
+    cls = PS.ductility_class(elements)
+    v1 = _row_abs(r1, ty, env)
+    extra = []
+    desc = ", ".join("%s %.2f (hd %.2f, md %.2f)" % (k, l, hd, md) for k, (l, hd, md) in elements.items())
+    if cls == "highly":
+        v = v1
+    elif r2:
+        v2 = _row_abs(r2, ty, env)
+        v = PS.interpolate_rows(v1, v2, elements)
+        flags.append("%s section (%s; %s): %s" % ("non-moderately ductile" if cls == "non_moderately" else "between lambda_hd and lambda_md",
+                                                 desc, lim_note, "line 2" if cls == "non_moderately" else "line 3 interpolation, lowest value"))
+    else:
+        key = "noncompact_reduction" if kind == "beam" else "non_highly_ductile_reduction"
+        f = float(blk.get(key, 0.5))
+        v = {k: (x * f if k != "c" and x is not None else x) for k, x in v1.items()}
+        flags.append("NOT highly ductile (%s) and line 2 (non-moderately ductile) is not in the parameter file: "
+                     "flat x%.2f on line 1 -- NOT the table's interpolation" % (desc, f))
+        extra.append("rows.non_moderately_ductile (not supplied; flat x%.2f used for %s)" % (f, p.get("AISC_Manual_Label") or kind))
+    missing = [k for k in ("a", "b", "c", "IO", "LS", "CP") if v.get(k) is None]
+    if missing:
+        raise ValueError("%s parameters: %s missing in the parameter file (%s)" % (kind, ", ".join(missing), "AISC 342-22 Table %s" % ("C2.2" if kind == "beam" else "C3.6")))
+    return v, extra
 
 
 def column_hinge(section: str, L_in: float, PG_kip: float, prm: dict) -> HingeSpec:
@@ -113,27 +162,25 @@ def column_hinge(section: str, L_in: float, PG_kip: float, prm: dict) -> HingeSp
     Pye = p["A"] * Fye
     r = max(0.0, PG_kip) / Pye
     flags = []
-    env = dict(PG=max(0.0, PG_kip), Pye=Pye, L=L_in, ry=p["ry"], h=p["d"] - 2 * p["tf"], tw=p["tw"], math=math)
+    env = dict(PG=max(0.0, PG_kip), Pye=Pye, L=L_in, ry=p["ry"], h=p["d"] - 2 * p["tf"], tw=p["tw"],
+               bf=p["bf"], tf=p["tf"], d=p["d"], math=math)
     if r >= cp["force_controlled_above_P_over_Pye"]:
+        PS.mark_used(prm, "column_flexure"); PS.mark_used(prm, "material")
         flags.append("PG/Pye=%.2f >= %.2f -> FORCE-CONTROLLED column (no hinge; check P vs PCL)" % (r, cp["force_controlled_above_P_over_Pye"]))
         return HingeSpec("column", section, L_in, Fye, p["Zx"] * Fye, _theta_y(p["Zx"], Fye, L_in, p["Ix"], 1 - r),
                          0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, True, r, True, tuple(flags))
-    duct, _, _ = _ductility_class(p, Fye, prm, Ca=r)
-    a = max(cp.get("a_min", 0.0), eval(cp["a_expr"].replace("PG/Pye", "(PG/Pye)").replace("h/tw", "(h/tw)").replace("L/ry", "(L/ry)"), {}, env))
-    b = max(0.0, eval(cp["b_expr"].replace("PG/Pye", "(PG/Pye)").replace("h/tw", "(h/tw)").replace("L/ry", "(L/ry)"), {}, env))
-    if "a_max" in cp: a = min(a, cp["a_max"])
-    if "b_max" in cp: b = min(b, cp["b_max"])
-    c = max(0.0, eval(cp["c_expr"].replace("PG/Pye", "(PG/Pye)"), {}, env))
-    if duct != "highly":
-        f = cp.get("non_highly_ductile_reduction", 0.5); a, b = a * f, b * f
-        flags.append("%s-ductile column section: x%.2f applied (interpolate to the non-moderately-ductile row per standard)" % (duct, f))
+    # AISC 342-22 Table C3.6, columns in compression: line 1 / line 2 / line 3 by this section's flange and web
+    # slenderness with Ca = PG/Pye (note [b]) -- the row is never chosen from the seismic system.
+    v, extra = _member_row_values(cp, None, p, Fye, prm, r, flags, kind="column", env=env)
+    a, b, c = v["a"], v["b"], v["c"]
+    PS.mark_used(prm, "column_flexure", extra); PS.mark_used(prm, "material")
     red = eval(cp["Mpce_axial_reduction"].replace("PG/Pye", "(PG/Pye)"), {}, env)
     Mpe = p["Zx"] * Fye * red
     ty = _theta_y(p["Zx"], Fye, L_in, p["Ix"], red if cp.get("theta_y_uses_Mpce") else 1 - r)   # Eq. C3-15 with M_CE (tau_b = 1)
     if p.get("h_tw_approx"):
         flags.append("h/tw approximated as (d-2tf)/tw")
     return HingeSpec("column", section, L_in, Fye, Mpe, ty, a, b, c, cp["Mc_over_My"],
-                     IO=cp["IO_frac_of_a"] * a, LS=cp["LS_frac_of_b"] * b, CP=cp["CP_frac_of_b"] * b,
+                     IO=v["IO"], LS=v["LS"], CP=v["CP"],
                      force_controlled=False, PG_over_Pye=r, compact=True, flags=tuple(flags))
 
 
@@ -248,24 +295,31 @@ def brace_spec(section: str, L_in: float, prm: dict) -> BraceSpec:
             lam_ratio = float(bp.get("lambda_over_lambda_hd_default", 1.0))
             flags.append("HSS wall thickness not parsed; using lambda/lambda_hd=%.3f" % lam_ratio)
         slend = KLr / math.sqrt(E_KSI / Fye)  # (Lc/r) / sqrt(E/Fy) with Fy~Fye basis as in C3.4 print
-        env = dict(lam_ratio=lam_ratio, slend=slend, KLr=KLr, Fye=Fye, E=E_KSI, math=math)
+        env = dict(lam_ratio=lam_ratio, lam_over_lam_hd=lam_ratio, slend=slend, KLr=KLr, Lc_r=KLr, Fye=Fye, E=E_KSI,
+                   sqrt=math.sqrt, math=math)
         n_c = float(eval(bp["compression"]["n_expr"], {"__builtins__": {}}, env))
         n_t = float(eval(bp["tension"]["n_expr"], {"__builtins__": {}}, env))
         n_c = max(n_c, 1e-6); n_t = max(n_t, 1e-6)
+        # Table C3.4 cells as printed ('1.5 Δc', '0.7 n Δc', 'n Δc', f) or as fields (params_schema.c34_side)
+        sc, st_ = PS.c34_side(bp["compression"]), PS.c34_side(bp["tension"])
+        div = 2.0 if bp.get("tension_only") else 1.0            # Table C3.4 note [d]: tension-only bracing, values / 2.0
+        if div != 1.0:
+            flags.append("tension-only bracing: Table C3.4 values divided by 2.0 (note [d])")
         # Map C3.4 (d,f) to Hysteretic: brief post-buckling plateau then residual at total d = n*delta.
         a_plateau = float(bp["compression"].get("a_plateau_over_dc", 0.05))
         a_c = a_plateau * dc
-        b_c = n_c * dc
-        c_c = float(bp["compression"]["f_residual"])
+        b_c = n_c * dc / div
+        c_c = sc["f"]
         a_t = float(bp["tension"].get("a_plateau_over_dT", 0.05)) * dT
-        b_t = n_t * dT
-        c_t = float(bp["tension"]["f_residual"])
-        IO = float(bp["compression"].get("IO_over_dc", 1.5)) * dc
-        LS = float(bp["compression"].get("LS_frac_of_n", 0.7)) * n_c * dc
-        CP = n_c * dc
-        IO_t = float(bp["tension"].get("IO_over_dT", 1.5)) * dT
-        LS_t = float(bp["tension"].get("LS_frac_of_n", 0.7)) * n_t * dT
-        CP_t = n_t * dT
+        b_t = n_t * dT / div
+        c_t = st_["f"]
+        IO = sc["IO_over"] * dc / div
+        LS = sc["LS_frac_of_n"] * n_c * dc / div
+        CP = sc["CP_frac_of_n"] * n_c * dc / div
+        IO_t = st_["IO_over"] * dT / div
+        LS_t = st_["LS_frac_of_n"] * n_t * dT / div
+        CP_t = st_["CP_frac_of_n"] * n_t * dT / div
+        PS.mark_used(prm, "brace_axial")
         if IO > LS: IO = LS
         if IO_t > LS_t: IO_t = LS_t
         cls = "C3.4_rect_HSS"
@@ -281,6 +335,7 @@ def brace_spec(section: str, L_in: float, prm: dict) -> BraceSpec:
     else: w, cls = (KLr - st) / (sl - st), "intermediate"
     def mix(key): return cK[key] + w * (cS[key] - cK[key])
     tp = bp["tension"]
+    PS.mark_used(prm, "brace_axial", ["mode (legacy ASCE 41-17 Table 9-8 stocky/slender form; AISC 342-22 Table C3.4 needs mode=table_C3_4)"])
     flags = ["brace backbone is a PLACEHOLDER (ASCE 41-17 Table 9-8 form) -- verify against AISC 342-22",
              "HSS local slenderness (b/t) not checked: aisc_shapes.csv carries no wall thickness for HSS"]
     return BraceSpec("brace", section, L_in, A, r, KLr, Fye, Pye, Pcre, dT, dc,

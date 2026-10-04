@@ -89,9 +89,9 @@ def gather(job: str) -> dict:
             rbs_c_in, rbs_detail = float(m.group(1)), comp[:120]
             break
     system = str(basis.get("system") or "").upper()
-    moment = any("moment" in c.lower() for c in conns) or system in ("SMF", "IMF", "OMF")
+    ft = frame_type(system, (pkg.calc or {}), braces)
+    moment, braced = ft["moment_frame"], ft["braced"]
     rbs = any("rbs" in c.lower() for c in conns)
-    braced = bool(braces) or system in ("SCBF", "OCBF", "EBF", "BRBF")
     needed = ["material"]
     if moment or beams:
         needed.append("beam_flexure")
@@ -100,11 +100,56 @@ def gather(job: str) -> dict:
         needed.append("brace_axial")
     return {"job": os.path.abspath(job), "name": pkg.name, "basis": basis, "system": system,
             "connections": conns, "rbs": rbs, "rbs_c_in": rbs_c_in, "rbs_detail": rbs_detail,
-            "moment_frame": moment, "braced": braced,
+            "moment_frame": moment, "braced": braced, "frame_type": ft,
             "beams": {k: {"roles": sorted(v["roles"]), "Lb_over_ry": v["Lb_over_ry"]} for k, v in beams.items()},
             "columns": {k: {"roles": sorted(v["roles"])} for k, v in cols.items()},
             "braces": {k: {"roles": sorted(v["roles"])} for k, v in braces.items()},
             "needed": needed}
+
+
+# Moment-frame and braced-frame systems by their ASCE 7-22 Table 12.2-1 / AISC 341-22 names (the cfg's
+# `system`); a dual system names both. Free text is NOT used to decide this (register item NL-08: the word
+# "moment" in "pinned (model releases major-axis moment)" made a BRBF an FR moment frame).
+_MF_SYSTEMS = re.compile(r"\b(SMF|IMF|OMF|STMF|C-SMF|C-IMF|C-OMF|MOMENT[ -]FRAME|DUAL)\b")
+_BRACED_SYSTEMS = re.compile(r"\b(SCBF|OCBF|EBF|BRBF|SPSW|C-SCBF|C-OCBF|C-EBF|C-BRBF|CBF|BRACED|DUAL)\b")
+# A connection type naming a prequalified / FR moment connection (AISC 358 or a named type), NOT one that
+# merely mentions a released moment.
+_MOMENT_CONN = re.compile(r"(AISC\s*358|prequalified|\bRBS\b|reduced beam section|\bWUF|\bBFP\b|end[- ]plate moment|"
+                          r"moment connection|\b(SMF|IMF|OMF)\b[^,;]*beam-to-column)", re.I)
+_SIMPLE_CONN = re.compile(r"(pinned|simple shear|shear tab|single-plate|releases?\b[^,;]*moment)", re.I)
+
+
+def frame_type(system: str, calc: dict, braces: dict | None = None) -> dict:
+    """The lateral system from the cfg's `system` and the HR package's structure -- braces, EBF links, BRBs,
+    moment connections, the capacity-design checks HR ran -- never from free text alone.
+    -> {"kind", "moment_frame", "braced", "links", "brb", "basis"}"""
+    sysname = str(system or "").upper().strip()
+    cd = calc.get("capacity_design") if isinstance(calc.get("capacity_design"), dict) else {}
+    conns = [str(c.get("type") or "") for c in (calc.get("connections") or []) if isinstance(c, dict)]
+    members = [m for m in (calc.get("members") or []) if isinstance(m, dict)]
+    has_braces = bool(braces) or any(str((m.get("inputs") or {}).get("kind") or "").lower() == "brace" for m in members)
+    links = sysname.startswith("EBF") or "links" in cd or "link_rotation" in cd or any(
+        "link" in str((m.get("inputs") or {}).get("member_type") or "").lower() for m in members)
+    brb = "BRBF" in sysname or any(str((m.get("inputs") or {}).get("section") or "").upper().startswith("BRB") for m in members)
+    mf_conns = [c for c in conns if _MOMENT_CONN.search(c) and not _SIMPLE_CONN.search(c)]
+    mf_checks = [k for k in ("SCWB", "panel_zone", "moment_connection") if k in cd]
+    basis = []
+    if sysname:
+        moment = bool(_MF_SYSTEMS.search(sysname))
+        braced = bool(_BRACED_SYSTEMS.search(sysname)) or has_braces
+        basis.append("system %s (cfg)" % sysname)
+        if not moment and (mf_conns and mf_checks):
+            moment = True                                        # a braced system with real FR moment frames (dual by structure)
+            basis.append("FR moment connections + %s checks in the HR package" % "/".join(mf_checks))
+    else:
+        moment = bool(mf_conns) or bool(mf_checks)
+        braced = has_braces
+        basis.append("no system in cfg: from the HR package (%s)" % ", ".join(
+            x for x in (("moment connections" if mf_conns else ""), ("capacity checks " + "/".join(mf_checks) if mf_checks else ""),
+                        ("braces" if has_braces else "")) if x) or "nothing identifiable")
+    kind = ("dual" if moment and braced else "moment" if moment else
+            "brbf" if brb else "ebf" if links else "braced" if braced else "unknown")
+    return {"kind": kind, "moment_frame": moment, "braced": braced, "links": links, "brb": brb, "basis": "; ".join(basis)}
 
 
 # ---------------------------------------------------------------- what is read from where
@@ -154,51 +199,60 @@ FIELDS = {
         ("LS_frac_of_b", "this row's LS cell as a fraction of b ('0.75 b' -> 0.75)", "fraction"),
         ("CP_frac_of_b", "this row's CP cell as a fraction of b ('b' -> 1.0)", "fraction"),
     ],
+    # AISC 342-22 Table C2.2: line 1 (highly ductile) and line 2 (non-moderately ductile); the engine picks /
+    # interpolates per section (params_schema). Line 2 is optional here (OPTIONAL_FIELDS): without it the
+    # engine flags a flat reduction for a section that is not highly ductile.
     "beam_flexure:member": [
-        ("a_over_thetay", "this row's `a` as a multiple of theta_y ('9 thy' -> 9)", "number"),
-        ("b_over_thetay", "this row's `b` as a multiple of theta_y", "number"),
-        ("c_residual", "this row's residual strength ratio `c`", "number"),
-        ("IO_over_thetay", "IO as a multiple of theta_y", "number"),
-        ("LS_over_thetay", "LS as a multiple of theta_y", "number"),
-        ("CP_over_thetay", "CP as a multiple of theta_y", "number"),
+        ("rows.highly_ductile.a_over_thetay", "line '1. Highly ductile': `a` as a multiple of theta_y ('a = 9 θy' -> 9)", "number"),
+        ("rows.highly_ductile.b_over_thetay", "line 1: `b` as a multiple of theta_y", "number"),
+        ("rows.highly_ductile.c", "line 1: residual strength ratio `c`", "number"),
+        ("rows.highly_ductile.IO_frac_of_a", "line 1: IO as a fraction of a ('0.25 a' -> 0.25)", "fraction"),
+        ("rows.highly_ductile.LS_frac_of_a", "line 1: LS as a fraction of a ('a' -> 1.0)", "fraction"),
+        ("rows.highly_ductile.CP_frac_of_b", "line 1: CP as a fraction of b ('b' -> 1.0)", "fraction"),
+        ("rows.non_moderately_ductile.a_over_thetay", "line '2. Non-moderately ductile': `a` as a multiple of theta_y", "number"),
+        ("rows.non_moderately_ductile.b_over_thetay", "line 2: `b` as a multiple of theta_y", "number"),
+        ("rows.non_moderately_ductile.c", "line 2: residual strength ratio `c`", "number"),
+        ("rows.non_moderately_ductile.IO_frac_of_a", "line 2: IO as a fraction of a", "fraction"),
+        ("rows.non_moderately_ductile.LS_frac_of_a", "line 2: LS as a fraction of a ('0.75 a' -> 0.75)", "fraction"),
+        ("rows.non_moderately_ductile.CP_frac_of_a", "line 2: CP as a fraction of a ('a' -> 1.0)", "fraction"),
     ],
+    # AISC 342-22 Table C3.6, columns in compression: lines 1 and 2 (line 2 optional, as above)
     "column_flexure": [
-        ("a_expr", "this row's `a` cell, as Python in h, tw, L, ry, PG, Pye -- the pattern is C*(h/tw)**p1*(L/ry)**p2*(1-PG/Pye)**p3 with C and the p's read from the flattened digits in print order", "expr"),
-        ("a_max", "the cap on `a` in the same cell (the '<= 0.07')", "number"),
-        ("b_expr", "this row's `b` cell, same symbols and pattern", "expr"),
-        ("b_max", "the cap on `b` in the same cell", "number"),
-        ("c_expr", "this row's `c` cell as Python in PG, Pye (the pattern is C1 - C2*PG/Pye)", "expr"),
-        ("IO_frac_of_a", "IO as a fraction of a", "fraction"),
-        ("LS_frac_of_b", "LS as a fraction of b", "fraction"),
-        ("CP_frac_of_b", "CP as a fraction of b", "fraction"),
+        ("rows.highly_ductile.a_expr", "line '1. Highly ductile': the `a` cell, as Python in h, tw, L, ry, PG, Pye -- the pattern is C*(h/tw)**p1*(L/ry)**p2*(1-PG/Pye)**p3 with C and the p's read from the flattened digits in print order", "expr"),
+        ("rows.highly_ductile.a_max", "line 1: the cap on `a` in the same cell (the '<= 0.07')", "number"),
+        ("rows.highly_ductile.b_expr", "line 1: the `b` cell, same symbols and pattern", "expr"),
+        ("rows.highly_ductile.b_max", "line 1: the cap on `b` in the same cell", "number"),
+        ("rows.highly_ductile.c_expr", "line 1: the `c` cell as Python in PG, Pye (the pattern is C1 - C2*PG/Pye)", "expr"),
+        ("rows.highly_ductile.IO_frac_of_a", "line 1: IO as a fraction of a", "fraction"),
+        ("rows.highly_ductile.LS_frac_of_b", "line 1: LS as a fraction of b", "fraction"),
+        ("rows.highly_ductile.CP_frac_of_b", "line 1: CP as a fraction of b", "fraction"),
+        ("rows.non_moderately_ductile.a_expr", "line '2. Non-moderately ductile': the `a` cell as Python in PG, Pye, L, ry, h, tw, bf, tf", "expr"),
+        ("rows.non_moderately_ductile.b_expr", "line 2: the `b` cell, same symbols", "expr"),
+        ("rows.non_moderately_ductile.c_expr", "line 2: the `c` cell as Python in PG, Pye", "expr"),
+        ("rows.non_moderately_ductile.IO_frac_of_a", "line 2: IO as a fraction of a", "fraction"),
+        ("rows.non_moderately_ductile.LS_frac_of_b", "line 2: LS as a fraction of b", "fraction"),
+        ("rows.non_moderately_ductile.CP_frac_of_b", "line 2: CP as a fraction of b", "fraction"),
     ],
+    # AISC 342-22 Table C3.4 (buckling braces), the row for the brace shape; the engine's table_C3_4 mode
     "brace_axial": [
-        ("compression.stocky.a_over_dc", "braces in compression, stocky (KL/r at or below the lower limit): `a` as a multiple of delta_c", "number"),
-        ("compression.stocky.b_over_dc", "stocky: `b` as a multiple of delta_c", "number"),
-        ("compression.stocky.c", "stocky: residual strength ratio c", "number"),
-        ("compression.stocky.IO_over_dc", "stocky: IO as a multiple of delta_c", "number"),
-        ("compression.stocky.LS_over_dc", "stocky: LS as a multiple of delta_c", "number"),
-        ("compression.stocky.CP_over_dc", "stocky: CP as a multiple of delta_c", "number"),
-        ("compression.slender.a_over_dc", "braces in compression, slender (KL/r at or above the upper limit): `a` as a multiple of delta_c", "number"),
-        ("compression.slender.b_over_dc", "slender: `b`", "number"),
-        ("compression.slender.c", "slender: c", "number"),
-        ("compression.slender.IO_over_dc", "slender: IO", "number"),
-        ("compression.slender.LS_over_dc", "slender: LS", "number"),
-        ("compression.slender.CP_over_dc", "slender: CP", "number"),
-        ("tension.a_over_dT", "braces in tension: `a` as a multiple of delta_T", "number"),
-        ("tension.b_over_dT", "tension: `b`", "number"),
-        ("tension.c", "tension: c", "number"),
-        ("tension.IO_over_dT", "tension: IO", "number"),
-        ("tension.LS_over_dT", "tension: LS", "number"),
-        ("tension.CP_over_dT", "tension: CP", "number"),
+        ("compression.n_expr", "braces in compression, this shape's row: n as Python in slend = (Lc/r)/sqrt(E/Fye) and lam_ratio = lambda/lambda_hd", "expr"),
+        ("compression.f", "compression: strength ratio at maximum deformation f", "number"),
+        ("compression.IO_over_dc", "compression: IO as a multiple of delta_c ('1.5 Δc' -> 1.5)", "number"),
+        ("compression.LS_frac_of_n", "compression: LS as a fraction of n delta_c ('0.7 n Δc' -> 0.7)", "fraction"),
+        ("compression.CP_frac_of_n", "compression: CP as a fraction of n delta_c ('n Δc' -> 1.0)", "fraction"),
+        ("tension.n_expr", "braces in tension, this shape's row: n as Python in slend and lam_ratio", "expr"),
+        ("tension.f", "tension: strength ratio at maximum deformation f", "number"),
+        ("tension.IO_over_dT", "tension: IO as a multiple of delta_T", "number"),
+        ("tension.LS_frac_of_n", "tension: LS as a fraction of n delta_T", "fraction"),
+        ("tension.CP_frac_of_n", "tension: CP as a fraction of n delta_T", "fraction"),
         ("Ry_expected", "Ry for the brace material (A500 Gr. C round/rectangular HSS) in AISC 341-22 Table A3.2", "number"),
     ],
 }
 
-
-def _ductility(facts: dict) -> str:
-    sys_ = (facts.get("system") or "").upper()
-    return "highly ductile" if sys_ in ("SMF", "SCBF", "EBF", "BRBF", "SPSW", "") else "moderately ductile"
+# Fields a table may legitimately not yield in the converted corpus (line 2 of Tables C2.2 / C3.6 is
+# damaged there); their absence does not hold the group back -- the engine reports the fallback it uses.
+OPTIONAL_FIELDS = {f for v in ("beam_flexure:member", "column_flexure") for f, _w, _k in FIELDS[v]
+                   if f.startswith("rows.non_moderately_ductile.")}
 
 
 def row_for(gid: str, facts: dict) -> tuple[str, str]:
@@ -210,11 +264,19 @@ def row_for(gid: str, facts: dict) -> tuple[str, str]:
             row = ("'RBS moment connection in conformance with ANSI/AISC 358' [e]" if facts.get("rbs")
                    else "'All ANSI/AISC 358 conforming connections, with the exception of the RBS moment connection' [d]")
             return "beam_flexure:fr_connection", "AISC 342-22 Table C5.5 (continued), row %s" % row
-        return "beam_flexure:member", "AISC 342-22 Table C2.2, 'Beams -- flexure', the %s row" % _ductility(facts)
+        # NL-14: both printed lines, never a 'moderately ductile' row (Table C2.2 has none); the row of each
+        # member is chosen by its own slenderness in the engine, not by the system
+        return "beam_flexure:member", ("AISC 342-22 Table C2.2, 'Beams -- flexure', lines '1. Highly ductile' and "
+                                       "'2. Non-moderately ductile' (both; the engine interpolates per section)")
     if gid == "column_flexure":
-        return "column_flexure", "AISC 342-22 Table C3.6, 'Columns and Braces in Compression', the row '1. %s' (a, b, c columns)" % _ductility(facts).capitalize()
+        return "column_flexure", ("AISC 342-22 Table C3.6, 'Columns and Braces in Compression', lines '1. Highly ductile' and "
+                                  "'2. Non-moderately ductile' (a, b, c and IO/LS/CP of both; the engine interpolates per section)")
     if gid == "brace_axial":
-        return "brace_axial", "AISC 342-22 Table C3.6, the braces-in-compression (stocky / slender) and braces-in-tension rows; ASCE 41-23 Chapter 9 where AISC 342 defers"
+        if (facts.get("frame_type") or {}).get("brb"):
+            return "brace_axial", ("AISC 342-22 Table C3.3, buckling-restrained braces -- NOT modelled by this tool (no BRB element); "
+                                   "the buckling-brace Table C3.4 does not apply to a BRBF")
+        return "brace_axial", ("AISC 342-22 Table C3.4, buckling braces in compression and in tension, the row for the "
+                               "brace shape (rectangular HSS: row 3); AISC 341-22 Table A3.2 for Ry")
     return gid, gid
 
 
@@ -339,10 +401,14 @@ def transcribe(gid: str, facts: dict, passages: list, conn: dict, em, trace) -> 
         for f, what, kind in fields:
             a = ans.get(f)
             if not isinstance(a, dict):
+                if f in OPTIONAL_FIELDS:
+                    continue
                 probs[f] = "missing from the reply"
                 rejected[f] = probs[f]
                 continue
             why = check_field(kind, a.get("value"), a.get("quote"), passages_norm)
+            if why == "not read" and f in OPTIONAL_FIELDS:
+                continue                    # line 2 absent from the corpus: the engine reports its fallback
             if why:
                 probs[f] = why + ((" -- " + str(a.get("why"))) if a.get("why") else "")
                 if why != "not read":
@@ -379,8 +445,10 @@ def assemble(gid: str, facts: dict, template: dict, got: dict, passages: list) -
     variant, row = row_for(gid, facts)
     g = json.loads(json.dumps(template.get(gid) or {}))
     quotes = got.pop("_quotes", {})
+    g.pop("unverified", None)
     for f, v in got.items():
         _set(g, f, v)
+        _drop_printed(g, f)
     pages = sorted({str(p["page"]) for p in passages if p.get("page")}, key=lambda x: (len(x), x))
     docs = sorted({p["source"] for p in passages if p.get("source")})
     g["source"] = "%s, pdf p. %s" % (row.split(",")[0] if gid != "material" else "AISC 341-22 Table A3.2",
@@ -402,18 +470,55 @@ def assemble(gid: str, facts: dict, template: dict, got: dict, passages: list) -
         g.pop("modifiers", None)
         g["modifier_note"] = ("Table C5.5 footnotes / Sec. C5.4a.1.a.1(a)-(d) modifiers (continuity plates, panel zone "
                               "V_pz/V_ye, clear span to depth, flange slenderness) are NOT evaluated by Collect; none applied.")
-        for k in ("a_over_thetay", "b_over_thetay", "IO_over_thetay", "LS_over_thetay", "CP_over_thetay"):
+        for k in ("a_over_thetay", "b_over_thetay", "IO_over_thetay", "LS_over_thetay", "CP_over_thetay", "rows", "table"):
             g.pop(k, None)
+        g["table"] = "AISC 342-22 Table C5.5 (FR moment connections)"
     elif variant == "beam_flexure:member":
         g["mode"] = "member"
+    if variant != "beam_flexure:fr_connection" and gid in ("beam_flexure", "column_flexure"):
+        _drop_unread_line2(g, got)
+    # NL-19: the source cites the transcribed values only. Every value field that was NOT read from a
+    # passage (template values such as Mc_over_My, force_controlled_above_P_over_Pye) is named in
+    # `unverified`, which the engines turn into the UNVERIFIED banner.
+    from pushover import params_schema as _PS
+    g["unverified"] = [f for f in _PS.value_fields(g) if f not in quotes]
+    if g["unverified"]:
+        g["source"] += " (only the fields in `quotes`; those in `unverified` are template values, not read from this table)"
+    else:
+        g.pop("unverified")
     return g
+
+
+def _drop_printed(g: dict, dotted: str) -> None:
+    """A transcribed field-form value (rows.x.IO_frac_of_a) replaces the template's printed cell (rows.x.IO)."""
+    keys = dotted.split(".")
+    leaf = keys[-1]
+    m = re.match(r"^(a|b|IO|LS|CP)_(over_thetay|frac_of_[ab]|over_dc|over_dT|frac_of_n|expr)$", leaf)
+    if not m:
+        return
+    cur = g
+    for k in keys[:-1]:
+        cur = cur.get(k) if isinstance(cur, dict) else None
+        if cur is None:
+            return
+    if isinstance(cur, dict) and m.group(1) in cur:
+        cur.pop(m.group(1))
+
+
+def _drop_unread_line2(g: dict, got: dict) -> None:
+    """Line 2 of the template is only a corpus reading: when Collect did not read it, it is removed rather
+    than left to travel under the group's citation (the engine then reports its fallback, loudly)."""
+    rows = g.get("rows")
+    if isinstance(rows, dict) and not any(f.startswith("rows.non_moderately_ductile.") for f in got):
+        rows.pop("non_moderately_ductile", None)
 
 
 # ---------------------------------------------------------------- validation
 _ID_PAGE = re.compile(r"(Table|Tbl\.?|Eq\.?|Equation|Sec(?:tion)?\.?|§)\s*[A-Z]?\d+(?:[.\-]\d+)*[a-z]?", re.I)
 _PAGE = re.compile(r"\b(p\.?|pp\.?|page|pdf|printed)\s*\d+", re.I)
 _SAMPLE = dict(h=30.0, tw=0.5, L=168.0, ry=4.0, PG=100.0, Pye=1000.0, bf=16.0, tf=1.2, Lb=100.0, d=36.0,
-               E=29000.0, Fye=55.0, Fy=50.0, KL=168.0, r=3.0, sqrt=math.sqrt, min=min, max=max, abs=abs)
+               E=29000.0, Fye=55.0, Fy=50.0, KL=168.0, r=3.0, sqrt=math.sqrt, min=min, max=max, abs=abs,
+               slend=1.5, lam_ratio=0.8, KLr=60.0)
 
 
 def _num(x) -> bool:
@@ -444,6 +549,53 @@ def _ordered(*vals) -> bool:
     return all(a <= b for a, b in zip(vals, vals[1:]))
 
 
+def _validate_rows(g: dict, kind: str) -> list:
+    """Table C2.2 / C3.6 in the `rows` form: line 1 complete; line 2, when given, complete too. Each line
+    must give a <= b, IO <= LS <= CP and 0 < c <= 1 at sample inputs (printed or field form)."""
+    from pushover import params_schema as _PS
+    p = []
+    rows = g.get("rows") or {}
+    for name in ("highly_ductile", "non_moderately_ductile"):
+        r = rows.get(name)
+        if r is None:
+            if name == "highly_ductile":
+                p.append("rows.highly_ductile missing")
+            continue
+        if name == "non_moderately_ductile" and _PS.rows_of(g)[1] is None:
+            continue                                             # line 2 not supplied: the engine flags its fallback
+        try:
+            ty = 0.01
+            def ev(k):
+                e = r.get(k)
+                if e is None:
+                    return None
+                ok, why = _expr_ok(e)
+                if not ok:
+                    raise ValueError("rows.%s.%s: %s" % (name, k, why))
+                return float(eval(e, {"__builtins__": {}}, dict(_SAMPLE))) if isinstance(e, str) else float(e)
+            a = ev("a_expr") if r.get("a_expr") is not None else _PS.row_value(r, "a", thetay=ty)
+            b = ev("b_expr") if r.get("b_expr") is not None else _PS.row_value(r, "b", thetay=ty)
+            c = ev("c_expr") if r.get("c_expr") is not None else _PS.row_value(r, "c")
+            if a is None or b is None or c is None:
+                p.append("rows.%s: a, b and c are all required" % name)
+                continue
+            if r.get("a_max") is not None: a = min(a, float(r["a_max"]))
+            if r.get("b_max") is not None: b = min(b, float(r["b_max"]))
+            lim = [_PS.row_value(r, k, a=a, b=b, thetay=ty) for k in ("IO", "LS", "CP")]
+            if any(x is None for x in lim):
+                p.append("rows.%s: IO, LS and CP are all required" % name)
+                continue
+            if not (0 < c <= 1.0):
+                p.append("rows.%s.c outside (0, 1]" % name)
+            if not _ordered(a, b):
+                p.append("rows.%s a <= b" % name)
+            if not (0 < lim[0] and _ordered(*lim)):
+                p.append("rows.%s IO <= LS <= CP" % name)
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            p.append(str(e))
+    return p
+
+
 def validate(params: dict, needed: list) -> tuple[bool, dict]:
     """-> (every needed group passed, {group: [problems]}). An empty list means the group passed."""
     probs: dict = {}
@@ -471,6 +623,8 @@ def validate(params: dict, needed: list) -> tuple[bool, dict]:
                 for k in ("IO_frac_of_a", "LS_frac_of_b", "CP_frac_of_b"):
                     if not (_num(g.get(k)) and 0 < g[k] <= 1.0):
                         p.append(k)
+            elif isinstance(g.get("rows"), dict):
+                p += _validate_rows(g, "beam")
             else:
                 for k in ("a_over_thetay", "b_over_thetay", "IO_over_thetay", "LS_over_thetay", "CP_over_thetay"):
                     if not (_num(g.get(k)) and g[k] > 0):
@@ -479,39 +633,43 @@ def validate(params: dict, needed: list) -> tuple[bool, dict]:
                     p.append("IO <= LS <= CP")
                 if not _ordered(g.get("a_over_thetay"), g.get("b_over_thetay")):
                     p.append("a <= b")
-            if not (_num(g.get("c_residual")) and 0 < g["c_residual"] <= 1.0):
+            if not isinstance(g.get("rows"), dict) and not (_num(g.get("c_residual")) and 0 < g["c_residual"] <= 1.0):
                 p.append("c_residual outside (0, 1]")
         elif gid == "column_flexure":
-            for k in ("a_expr", "b_expr", "c_expr"):
-                ok, why = _expr_ok(g.get(k))
-                if not ok:
-                    p.append("%s: %s" % (k, why))
-            for k in ("IO_frac_of_a", "LS_frac_of_b", "CP_frac_of_b"):
-                if not (_num(g.get(k)) and 0 < g[k] <= 1.0):
-                    p.append(k)
-            if not _ordered(g.get("LS_frac_of_b"), g.get("CP_frac_of_b")):
-                p.append("LS <= CP")
-            if "a_max" in g and not (_num(g["a_max"]) and g["a_max"] > 0):
-                p.append("a_max")
-            if not (_num(g.get("b_max")) and g["b_max"] > 0):
-                p.append("b_max")
+            if isinstance(g.get("rows"), dict):
+                p += _validate_rows(g, "column")
+            else:
+                for k in ("a_expr", "b_expr", "c_expr"):
+                    ok, why = _expr_ok(g.get(k))
+                    if not ok:
+                        p.append("%s: %s" % (k, why))
+                for k in ("IO_frac_of_a", "LS_frac_of_b", "CP_frac_of_b"):
+                    if not (_num(g.get(k)) and 0 < g[k] <= 1.0):
+                        p.append(k)
+                if not _ordered(g.get("LS_frac_of_b"), g.get("CP_frac_of_b")):
+                    p.append("LS <= CP")
+                if "a_max" in g and not (_num(g["a_max"]) and g["a_max"] > 0):
+                    p.append("a_max")
+                if not (_num(g.get("b_max")) and g["b_max"] > 0):
+                    p.append("b_max")
         elif gid == "brace_axial":
-            comp = g.get("compression") or {}
-            for side in ("stocky", "slender"):
-                blk = comp.get(side) or {}
-                for k in ("a_over_dc", "b_over_dc", "IO_over_dc", "LS_over_dc", "CP_over_dc"):
-                    if not (_num(blk.get(k)) and blk[k] > 0):
-                        p.append("compression.%s.%s" % (side, k))
-                if not _ordered(blk.get("IO_over_dc"), blk.get("LS_over_dc"), blk.get("CP_over_dc")):
-                    p.append("compression.%s IO <= LS <= CP" % side)
-                if not (_num(blk.get("c")) and 0 < blk["c"] <= 1.0):
-                    p.append("compression.%s.c" % side)
-            ten = g.get("tension") or {}
-            for k in ("a_over_dT", "b_over_dT", "IO_over_dT", "LS_over_dT", "CP_over_dT"):
-                if not (_num(ten.get(k)) and ten[k] > 0):
-                    p.append("tension." + k)
-            if not _ordered(ten.get("IO_over_dT"), ten.get("LS_over_dT"), ten.get("CP_over_dT")):
-                p.append("tension IO <= LS <= CP")
+            if str(g.get("mode") or "") != "table_C3_4":
+                p.append("mode must be table_C3_4 (AISC 342-22 Table C3.4); the stocky/slender form is ASCE 41-17")
+            for side, base in (("compression", "dc"), ("tension", "dT")):
+                blk = g.get(side) or {}
+                ok, why = _expr_ok(blk.get("n_expr"))
+                if not ok:
+                    p.append("%s.n_expr: %s" % (side, why))
+                f = blk.get("f", blk.get("f_residual"))
+                if not (_num(f) and 0 < f <= 1.0):
+                    p.append("%s.f" % side)
+                try:
+                    from pushover import params_schema as _PS
+                    c = _PS.c34_side(blk)
+                    if not (c["IO_over"] > 0 and 0 < c["LS_frac_of_n"] <= c["CP_frac_of_n"] <= 1.0):
+                        p.append("%s IO > 0, LS <= CP <= n" % side)
+                except (ValueError, TypeError) as e:
+                    p.append("%s: %s" % (side, e))
             if not (_num(g.get("Ry_expected")) and 1.0 <= g["Ry_expected"] <= 2.0):
                 p.append("Ry_expected outside 1.0-2.0")
         probs[gid] = p

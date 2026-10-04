@@ -312,6 +312,7 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     member_nseg: fibre/IMK member subdivisions (default 4 for fibre, 1 for imk). SNL_MEMBER_NSEG.
     """
     import os
+    prm.setdefault("_system", getattr(pkg.basis, "system", None) or "")   # web case of AISC 341-22 Table D1.1b (params_schema)
     num = prm.get("numerics") or {}
     if plasticity is None:
         # CLI/env overrides hinge_params numerics (product ladder may force imk).

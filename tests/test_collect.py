@@ -256,10 +256,13 @@ GOOD_MATERIAL = {"Ry_expected": _q(1.1, A992_ROW.strip())}
 GOOD_BEAM = {"a_expr": _q("0.55*(h/tw)**-0.5*(bf/(2*tf))**-0.7*(Lb/ry)**-0.5*(L/d)**0.8", FN_E),
              "a_max": _q(0.07, RBS_CELLS[1]), "b_abs": _q(0.07, RBS_CELLS[2]), "c_residual": _q(0.3, RBS_CELLS[3]),
              "IO_frac_of_a": _q(0.5, RBS_CELLS[4]), "LS_frac_of_b": _q(0.75, RBS_CELLS[5]), "CP_frac_of_b": _q(1.0, RBS_CELLS[6])}
-GOOD_COLUMN = {"a_expr": _q("5.5*(h/tw)**-0.95*(L/ry)**-0.5*(1-PG/Pye)**2.4", C36_A), "a_max": _q(0.07, C36_A),
+# AISC 342-22 Table C3.6 line 1 (the schema keeps both printed lines under `rows`; line 2 is optional for
+# Collect because the converted cell is unreadable -- the engine then flags its fallback)
+GOOD_COLUMN = {"rows.highly_ductile." + k: v for k, v in {
+               "a_expr": _q("5.5*(h/tw)**-0.95*(L/ry)**-0.5*(1-PG/Pye)**2.4", C36_A), "a_max": _q(0.07, C36_A),
                "b_expr": _q("20*(h/tw)**-0.9*(L/ry)**-0.5*(1-PG/Pye)**3.4", C36_ROW), "b_max": _q(0.07, C36_ROW),
                "c_expr": _q("0.4-0.4*PG/Pye", C36_ROW),
-               "IO_frac_of_a": _q(0.5, "0.5 a"), "LS_frac_of_b": _q(0.75, "0.75 b"), "CP_frac_of_b": _q(1.0, "b")}
+               "IO_frac_of_a": _q(0.5, "0.5 a"), "LS_frac_of_b": _q(0.75, "0.75 b"), "CP_frac_of_b": _q(1.0, "b")}.items()}
 
 
 def _live(tmp_path, script):
@@ -287,7 +290,12 @@ def test_the_model_only_transcribes_and_every_value_is_backed_by_a_cell(tmp_path
         assert d["verified"] is True
         assert d["beam_flexure"]["mode"] == "fr_connection" and d["beam_flexure"]["a_max"] == 0.07 and d["beam_flexure"]["b_abs"] == 0.07
         assert d["beam_flexure"]["a_expr"].startswith("0.55*") and d["beam_flexure"]["rbs_c_in"] == 4.0 and d["beam_flexure"]["Lb_over_ry"] == pytest.approx(55.1, abs=0.2)
-        assert d["column_flexure"]["a_expr"].startswith("5.5*") and d["column_flexure"]["b_max"] == 0.07
+        hd = d["column_flexure"]["rows"]["highly_ductile"]
+        assert hd["a_expr"].startswith("5.5*") and hd["b_max"] == 0.07 and "IO" not in hd   # the printed template cell gave way
+        assert "non_moderately_ductile" not in d["column_flexure"]["rows"]                    # not read -> not carried under the citation
+        # NL-19: values Collect did not read are named, not passed off under the table's citation
+        assert "Mc_over_My" in d["column_flexure"]["unverified"] and "force_controlled_above_P_over_Pye" in d["column_flexure"]["unverified"]
+        assert "Mc_over_My" in d["beam_flexure"]["unverified"] and "Fy_ksi" in d["material"]["unverified"]
         assert d["material"]["Ry_expected"] == 1.1 and d["material"]["Fy_ksi"] == 50.0
         for g in ("material", "beam_flexure", "column_flexure"):
             assert "Table" in d[g]["source"] and "p." in d[g]["source"], d[g]["source"]     # built from the passages, not typed
@@ -326,14 +334,14 @@ def test_a_remembered_number_is_rejected_and_the_retry_names_it(tmp_path):
 
 
 def test_a_quote_that_is_not_in_the_passage_is_rejected(tmp_path):
-    invented = dict(GOOD_COLUMN, a_expr=_q("0.8*(h/tw)**-0.6*(L/ry)**-0.8*(1-PG/Pye)**2.2", "a = 0.8 (h/tw)^-0.6 (L/ry)^-0.8 (1-PG/Pye)^2.2"))
+    invented = dict(GOOD_COLUMN, **{"rows.highly_ductile.a_expr": _q("0.8*(h/tw)**-0.6*(L/ry)**-0.8*(1-PG/Pye)**2.2", "a = 0.8 (h/tw)^-0.6 (L/ry)^-0.8 (1-PG/Pye)^2.2")})
     job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, invented, invented, invented])
     try:
         r = collect.run(job, emit=collect.Emitter(io.StringIO()))
         assert not r["ok"] and r["missing"] == ["column_flexure"]
         assert os.path.basename(r["path"]) == collect.PARTIAL_NAME and not os.path.exists(os.path.join(job, collect.OUT_NAME))
         ev = json.load(open(os.path.join(job, collect.EVIDENCE_NAME), encoding="utf-8"))
-        assert any("a_expr: the quote does not occur in the passages" in p for p in ev["problems"]["column_flexure"])
+        assert any("rows.highly_ductile.a_expr: the quote does not occur in the passages" in p for p in ev["problems"]["column_flexure"])
         assert len(ScriptedLLM.calls) == 5, "three attempts for the column, then it is missing -- no loop"
     finally:
         _done(R, L, old)
@@ -374,7 +382,7 @@ def test_rows_are_decided_from_the_building_not_by_the_model():
     f = collect.gather(EX22)
     assert f["rbs"] and f["rbs_c_in"] == 4.0
     assert collect.row_for("beam_flexure", f)[0] == "beam_flexure:fr_connection" and "RBS" in collect.row_for("beam_flexure", f)[1]
-    assert "Highly ductile" in collect.row_for("column_flexure", f)[1]
+    assert "Highly ductile" in collect.row_for("column_flexure", f)[1] and "Non-moderately ductile" in collect.row_for("column_flexure", f)[1]
     f2 = dict(f, rbs=False)
     assert "exception of the RBS" in collect.row_for("beam_flexure", f2)[1]
     f3 = dict(f, moment_frame=False, rbs=False)

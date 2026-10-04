@@ -1,85 +1,122 @@
 {
   "_README": [
-    "Nonlinear component modelling parameters + acceptance criteria used by the Pushover Analyst.",
-    "STATUS: the numbers below are PLACEHOLDER DEFAULTS written from memory of ASCE 41-17 Table 9-7.1",
-    "(beams) and the Lignos-based ASCE 41-17 column expressions. They are NOT verified against a licensed",
-    "copy of ASCE/SEI 41-23 or ANSI/AISC 342-22. The Pushover Analyst Grok Bot MUST send a retrieval plan",
-    "to Query file manager (doc AISC_342_22 / ASCE_41_23), copy the printed values into this file, set",
-    "verified=true and fill `source` with the exact table/equation ids and printed page. Until then every",
-    "report produced from this file carries a red UNVERIFIED banner. Never edit `verified` without doing the lookup."
+    "Component modelling parameters and acceptance criteria for the nonlinear analyses (pushover, NLRHA). SCHEMA: ASCE/SEI 41-23 with ANSI/AISC 342-22 (Chapter C tables) and AISC 341-22 (Tables A3.2, D1.1). The ASCE 41-17 forms of the previous template are retired.",
+    "THIS FILE IS THE TEMPLATE. Every component value below is listed in its group's `unverified` list: they are corpus readings or placeholders that nobody has checked against the printed standard. The reports carry the red UNVERIFIED banner and name every such field until the user has verified it.",
+    "Protocol (manual verification step before running NL): copy this file to a job copy, check each value against the printed table (RAG / licensed PDF), put the printed value in, give the group a `source` naming table/equation and printed page, and remove the field from `unverified` (delete the list when the group is done). Then pass the job copy with `--params`. Set the top-level `verified` to true only when every group the building uses is done; the engine also checks it field by field and reports any value the user did not supply.",
+    "Printed form is accepted: a cell may be written exactly as the table prints it -- e.g. \"9 θy\", \"0.25 a\", \"a\", \"0.75 b\", \"b\" (Tables C2.2 / C3.6), \"1.5 Δc\", \"0.7 n Δc\", \"n Δc\" (Table C3.4) -- or in the field form (a_over_thetay, IO_frac_of_a, LS_frac_of_b, IO_over_dc, LS_frac_of_n ...).",
+    "Row selection: Tables C2.2 and C3.6 print line 1 'Highly ductile (λ ≤ λhd)', line 2 'Non-moderately ductile (λ ≥ λmd)' and line 3 'Other: linear interpolation ... the lowest resulting value shall be used'. Give BOTH lines under `rows`; the engine classifies every section by its own flange and web slenderness (AISC 341-22 Table D1.1b, RyFy -> Fye, αsPr -> PG) and interpolates. The row is never chosen from the seismic system (there is no 'moderately ductile' row).",
+    "beam_flexure: mode 'member' = Table C2.2 (beams of braced frames, OMF/IMF/SMF beams modelled as members); mode 'fr_connection' = Table C5.5 (FR moment connections: a_expr, a_max, b_abs, c_residual, IO_frac_of_a, LS_frac_of_b, CP_frac_of_b, modifiers). brace_axial: mode 'table_C3_4' = AISC 342-22 Table C3.4 buckling braces (n expressions in lam_ratio = λ/λhd and slend = (Lc/r)/sqrt(E/Fye)). Buckling-restrained braces (Table C3.3) are not modelled by this tool.",
+    "Never edit `verified` or remove a field from `unverified` without doing the lookup."
   ],
+  "schema": "ASCE41-23/AISC342-22",
   "verified": false,
-  "source": "placeholder -- ASCE 41-17 Table 9-7.1 (from memory); AISC 342-22 Ch. C / ASCE 41-23 Ch. 9 NOT retrieved",
+  "source": "TEMPLATE -- repository defaults; not user-verified (see _README)",
   "material": {
     "Fy_ksi": 50.0,
     "Ry_expected": 1.1,
-    "note": "A992 W-shapes: Fye = Ry*Fy (AISC 341-22 Table A3.2 Ry=1.1 for ASTM A992). Confirm the ASCE 41/AISC 342 lower-bound and expected material factors."
+    "source": "",
+    "unverified": [
+      "*"
+    ],
+    "note": "A992 W-shapes: Fye = Ry Fy, AISC 342-22 Section A5.2 / Table A5.2 -> AISC 341-22 Table A3.2 (A992: Ry = 1.1). Confirm the expected-to-specified factors for the project materials."
   },
   "beam_flexure": {
-    "basis": "compact W-shape beam, flexure, primary component; theta_y = Z*Fye*L/(6*E*I)",
-    "a_over_thetay": 9.0,
-    "b_over_thetay": 11.0,
-    "c_residual": 0.6,
+    "mode": "member",
+    "table": "AISC 342-22 Table C2.2 (beams subjected to flexure)",
+    "rows": {
+      "highly_ductile": {
+        "a": "9 θy",
+        "b": "11 θy",
+        "c": 0.6,
+        "IO": "0.25 a",
+        "LS": "a",
+        "CP": "b"
+      },
+      "non_moderately_ductile": {
+        "a": "4 θy",
+        "b": "6 θy",
+        "c": 0.2,
+        "IO": "0.25 a",
+        "LS": "0.75 a",
+        "CP": "a"
+      }
+    },
     "Mc_over_My": 1.1,
-    "IO_over_thetay": 1.0,
-    "LS_over_thetay": 6.0,
-    "CP_over_thetay": 8.0,
     "noncompact_reduction": 0.5,
-    "note": "Table values apply to compact flanges/webs (bf/2tf <= 52/sqrt(Fye), h/tw <= 418/sqrt(Fye)); otherwise linear interpolation to the slender limits in the standard -- prototype applies a flat 0.5 factor and flags it."
+    "source": "",
+    "unverified": [
+      "*"
+    ],
+    "note": "Values as read from the converted AISC 342-22 Table C2.2 (line 2's LS/CP cells are damaged in the conversion: 'value shall | used. | a'). theta_y per Eq. C2-2. Mc_over_My (strain hardening to the capping point) is a modelling assumption, not a table value. noncompact_reduction is used only with mode fr_connection (C5.4a.1.a.1(c)) or when line 2 is missing (flagged)."
   },
   "column_flexure": {
-    "basis": "wide-flange column, flexure with axial PG/Pye < 0.6 (Lignos-type expressions as adopted in ASCE 41-17 Table 9-7.1); rotations in RADIANS (plastic)",
-    "a_expr": "0.8*(1-PG/Pye)**2.2*(0.1*L/ry)**-0.8*(h/tw)**-0.6",
-    "b_expr": "7.4*(1-PG/Pye)**2.3*(0.1*L/ry)**-0.5*(h/tw)**-0.7",
-    "c_expr": "0.9-0.9*PG/Pye",
-    "a_min": 0.0,
-    "b_max": 0.15,
+    "table": "AISC 342-22 Table C3.6 (columns and braces in flexure with axial compression)",
+    "rows": {
+      "highly_ductile": {
+        "a_expr": "5.5*(h/tw)**-0.95*(L/ry)**-0.5*(1-PG/Pye)**2.4",
+        "a_max": 0.07,
+        "b_expr": "20*(h/tw)**-0.9*(L/ry)**-0.5*(1-PG/Pye)**3.4",
+        "b_max": 0.07,
+        "c_expr": "0.4-0.4*PG/Pye",
+        "IO": "0.5 a",
+        "LS": "0.75 b",
+        "CP": "b"
+      },
+      "non_moderately_ductile": {
+        "a_expr": null,
+        "a_min": 0.0,
+        "b_expr": null,
+        "b_min": 0.0,
+        "c_expr": "0.5-0.5*PG/Pye",
+        "IO": "0.5 a",
+        "LS": "0.75 b",
+        "CP": "b",
+        "note": "Line 2 a/b expressions are flattened beyond reading in the converted text; supply them from the printed table. Until then a section that is not highly ductile gets the flat non_highly_ductile_reduction on line 1 (flagged UNVERIFIED)."
+      }
+    },
     "Mc_over_My": 1.1,
-    "IO_frac_of_a": 0.5,
-    "LS_frac_of_b": 0.75,
-    "CP_frac_of_b": 1.0,
     "force_controlled_above_P_over_Pye": 0.6,
-    "Mpce_axial_reduction": "min(1.0, 1.18*(1-PG/Pye))",
-    "note": "PG = gravity axial (QG) in the pushover; Pye = Ag*Fye. Columns with PG/Pye > 0.6 are force-controlled -> report P/PCL, no hinge."
+    "Mpce_axial_reduction": "min(1 - PG/(2*Pye), 9/8*(1 - PG/Pye))",
+    "theta_y_uses_Mpce": true,
+    "non_highly_ductile_reduction": 0.5,
+    "source": "",
+    "unverified": [
+      "*"
+    ],
+    "note": "PG = gravity axial (ASCE 41-23 Eq. 7-3 combination as applied by the tool); Pye = Ag Fye; L = storey height. Mpce_axial_reduction = AISC 342-22 Eqs. C3-5 / C3-6 (major axis: (1 - |P|/2Pye) Mpex below 0.2κ, 9/8 (1 - |P|/Pye) Mpex above; written as the minimum, i.e. κ = 1). The ASCE 41-17-era 1.18 (1 - P/Py) form (AISC 342-22 Commentary Eq. C-C3-5) is superseded and is replaced by the engine if a file still carries it."
   },
   "brace_axial": {
-    "basis": "HSS brace, concentrically braced frame -- phenomenological axial backbone (ASCE 41-17 Table 9-8 form, PLACEHOLDER from memory); deformations are multiples of delta_c (axial shortening at expected buckling) and delta_T (axial elongation at expected yield)",
+    "mode": "table_C3_4",
+    "table": "AISC 342-22 Table C3.4 (buckling braces subjected to axial force)",
     "Fy_ksi": 50.0,
     "Ry_expected": 1.3,
     "K_effective": 1.0,
     "Pcr_expected_factor": 1.14,
+    "lambda_hd_coef": 0.65,
+    "tension_only": false,
     "compression": {
-      "slender_limit": "4.2*sqrt(E/Fye)",
-      "stocky_limit": "2.1*sqrt(E/Fye)",
-      "slender": {
-        "a_over_dc": 0.5,
-        "b_over_dc": 10.0,
-        "c": 0.3,
-        "IO_over_dc": 0.5,
-        "LS_over_dc": 8.0,
-        "CP_over_dc": 10.0
-      },
-      "stocky": {
-        "a_over_dc": 1.0,
-        "b_over_dc": 8.0,
-        "c": 0.5,
-        "IO_over_dc": 0.5,
-        "LS_over_dc": 7.0,
-        "CP_over_dc": 8.0
-      },
-      "note": "linear interpolation between the stocky and slender limits on KL/r"
+      "n_expr": "3.0*slend**1.0*lam_ratio**-1.0",
+      "f": 0.2,
+      "IO": "1.5 Δc",
+      "LS": "0.7 n Δc",
+      "CP": "n Δc",
+      "a_plateau_over_dc": 0.05
     },
     "tension": {
-      "a_over_dT": 11.0,
-      "b_over_dT": 14.0,
-      "c": 0.8,
-      "hardening_ratio": 1.1,
-      "IO_over_dT": 0.5,
-      "LS_over_dT": 10.0,
-      "CP_over_dT": 13.0
+      "n_expr": "4.7*slend**0.24*lam_ratio**-1.0",
+      "f": 1.0,
+      "IO": "1.5 ΔT",
+      "LS": "0.7 n ΔT",
+      "CP": "n ΔT",
+      "a_plateau_over_dT": 0.05,
+      "hardening_ratio": 1.1
     },
-    "element": "corotTruss + Hysteretic (no pinching, no cyclic damage) -- monotonic pushover; cyclic deterioration to be added for NLRHA",
-    "note": "UNVERIFIED placeholders. Retrieve AISC 342-22 brace modelling parameters / acceptance and AISC 341-22 Table A3.2 Ry (A500 Gr. C) and F2.3 expected brace strengths (RyFyAg; 1.14 Fcre Ag) through Query file manager before use."
+    "source": "",
+    "unverified": [
+      "*"
+    ],
+    "element": "corotTruss + Hysteretic (no pinching, no cyclic damage)",
+    "note": "Rectangular HSS braces, AISC 342-22 Table C3.4 rows 3: d = n Δc, f = 0.2, IO = 1.5 Δc, LS = 0.7 n Δc, CP = n Δc (compression); d = n ΔT, f = 1.0, IO = 1.5 ΔT, LS = 0.7 n ΔT, CP = n ΔT (tension). Δc, ΔT per Eqs. C3-1 / C3-2 with PCE = 1.14 Fcre Ag and TCE = Ry Fy Ag (AISC 341-22 F2.3). The n expressions above are a READING OF A DAMAGED CELL ('3 0 1 0 1 0', '4 7 1 0 0 24'): coefficient and exponents are UNCONFIRMED -- replace them from the printed table. lam_ratio = λ/λhd with λ = (B - 3t)/t and λhd = 0.65 sqrt(E/Fye) (AISC 341-22 Table D1.1a case 2), slend = (Lc/r)/sqrt(E/Fye). Notes [c] (built-up connectors x0.5), [e] (np, Section C7) are not applied; [d] tension-only bracing via tension_only. Ry 1.3 is the A500 Gr. C value of AISC 341-22 Table A3.2 -- confirm."
   },
   "gravity_for_pushover": {
     "expr": "1.1*(QD + 0.25*QL)",
@@ -105,7 +142,7 @@
       "BSE-1N": 1.0,
       "BSE-2N": 1.5
     },
-    "note": "BSE-1N spectrum = ASCE 7 design spectrum (SDS, SD1); BSE-2N = 1.5x (MCE_R). Performance check: LS at BSE-1N, CP at BSE-2N (BPON). Confirm Table 7-4/7-5 and Eq. 7-28..7-32 numbering in ASCE 41-23."
+    "note": "BSE-1N spectrum = ASCE 7 design spectrum (SDS, SD1); BSE-2N = 1.5x (MCE_R). Performance levels of the BPON follow the Risk Category (ASCE 41-23 Table 2-5): RC I/II LS at BSE-1N, CP at BSE-2N; RC III Damage Control / Limited Safety (Table 2-1: halfway IO-LS / LS-CP; Section 7.5.3.2.2: DC at the a point, LtdS the average of LS and CP); RC IV IO / LS. Confirm Table 7-4/7-5 and Eq. 7-28..7-32 numbering in ASCE 41-23."
   },
   "numerics": {
     "post_cap_ratio": 0.15,
@@ -113,7 +150,7 @@
       "fine_step",
       "arclength"
     ],
-    "note": "post_cap_ratio = fraction of the capping rotation a over which strength descends from Mc to c*My (0.15 ~ ASCE 41 vertical drop). Raising it to capture the descending branch is a modelling change: only with the user's consent, and it is disclosed in the report. tail_strategies is the solver escalation ladder tried automatically when the push stops before 0.8*Vmax. Default plasticity=fibre (forceBeamColumn + Lobatto); member_nseg=4 matches MC4 fibre suite. Use imk for concentrated ModIMK / L2 FBC path. Product NLRHA starts ModIMK (imk) then PZ\u00d71 then fibre+mesh; ConcentratedPlasticity auto-ladder (L1/L2/L3) is NOT a product default. NSP/HR DDM remain fibre. PZ default rigid.",
+    "note": "post_cap_ratio = fraction of the capping rotation a over which strength descends from Mc to c*My (0.15 ~ ASCE 41 vertical drop). Raising it to capture the descending branch is a modelling change: only with the user's consent, and it is disclosed in the report. tail_strategies is the solver escalation ladder tried automatically when the push stops before 0.8*Vmax. Default plasticity=fibre (forceBeamColumn + Lobatto); member_nseg=4 matches MC4 fibre suite. Use imk for concentrated ModIMK / L2 FBC path. Product NLRHA starts ModIMK (imk) then PZ×1 then fibre+mesh; ConcentratedPlasticity auto-ladder (L1/L2/L3) is NOT a product default. NSP/HR DDM remain fibre. PZ default rigid.",
     "plasticity": "fibre",
     "member_nseg": 4,
     "fibre_nip": 5,
@@ -147,7 +184,7 @@
       "scissors topology: column stack stays on the joint node; FR (unreleased) beam ends attach to a coincident beam-side node;",
       "one 6-DOF zeroLength: rigid on translations/torsion/unused flexure + PZ spring on strong-axis rot DOF(s) 4/5.",
       "Do NOT equalDOF beam-side to an RD slave (breaks Transformation). Beam-side nodes stay out of rigidDiaphragm slaves.",
-      "material: 'elastic' (K_theta = G*tp*dc*db, kip-in/rad) or 'hysteretic' (Gupta\u2013Krawinkler trilinear).",
+      "material: 'elastic' (K_theta = G*tp*dc*db, kip-in/rad) or 'hysteretic' (Gupta–Krawinkler trilinear).",
       "Optional K_theta override (kip-in/rad) or hysteretic.{s1p,e1p,s2p,e2p,s3p,e3p} absolute envelope.",
       "IMK end hinges remain at member ends (centerline). Do NOT also apply AISC 342 C5.4a.1.a.1(b) PZ ductility",
       "modifier when mode=scissors (double-counting). Not a full 8-bar Krawinkler rectangle (no geometric rigid offsets).",
