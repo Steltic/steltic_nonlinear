@@ -35,7 +35,7 @@ from . import hinge_models as HM
 from .nonlinear_model import (
     E_KSI_AL, MAT_BASE, RIGID_T, RIGID_R,
     member_kind, strong_I_slot, strong_rot_dof, _dir_vec, beam_params_for, fr_column_ends,
-    element_context, build_brace, link_shear_spring, finish_stats,
+    element_context, build_brace, link_shear_spring, finish_stats, _pt_mass_balance,
 )
 
 SEG_NODE_BASE = 70_000_000
@@ -335,6 +335,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     stats["panel_zone_registry"] = {}
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
+    _pt_mass_balance(pkg, ctx, stats)
     finish_stats(stats, ctx, prm, "fibre")
     if verbose:
         nfib = sum(x[3] for x in builder.log) if builder.log else 0

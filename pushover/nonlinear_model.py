@@ -640,6 +640,19 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
         else:
             ops.element("forceBeamColumn", et, chain[i], chain[i + 1], tr, st, "-iter", 50, 1e-6)
         segs.append(et)
+    # NL-R2-09 fix: the brace's own mass on its own nodes. Without it the camber/end nodes are massless, the transverse
+    # buckling snap has no inertia, the dynamic tangent of those DOFs is the (singular / negative) buckling stiffness
+    # and Newton diverges at the first large buckling excursion. Lumped steel mass (rho = 490 pcf) per segment, ends
+    # half; rotational inertia of a slender rod segment. The same mass is taken off the floor masses afterwards
+    # (_pt_mass_balance) so the seismic weight W is unchanged.
+    A_in2 = SDB.props(sec)["A"]
+    mL = A_in2 * STEEL_DENSITY_KIP_IN3 / G_IN                     # kip-s2/in per inch of brace
+    seg = L / nseg
+    for k_, nd in enumerate(chain):
+        mt = mL * seg * (0.5 if k_ in (0, len(chain) - 1) else 1.0)
+        ri = mt * seg * seg / 12.0
+        ops.mass(nd, mt, mt, mt, ri, ri, ri)
+    ctx.setdefault("pt_mass", []).append((e["n1"], e["n2"], mL * L))
     mat += 1
     ops.uniaxialMaterial("Elastic", mat, 1.0e-6)
     ops.element("corotTruss", tag, e["n1"], e["n2"], 1.0, mat)  # deformation monitor (no stiffness)
@@ -711,6 +724,44 @@ def link_shear_spring(e, p1, p2, sec, prm, mat, hinges, stats, tiny=None):
     hinges[zl] = dict(ele=tag, end=0, kind="link", section=sec, dof=3, K0=shear.Ks, mat=mat, node=e["n1"], z=p1[2], spec=shear, link=info)
     stats["links"] = stats.get("links", 0) + 1
     return sn, mat
+
+
+STEEL_DENSITY_KIP_IN3 = 490.0 / 1000.0 / 1728.0                # 490 pcf
+
+
+def _pt_mass_balance(pkg, ctx, stats):
+    """NL-R2-09: remove the physical-theory braces' own mass from the floor masses (half of each brace to the level of
+    each end node that sits on a diaphragm; base ends go to the ground), so the total seismic mass is unchanged.
+    Taken from the level's mass-carrying nodes in proportion to their translational mass."""
+    items = ctx.get("pt_mass") or []
+    if not items:
+        return
+    lv = levels(pkg)
+    zlev = [(z, master, slaves) for k, z, master, slaves in lv]
+    take = {}
+    for n1, n2, mb in items:
+        for n in (n1, n2):
+            z = pkg.model.nodes[n][2]
+            hit = next(((master, slaves) for zz, master, slaves in zlev if abs(zz - z) < 1.0), None)
+            if hit is None:
+                continue
+            take[hit[0]] = take.get(hit[0], 0.0) + 0.5 * mb
+    moved = 0.0
+    for master, dm in take.items():
+        slaves = next(s for zz, m, s in zlev if m == master)
+        carriers = [(t, pkg.model.masses[t][0]) for t in [master] + list(slaves) if pkg.model.masses.get(t) and pkg.model.masses[t][0] > 0]
+        tot = sum(m for t, m in carriers)
+        if tot <= 0:
+            continue
+        for t, m in carriers:
+            cur = list(ops.nodeMass(t))
+            d = min(dm * m / tot, 0.5 * cur[0])
+            cur[0] -= d; cur[1] -= d
+            ops.mass(t, *cur)
+        moved += dm
+    stats["pt_brace_mass_kip_s2_in"] = round(moved, 6)
+    _note(stats, "physical-theory braces: own mass %.4f kip-s2/in (%.1f kip) placed on the brace nodes and taken off the floor masses"
+          % (moved, moved * G_IN))
 
 
 def finish_stats(stats, ctx, prm, plasticity):
@@ -969,6 +1020,7 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     stats["panel_zone_registry"] = pz_registry
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
+    _pt_mass_balance(pkg, ctx, stats)
     finish_stats(stats, ctx, prm, "imk")
     if verbose:
         print("[nonlinear_model] hinges: %d  (cols %d, beams %d, brace elements %d of which nonlinear %d [BRB %d, physical-theory %d], "
