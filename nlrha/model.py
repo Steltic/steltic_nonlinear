@@ -38,7 +38,7 @@ def ch16_gravity(pkg, ch16, live_psf=None, roof_live_psf=None, with_live=True):
     area_all = area_lt100 = 0.0
     f_le, f_gt, c = g["live_factor_le100psf"], g["live_factor_gt100psf"], g["combination_factor"]
     for lv in trib:
-        WD = pkg.model.masses.get(lv["master"], [0] * 6)[0] * G_IN
+        WD = NM.level_mass(pkg, lv["master"], [s for (_k, _z, _m, s) in NM.levels(pkg) if _m == lv["master"]][0])["m"] * G_IN   # R2 patch
         A = sum(lv["node_area"].values())
         fL = f_gt if lv["L0_floor_psf"] > 100 else f_le
         fR = f_gt if lv["Lr_psf"] > 100 else f_le
@@ -141,14 +141,16 @@ def modal(pkg, nmodes=12):
     ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
     w2 = ops.eigen("-genBandArpack", nmodes)
     lv = NM.levels(pkg)
-    mk = {k: pkg.model.masses[m][0] for k, z, m, s in lv}; Mtot = sum(mk.values())
+    LM = {k: NM.level_mass(pkg, m, s) for k, z, m, s in lv}               # R2 patch (NL-R2-01)
+    mk = {k: LM[k]["m"] for k in LM}; Mtot = sum(mk.values())
     modes = []
     for i, w in enumerate(w2):
         T = 2 * math.pi / math.sqrt(max(w, 1e-12))
         fr = {}
-        Jk = {k: pkg.model.masses[m][5] for k, z, m, s in lv}
-        px = {k: ops.nodeEigenvector(m, i + 1, 1) for k, z, m, s in lv}; py = {k: ops.nodeEigenvector(m, i + 1, 2) for k, z, m, s in lv}
-        pr = {k: ops.nodeEigenvector(m, i + 1, 6) for k, z, m, s in lv}
+        Jk = {k: LM[k]["J"] for k in LM}
+        cv = {k: NM.com_eigvec(LM[k], m, i + 1) for k, z, m, s in lv}
+        px = {k: cv[k][0] for k in cv}; py = {k: cv[k][1] for k in cv}
+        pr = {k: cv[k][2] for k in cv}
         Mn = sum(mk[k] * (px[k] ** 2 + py[k] ** 2) + Jk[k] * pr[k] ** 2 for k in mk)      # full generalised mass (x, y, torsion)
         for d, phi in (("X", px), ("Y", py)):
             Ln = sum(mk[k] * phi[k] for k in phi)

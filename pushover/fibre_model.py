@@ -126,7 +126,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         ops.node(t, *xyz)
     for t, fl in m.fixes.items():
         ops.fix(t, *fl)
-    tiny = 1e-8 * min(v[0] for v in m.masses.values())
+    tiny = 1e-8 * min((v[0] for v in m.masses.values() if v[0] > 0), default=1.0)   # R2 patch (NL-R2-01b): masters carry explicit 0.0 masses when the CoM node holds the mass
     for t in m.nodes:
         ops.mass(t, *([tiny] * 6))
     for t, mv in m.masses.items():

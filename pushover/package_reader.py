@@ -130,7 +130,11 @@ def parse_model_script(path: Path) -> ElasticModel:
         elif cmd == "equalDOF":
             m.equal_dofs.append(a)
         elif cmd in ("wipe",):
-            pass
+            # R2 patch (NL-R2-01): keep ONLY the last build. The export holds the probe build then the real
+            # build; probe-only nodes (e.g. a centre-of-mass node cmtag(k) the real build does not create)
+            # and probe masses must not survive. geomTransf / materials are recorded once -> keep them.
+            m.nodes.clear(); m.fixes.clear(); m.masses.clear(); m.elements.clear()
+            m.diaphragms.clear(); m.equal_dofs.clear()
         else:
             m.other.append((cmd, a))
     # Steltic's export records the engine's PROBE build followed by the real build (nodes/elements/masses/
@@ -140,9 +144,15 @@ def parse_model_script(path: Path) -> ElasticModel:
         last[e["tag"]] = e
     m.elements = list(last.values())
     if len(m.diaphragms) > 1:
+        # R2 patch (NL-R2-01): one master can carry several rigidDiaphragm calls (engine3d slaves the
+        # level centre-of-mass node cmtag(k) with its own call, HR-19) -> MERGE the slave sets per master.
         seen = {}
-        for d in m.diaphragms:
-            seen[d[1]] = d
+        for perp, ma, sl in m.diaphragms:
+            if ma in seen:
+                cur = seen[ma][2]
+                cur.extend(s for s in sl if s not in cur)
+            else:
+                seen[ma] = (perp, ma, list(sl))
         m.diaphragms = list(seen.values())
     return m
 

@@ -347,6 +347,33 @@ def levels(pkg):
     return [(k + 1, z, m, s) for k, (z, m, s) in enumerate(out)]
 
 
+def level_mass(pkg, master, slaves):
+    """R2 patch (NL-R2-01): the level's seismic mass is wherever the engine put it -- on the master or on
+    the centre-of-mass node cmtag(k) slaved to it (HR-19). Returns dict(m, J (about the CoM), xc, yc,
+    xm, ym, node) where `node` is the single mass-carrying node (load point) or the master."""
+    xm, ym = pkg.model.nodes[master][0], pkg.model.nodes[master][1]
+    pts = []
+    for t in [master] + list(slaves):
+        mv = pkg.model.masses.get(t)
+        if mv and mv[0] > 0:
+            pts.append((t, mv))
+    M = sum(mv[0] for t, mv in pts)
+    if M <= 0:
+        return dict(m=0.0, J=0.0, xc=xm, yc=ym, xm=xm, ym=ym, node=master)
+    xc = sum(mv[0] * pkg.model.nodes[t][0] for t, mv in pts) / M
+    yc = sum(mv[0] * pkg.model.nodes[t][1] for t, mv in pts) / M
+    J = sum(mv[5] + mv[0] * ((pkg.model.nodes[t][0] - xc) ** 2 + (pkg.model.nodes[t][1] - yc) ** 2) for t, mv in pts)
+    node = pts[0][0] if len(pts) == 1 else master
+    return dict(m=M, J=J, xc=xc, yc=yc, xm=xm, ym=ym, node=node)
+
+
+def com_eigvec(lm, master, mode):
+    """(ux, uy, rz) of mode `mode` at the level centre of mass (rigid diaphragm kinematics)."""
+    ux = ops.nodeEigenvector(master, mode, 1); uy = ops.nodeEigenvector(master, mode, 2)
+    rz = ops.nodeEigenvector(master, mode, 6)
+    return ux - rz * (lm["yc"] - lm["ym"]), uy + rz * (lm["xc"] - lm["xm"]), rz
+
+
 def gravity_loads(pkg, prm, verbose=True):
     """1.1*(QD + 0.25*QL) per level (ASCE 41 7.2.2 form), QD from the recorded seismic mass (D + cladding),
     QL from cfg L_floor psf x level footprint area; spread equally over that level's column nodes.
@@ -356,7 +383,7 @@ def gravity_loads(pkg, prm, verbose=True):
     Lroof = 20.0
     table, loads = [], {}
     for k, z, master, slaves in lv:
-        m = pkg.model.masses.get(master, [0] * 6)[0]
+        m = level_mass(pkg, master, slaves)["m"]          # R2 patch: master + CoM node
         WD = m * G_IN
         xs = [pkg.model.nodes[n][0] for n in slaves]; ys = [pkg.model.nodes[n][1] for n in slaves]
         area_ft2 = (max(xs) - min(xs)) * (max(ys) - min(ys)) / 144.0
@@ -777,7 +804,7 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
         ops.node(t, *xyz)
     for t, fl in m.fixes.items():
         ops.fix(t, *fl)
-    tiny = 1e-8 * min(v[0] for v in m.masses.values())
+    tiny = 1e-8 * min((v[0] for v in m.masses.values() if v[0] > 0), default=1.0)   # R2 patch (NL-R2-01b): masters carry explicit 0.0 masses when the CoM node holds the mass
     for t in m.nodes:
         ops.mass(t, *([tiny] * 6))
     for t, mv in m.masses.items():
@@ -962,13 +989,15 @@ def modal_pattern(pkg, direction, nmodes=6):
     ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
     w2 = ops.eigen("-genBandArpack", nmodes)
     lv = levels(pkg)
+    LM = {k: level_mass(pkg, master, s) for k, z, master, s in lv}          # R2 patch (NL-R2-01)
     best = None
     for i, w in enumerate(w2):
         T = 2 * math.pi / math.sqrt(max(w, 1e-12))
-        phi = {k: ops.nodeEigenvector(master, i + 1, dof) for k, z, master, s in lv}
-        perp = {k: ops.nodeEigenvector(master, i + 1, 3 - dof) for k, z, master, s in lv}
-        rot = {k: ops.nodeEigenvector(master, i + 1, 6) for k, z, master, s in lv}
-        mk = {k: pkg.model.masses[master][0] for k, z, master, s in lv}; Jk = {k: pkg.model.masses[master][5] for k, z, master, s in lv}
+        cv = {k: com_eigvec(LM[k], master, i + 1) for k, z, master, s in lv}
+        phi = {k: cv[k][dof - 1] for k in cv}
+        perp = {k: cv[k][2 - dof] for k in cv}
+        rot = {k: cv[k][2] for k in cv}
+        mk = {k: LM[k]["m"] for k in LM}; Jk = {k: LM[k]["J"] for k in LM}
         Ln = sum(mk[k] * phi[k] for k in phi)
         Mn = sum(mk[k] * (phi[k] ** 2 + perp[k] ** 2) + Jk[k] * rot[k] ** 2 for k in phi)     # full generalised mass
         Lp = sum(mk[k] * perp[k] for k in perp)
@@ -978,11 +1007,11 @@ def modal_pattern(pkg, direction, nmodes=6):
     meff, T, phi, mode = best
     sgn = 1.0 if phi[max(phi)] >= 0 else -1.0
     phi = {k: sgn * v / abs(phi[max(phi)]) for k, v in phi.items()}         # roof ordinate = +1
-    F = {k: pkg.model.masses[m][0] * phi[k] for k, z, m, s in lv}
+    F = {k: LM[k]["m"] * phi[k] for k in LM}
     s = sum(F.values()); F = {k: v / s for k, v in F.items()}
-    Mtot = sum(pkg.model.masses[m][0] for k, z, m, s in lv)
+    Mtot = sum(LM[k]["m"] for k in LM)
     return dict(T1=T, mode=mode, meff_frac=meff / Mtot, phi=phi, F=F,
-                masses={k: pkg.model.masses[m][0] for k, z, m, s in lv})
+                masses={k: LM[k]["m"] for k in LM}, load_node={k: LM[k]["node"] for k in LM})
 
 
 class StaticAnalysis:
@@ -1111,7 +1140,7 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
     ops.timeSeries("Linear", 2); ops.pattern("Plain", 2, 2)
     for k, z, master, s in lv:
         f = [0.0] * 6; f[dof - 1] = pat["F"][k]
-        ops.load(master, *f)
+        ops.load(pat.get("load_node", {}).get(k, master), *f)       # R2 patch: at the level CoM (ASCE 41 7.4.3.2.3)
     ops.wipeAnalysis()                                      # drop the gravity / eigen analysis objects
     an = StaticAnalysis()
     an.set(("NormDispIncr", 1e-5, 100, 0), ("Newton",), ("DisplacementControl", roof, dof, dU0))
