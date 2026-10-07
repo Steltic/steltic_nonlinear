@@ -171,7 +171,16 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     ops.pattern("UniformExcitation", 12, 2, "-accel", 12)
     ops.wipeAnalysis()
     ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
-    ops.test("NormDispIncr", 1e-6, 30, 0); ops.algorithm("Newton")
+    # NL-R2-21 (R5): displacement-increment tolerance 1e-5 in (on 10k+ DOF braced models Newton stalls at a round-off floor of
+    # 1e-6..1e-5 in) and NO fallback algorithms by default: ModifiedNewton -initial never converged, and KrylovNewton /
+    # NewtonLineSearch "converged" on the displacement test while out of equilibrium, committing states that blew up a few
+    # steps later and biased completed records low (Ex22: peaks up to 30 % higher without them). A failed Newton step is
+    # retried with Newton at a halved step. numerics.nlrha_fallback = "legacy" restores the old ladder,
+    # numerics.nlrha_disp_tol the old tolerance.
+    num = (prm.get("numerics") or {}) if isinstance(prm, dict) else {}
+    tol = float(num.get("nlrha_disp_tol", 1e-5))
+    ladder = (("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",)) if num.get("nlrha_fallback") == "legacy" else ()
+    ops.test("NormDispIncr", tol, 30, 0); ops.algorithm("Newton")
     if integrator == "newmark":
         ops.integrator("Newmark", 0.5, 0.25)                        # average acceleration, no numerical damping
         alg_damp = dict(integrator="Newmark average acceleration", alpha=None, xi_T1=0.0, xi_02T1=0.0)
@@ -228,12 +237,12 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
         ok = _analyze(dt_cur)
         if ok != 0:
             adv = dt_cur / 4
-            for alg in (("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",)):
-                ops.algorithm(*alg); ops.test("NormDispIncr", 1e-5, 100, 0)
+            for alg in ladder:
+                ops.algorithm(*alg); ops.test("NormDispIncr", max(tol, 1e-5), 100, 0)
                 ok = _analyze(adv)
                 if ok == 0:
                     break
-            ops.algorithm("Newton"); ops.test("NormDispIncr", 1e-6, 30, 0)
+            ops.algorithm("Newton"); ops.test("NormDispIncr", tol, 30, 0)
             if ok != 0:
                 # adaptive time step: halve persistently and retry the same instant (domain is still at the last committed state)
                 fails += 1; consec_fail += 1; n_ok_since_cut = 0
@@ -324,7 +333,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     out = dict(record=rec["id"], label="%s %s (%s)" % (rec.get("earthquake") or rec["id"], rec.get("station") or "", rec.get("year") or "?"), sf=sf, x_comp=rec["x_comp"],
                converged=(status == "completed"), status=status, reason=reason, steps=step, fails=fails, fallback_steps=n_fallback, analyze_calls=calls,
                dt_min=dt_min_used, t_reached=t, t_end=t_end, seconds=time.time() - t0, t_window=(t_start, t_sig), T1x=modal["T1x"], T1y=modal["T1y"],
-               damping=damp, algorithmic_damping=alg_damp, peak_story_drift=peak_drift.tolist(), peak_drift_at=peak_at, drift_method="aligned_points",
+               damping=damp, algorithmic_damping=alg_damp, solver=dict(newton_disp_tol_in=tol, fallback="legacy ladder" if ladder else "none (Newton with dt halving)"), peak_story_drift=peak_drift.tolist(), peak_drift_at=peak_at, drift_method="aligned_points",
                drift_points=DR.summary(pts), peak_roof_in=peak_roof.tolist(), residual_drift=resid.tolist(),
                peak_def=peak_def, signed_def=signed_def, peak_colN=peak_colN, col_env=col_env, col_grav=col_grav,
                col_flexure={c: ci["flexure"] for c, ci in colinfo.items()}, hist_t=hist_t, hist_roof=hist_roof, brace_hist=brace_hist,

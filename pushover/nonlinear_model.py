@@ -56,6 +56,7 @@ SEG_ELE_BASE = 80_000_000      # sub-element tags (i>0): SEG_ELE_BASE + ele*100 
 PT_NODE_BASE = 94_000_000      # physical-theory brace nodes: ele*100 + k (k = 99: X-crossing node)
 PT_ELE_BASE = 95_000_000       # physical-theory brace fibre segments ele*100 + 1.., rigid end zones ele*100 + 61..
 PT_ZL_BASE = 96_000_000        # physical-theory brace pins: ele*100 + k
+PT_PINMAT_BASE = 39_000_000    # physical-theory brace pin springs (R5, NL-R2-20): ele*10 + 2*pin - 1 (translation) / 2*pin (torsion)
 PT_SEC_BASE = 97_000_000       # physical-theory brace fibre sections / integrations
 PT_TRANSF_BASE = 9_000_000     # physical-theory brace corotational transforms: + ele
 PT_MAT0 = 47_000_000           # fibre materials of physical-theory braces
@@ -689,8 +690,16 @@ def _pt_unit(tag, c, gA, pA, gB, pB, eA, eB, sign, w, cam, nseg, st, tr, tr_rigi
                     c["A"], 29000.0, 11200.0, 1.0e5, 1.0e5, 1.0e5, tr_rigid)   # gusset zone: brace EA (axial
                                                                               # stiffness as in the HR model), rigid in bending
     def pin(n_frame, n_chain):
+        # NL-R2-20 (R5): pin springs scaled to the brace -- pin_factor x E A / L_clear on the translations, 100 x that on
+        # torsion -- instead of the global RIGID_T / RIGID_R (1e9 / 1e11). Next to a buckled chain whose lateral stiffness
+        # is ~0, the 1e9 penalty made the effective tangent numerically singular (Ex24 Gilroy #3: one Newton
+        # iteration -> 1e26). At 1000 x EA/L the added axial flexibility is 0.1 % of the brace's.
         c["z"] += 1
-        ops.element("zeroLength", PT_ZL_BASE + tag * 100 + c["z"], n_frame, n_chain, "-mat", 1, 1, 1, 2, "-dir", 1, 2, 3, 4,
+        kt = c.get("pin_factor", 1000.0) * 29000.0 * c["A"] / max(Lcl, 1.0)
+        mt, mr = PT_PINMAT_BASE + tag * 10 + 2 * c["z"] - 1, PT_PINMAT_BASE + tag * 10 + 2 * c["z"]
+        ops.uniaxialMaterial("Elastic", mt, kt); ops.uniaxialMaterial("Elastic", mr, 100.0 * kt)
+        c.setdefault("pin_k", []).append(kt)
+        ops.element("zeroLength", PT_ZL_BASE + tag * 100 + c["z"], n_frame, n_chain, "-mat", mt, mt, mt, mr, "-dir", 1, 2, 3, 4,
                     "-orient", *ax, *yv)                        # translations + torsion; bending released
     startA = gA
     if eA > 1e-6:
@@ -776,7 +785,8 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
     Lc, lc_src = brace_Lc(pkg, ctx, prm, e, L)
     g = brace_geometry(pkg, ctx)
     cr = g["cross"].get(tag)
-    c = dict(n=0, e=0, z=0, s=0, A=A_in2)
+    ptp = (prm.get("brace_axial") or {}).get("physical_theory") or {}
+    c = dict(n=0, e=0, z=0, s=0, A=A_in2, pin_factor=float(ptp.get("pin_stiffness_factor", 1000.0)))
     if cr is None:
         Lcl = min(Lc, L); ez = 0.5 * (L - Lcl)
         segs, chain = _pt_unit(tag, c, e["n1"], p1, e["n2"], p2, ez, ez, 1.0, w, fp["camber"], nseg, st, tr,
@@ -808,7 +818,7 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
                                segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"], geometry=geom, Lc=Lc)
     stats["brace_physical_theory"] = stats.get("brace_physical_theory", 0) + 1
     stats.setdefault("pt_ele_tags", []).extend(segs)
-    stats.setdefault("pt_geometry", []).append(geom)
+    stats.setdefault("pt_geometry", []).append(geom + "; pin springs %s kip/in" % "/".join("%.3g" % k for k in c.get("pin_k", [])))
     for f in fp["flags"]:
         _note(stats, "physical-theory brace %s: %s" % (sec, f))
     return mat
