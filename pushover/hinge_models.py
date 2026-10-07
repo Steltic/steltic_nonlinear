@@ -365,11 +365,13 @@ def _hss_outside_and_tdes(section: str):
     return max(B, H), tdes
 
 
-def brace_spec(section: str, L_in: float, prm: dict) -> BraceSpec:
+def brace_spec(section: str, L_in: float, prm: dict, Lc_in: float = None) -> BraceSpec:
+    """Lc_in (NL-R2-19): the buckling length the HR design used (brace_length / brace_length_factor, X crossing);
+    default K_effective x L_in. L_in (work-point length) still sets the axial stiffness."""
     p = SDB.props(section); bp = prm["brace_axial"]
     Fye = bp["Fy_ksi"] * bp["Ry_expected"]
     A, r = p["A"], min(p["rx"], p["ry"])
-    KLr = bp["K_effective"] * L_in / r
+    KLr = (Lc_in if Lc_in else bp["K_effective"] * L_in) / r
     Fe = math.pi ** 2 * E_KSI / KLr ** 2
     Fcre = (0.658 ** (Fye / Fe)) * Fye if KLr <= 4.71 * math.sqrt(E_KSI / Fye) else 0.877 * Fe     # AISC 360 E3 form with Fye
     Pye = A * Fye; Pcre = bp["Pcr_expected_factor"] * Fcre * A
@@ -1010,7 +1012,7 @@ def brace_fatigue_params(section: str, KLr: float, Fye: float, prm: dict) -> dic
     m = float(pt.get("m", -0.3))
     return dict(eps0=eps0, m=m, camber=float(pt.get("camber_over_L", 1.0 / 1000.0)), nseg=int(pt.get("nseg", 4)),
                 nip=int(pt.get("nip", 4)), b=float(pt.get("hardening", 0.003)), R0=float(pt.get("R0", 20.0)), flags=flags,
-                element="dispBeamColumn" if str(pt.get("element", "forceBeamColumn")).lower().startswith("disp") else "forceBeamColumn")
+                element="forceBeamColumn" if str(pt.get("element", "dispBeamColumn")).lower().startswith("force") else "dispBeamColumn")
 
 
 def brace_axial_force(tag: int, h: dict) -> float:

@@ -53,9 +53,9 @@ PZ_ZL_BASE = 60_000_000       # scissors PZ zeroLength: PZ_ZL_BASE + joint_node
 SEG_NODE_BASE = 70_000_000     # intermediate mesh nodes: SEG_NODE_BASE + ele*100 + i
 SEG_ELE_BASE = 80_000_000      # sub-element tags (i>0): SEG_ELE_BASE + ele*100 + i
 # NL-02 / NL-03 / NL-10 element families (tags chosen clear of every base above and of fibre_model's 90-93M)
-PT_NODE_BASE = 94_000_000      # physical-theory brace: end pin nodes ele*10+(1|2), camber nodes ele*10+2+i
-PT_ELE_BASE = 95_000_000       # physical-theory brace fibre segments: ele*10 + i
-PT_ZL_BASE = 96_000_000        # physical-theory brace end pins: ele*10 + (1|2)
+PT_NODE_BASE = 94_000_000      # physical-theory brace nodes: ele*100 + k (k = 99: X-crossing node)
+PT_ELE_BASE = 95_000_000       # physical-theory brace fibre segments ele*100 + 1.., rigid end zones ele*100 + 61..
+PT_ZL_BASE = 96_000_000        # physical-theory brace pins: ele*100 + k
 PT_SEC_BASE = 97_000_000       # physical-theory brace fibre sections / integrations
 PT_TRANSF_BASE = 9_000_000     # physical-theory brace corotational transforms: + ele
 PT_MAT0 = 47_000_000           # fibre materials of physical-theory braces
@@ -573,7 +573,9 @@ def build_brace(pkg, e, sec, prm, mat, hinges, stats, ctx):
             if f.startswith("WARNING") or "FALLBACK" in f or "TEMPLATE" in f:
                 _note(stats, "BRB %s: %s" % (sec, f))
         return mat
-    spec = HM.brace_spec(sec, L, prm)
+    Lc, lc_src = brace_Lc(pkg, ctx, prm, e, L)                   # NL-R2-19: the design's buckling length
+    spec = HM.brace_spec(sec, L, prm, Lc_in=Lc)
+    _note(stats, "buckling braces: buckling length from %s" % lc_src.split(" x ")[0] if " x " in lc_src else "buckling braces: " + lc_src)
     if HM.brace_element_form(prm) == "physical_theory":
         if str(sec).upper().startswith("HSS") and HM._hss_outside_and_tdes(sec)[0]:
             mat = _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges, stats, ctx)
@@ -587,14 +589,162 @@ def build_brace(pkg, e, sec, prm, mat, hinges, stats, ctx):
     return mat
 
 
-def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges, stats, ctx):
-    """NL-10: Uriz & Mahin (2008) physical-theory brace for the NLRHA.
+def brace_geometry(pkg, ctx):
+    """NL-R2-19: the buckling length of every buckling brace, and X-brace crossings, from the HR design.
 
-    n1 -[pin: zeroLength, rigid translations + torsion, bending released]- a -[nseg corotational forceBeamColumn, camber
-    camber_over_L*L half-sine out of the frame plane]- b -[pin]- n2. Fibre section = rectangular HSS (0.93 t_nom) of
-    Steel02 (Fy = Ry Fy, b, R0) wrapped in Fatigue (eps0, m). The registered tag e['tag'] is a zero-stiffness
-    corotTruss n1-n2 that measures the end-to-end axial deformation for the monitors; the force comes from the first
-    fibre segment (hinge_models.brace_axial_force via hinges[tag]['force_ele'])."""
+    * Lc (in): cfg['brace_length'] (number, or {section: in}) or cfg['brace_length_factor'] x work-point length --
+      the end-to-end length the HR design used for the expected compression (AISC 341 F2.3); otherwise
+      brace_axial.K_effective x work-point length (flagged).
+    * crossings: two brace diagonals whose work lines intersect inside both spans (not at a shared node) are an X
+      connected at the crossing (the HR contract's "crossing X-brace diagonals" case).
+    Cached in ctx['brace_geom']."""
+    if ctx.get("brace_geom") is not None:
+        return ctx["brace_geom"]
+    cfg, src_cfg = None, None
+    try:
+        from steltic_ddm.ingest import load_cfg
+        cfg = load_cfg(str(pkg.root)); src_cfg = "cfg.py"
+    except Exception as ex:                                     # noqa: BLE001
+        src_cfg = "cfg.py not executable (%s)" % str(ex)[:80]
+    if not hasattr(pkg.model, "elements"):                      # minimal test packages: no element list
+        ctx["brace_geom"] = dict(lc={}, cross={}, cfg_source=src_cfg, factor=None)
+        return ctx["brace_geom"]
+    fac = None; bl = None
+    if isinstance(cfg, dict):
+        fac = cfg.get("brace_length_factor")
+        bl = cfg.get("brace_length")
+    braces = []
+    for e in pkg.model.elements:
+        if member_kind(pkg, e) != "brace":
+            continue
+        sec = str(pkg.schedule.get(e["tag"], {}).get("section") or "")
+        if SDB.is_brb(sec):
+            continue
+        braces.append((e["tag"], e["n1"], e["n2"], sec.upper().replace(" ", "")))
+    nodes = pkg.model.nodes
+    lc, cross = {}, {}
+    for tag, n1, n2, sec in braces:
+        L = math.dist(nodes[n1], nodes[n2])
+        if isinstance(bl, (int, float)) and bl > 0:
+            lc[tag] = (float(bl), "cfg brace_length")
+        elif isinstance(bl, dict) and bl:
+            v = {str(k).upper().replace(" ", ""): x for k, x in bl.items()}.get(sec)
+            if isinstance(v, (int, float)) and v > 0:
+                lc[tag] = (float(v), "cfg brace_length[%s]" % sec)
+        if tag not in lc and isinstance(fac, (int, float)) and fac > 0:
+            lc[tag] = (float(fac) * L, "cfg brace_length_factor %.3g x work-point length" % fac)
+    # crossings: closest points of two segments, both strictly inside, distance < 1 in
+    for i in range(len(braces)):
+        ti, a1, a2, _ = braces[i]
+        P, Q = nodes[a1], nodes[a2]
+        for j in range(i + 1, len(braces)):
+            tj, b1, b2, _ = braces[j]
+            if len({a1, a2, b1, b2}) < 4:
+                continue
+            R, S = nodes[b1], nodes[b2]
+            u = [Q[k] - P[k] for k in range(3)]; v = [S[k] - R[k] for k in range(3)]; w0 = [P[k] - R[k] for k in range(3)]
+            a = sum(x * x for x in u); b = sum(u[k] * v[k] for k in range(3)); c = sum(x * x for x in v)
+            d = sum(u[k] * w0[k] for k in range(3)); e_ = sum(v[k] * w0[k] for k in range(3))
+            den = a * c - b * b
+            if den < 1e-9 * a * c:
+                continue                                         # parallel
+            s = (b * e_ - c * d) / den; t = (a * e_ - b * d) / den
+            if not (0.05 < s < 0.95 and 0.05 < t < 0.95):
+                continue
+            X1 = [P[k] + s * u[k] for k in range(3)]; X2 = [R[k] + t * v[k] for k in range(3)]
+            if math.dist(X1, X2) > 1.0:
+                continue
+            X = [(X1[k] + X2[k]) / 2 for k in range(3)]
+            cross[ti] = dict(partner=tj, s=s, X=X); cross[tj] = dict(partner=ti, s=t, X=X)
+    ctx["brace_geom"] = dict(lc=lc, cross=cross, cfg_source=src_cfg, factor=fac)
+    return ctx["brace_geom"]
+
+
+def brace_Lc(pkg, ctx, prm, e, L):
+    """(Lc, source) for buckling brace e (see brace_geometry); falls back to K_effective x L, and for an X crossing
+    without a design length to K x the longer half."""
+    g = brace_geometry(pkg, ctx)
+    if e["tag"] in g["lc"]:
+        return g["lc"][e["tag"]]
+    K = float((prm.get("brace_axial") or {}).get("K_effective", 1.0))
+    if e["tag"] in g["cross"]:
+        s = g["cross"][e["tag"]]["s"]
+        return K * max(s, 1 - s) * L, "K_effective x longer half of the X (no design brace length in cfg)"
+    return K * L, "K_effective x work-point length (no design brace length in cfg -- check)"
+
+
+def _pt_unit(tag, c, gA, pA, gB, pB, eA, eB, sign, w, cam, nseg, st, tr, tr_rigid, etype, mL, pinA, pinB, ax, yv):
+    """One buckling unit of a physical-theory brace between attach nodes gA (at pA) and gB (at pB):
+    gA -[rigid end zone eA]- a -[pin if pinA]- chain (nseg cambered segments over the clear length) -[pin if pinB]- b
+    -[rigid end zone eB]- gB. c = per-brace tag counters {n, e, z, s}. Returns (segments, chain nodes)."""
+    Lu = math.dist(pA, pB); d = [(pB[q] - pA[q]) / Lu for q in range(3)]
+    Lcl = Lu - eA - eB
+    def pt(sx):
+        return [pA[q] + d[q] * sx for q in range(3)]
+    def new_node(xyz):
+        c["n"] += 1; t = PT_NODE_BASE + tag * 100 + c["n"]; ops.node(t, *xyz); return t
+    def rigid(n_from, n_to):
+        c["e"] += 1
+        ops.element("elasticBeamColumn", PT_ELE_BASE + tag * 100 + 60 + c["e"], n_from, n_to,
+                    c["A"], 29000.0, 11200.0, 1.0e5, 1.0e5, 1.0e5, tr_rigid)   # gusset zone: brace EA (axial
+                                                                              # stiffness as in the HR model), rigid in bending
+    def pin(n_frame, n_chain):
+        c["z"] += 1
+        ops.element("zeroLength", PT_ZL_BASE + tag * 100 + c["z"], n_frame, n_chain, "-mat", 1, 1, 1, 2, "-dir", 1, 2, 3, 4,
+                    "-orient", *ax, *yv)                        # translations + torsion; bending released
+    startA = gA
+    if eA > 1e-6:
+        startA = new_node(pt(eA)); rigid(gA, startA)
+    a = new_node(pt(eA)) if pinA else startA
+    if pinA:
+        pin(startA, a)
+    endB = gB
+    if eB > 1e-6:
+        endB = new_node(pt(Lu - eB)); rigid(endB, gB)
+    b = new_node(pt(Lu - eB)) if pinB else endB
+    if pinB:
+        pin(endB, b)
+    chain = [a]
+    for i in range(1, nseg):
+        f = i / nseg
+        off = sign * cam * Lcl * math.sin(math.pi * f)
+        base = pt(eA + f * Lcl)
+        chain.append(new_node([base[q] + w[q] * off for q in range(3)]))
+    chain.append(b)
+    segs = []
+    for i in range(nseg):
+        c["s"] += 1
+        et = PT_ELE_BASE + tag * 100 + c["s"]
+        if etype == "dispBeamColumn":
+            ops.element("dispBeamColumn", et, chain[i], chain[i + 1], tr, st)
+        else:
+            ops.element("forceBeamColumn", et, chain[i], chain[i + 1], tr, st, "-iter", 50, 1e-6)
+        segs.append(et)
+    seg = Lcl / nseg                                              # own mass: clear length on the chain, end zones on its ends
+    for k_, nd in enumerate(chain):
+        mt = mL * seg * (0.5 if k_ in (0, len(chain) - 1) else 1.0)
+        if k_ == 0:
+            mt += mL * eA
+        if k_ == len(chain) - 1:
+            mt += mL * eB
+        ri = mL * seg ** 3 / 12.0
+        cur = list(ops.nodeMass(nd)) if nd in ops.getNodeTags() else [0.0] * 6
+        ops.mass(nd, *[cur[q] + v for q, v in enumerate((mt, mt, mt, ri, ri, ri))])
+    return segs, chain
+
+
+def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges, stats, ctx):
+    """NL-10 physical-theory brace for the NLRHA (Uriz & Mahin 2008), with the R2 corrections:
+
+    * NL-R2-09: the brace's own steel mass on its nodes (balanced off the floors in _pt_mass_balance) -- without it the
+      buckling snap had no inertia and Newton diverged at the first large excursion;
+    * NL-R2-19: the clear buckling length of the HR design (brace_Lc): stiff gusset end zones take the rest of the
+      work-point length; an X connected at the crossing is modelled as two continuous diagonals sharing translations
+      at the crossing, each half pinned at its gusset and cambered in opposite directions (full-sine shape);
+    * element: dispBeamColumn by default (no element-level iteration; brace_axial.physical_theory.element overrides).
+    Fibre section = rectangular HSS (0.93 t_nom) of Steel02 (Fye, b, R0) wrapped in Fatigue (eps0, m). The registered
+    tag e['tag'] is a zero-stiffness corotTruss n1-n2 that measures the end-to-end deformation for the monitors; the
+    force comes from the first fibre segment (hinge_models.brace_axial_force via hinges[tag]['force_ele'])."""
     from steltic_ddm.sections_fiber import FiberSectionBuilder
     tag = e["tag"]
     fp = HM.brace_fatigue_params(sec, spec.KL_r, spec.Fye_ksi, prm)
@@ -615,51 +765,50 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
     w = [1.0, 0.0, 0.0] if nw < 1e-9 else [v / nw for v in w]
     tr = PT_TRANSF_BASE + tag
     ops.geomTransf("Corotational", tr, *w)
-    na, nb = PT_NODE_BASE + tag * 10 + 1, PT_NODE_BASE + tag * 10 + 2
-    ops.node(na, *p1); ops.node(nb, *p2)
+    tr_rigid = PT_TRANSF_BASE + 500_000 + tag
+    ops.geomTransf("Linear", tr_rigid, *w)
     ref = (0.0, 0.0, 1.0) if abs(ax[2]) < 0.9 else (1.0, 0.0, 0.0)
     yv = (ref[1] * ax[2] - ref[2] * ax[1], ref[2] * ax[0] - ref[0] * ax[2], ref[0] * ax[1] - ref[1] * ax[0])
-    for k, (ng, nd) in enumerate(((e["n1"], na), (e["n2"], nb)), start=1):
-        ops.element("zeroLength", PT_ZL_BASE + tag * 10 + k, ng, nd, "-mat", 1, 1, 1, 2, "-dir", 1, 2, 3, 4,
-                    "-orient", *ax, *yv)                          # local 4 = brace torsion kept; bending (5, 6) released
     nseg = max(2, min(fp["nseg"], 8))
-    chain = [na]
-    for i in range(1, nseg):
-        f = i / nseg
-        off = fp["camber"] * L * math.sin(math.pi * f)
-        nt = PT_NODE_BASE + tag * 10 + 2 + i
-        ops.node(nt, *[p1[q] + (p2[q] - p1[q]) * f + w[q] * off for q in range(3)])
-        chain.append(nt)
-    chain.append(nb)
-    segs = []
-    etype = fp.get("element", "forceBeamColumn")
-    for i in range(nseg):
-        et = PT_ELE_BASE + tag * 10 + i
-        if etype == "dispBeamColumn":
-            ops.element("dispBeamColumn", et, chain[i], chain[i + 1], tr, st)
-        else:
-            ops.element("forceBeamColumn", et, chain[i], chain[i + 1], tr, st, "-iter", 50, 1e-6)
-        segs.append(et)
-    # NL-R2-09 fix: the brace's own mass on its own nodes. Without it the camber/end nodes are massless, the transverse
-    # buckling snap has no inertia, the dynamic tangent of those DOFs is the (singular / negative) buckling stiffness
-    # and Newton diverges at the first large buckling excursion. Lumped steel mass (rho = 490 pcf) per segment, ends
-    # half; rotational inertia of a slender rod segment. The same mass is taken off the floor masses afterwards
-    # (_pt_mass_balance) so the seismic weight W is unchanged.
+    etype = fp.get("element", "dispBeamColumn")
     A_in2 = SDB.props(sec)["A"]
     mL = A_in2 * STEEL_DENSITY_KIP_IN3 / G_IN                     # kip-s2/in per inch of brace
-    seg = L / nseg
-    for k_, nd in enumerate(chain):
-        mt = mL * seg * (0.5 if k_ in (0, len(chain) - 1) else 1.0)
-        ri = mt * seg * seg / 12.0
-        ops.mass(nd, mt, mt, mt, ri, ri, ri)
+    Lc, lc_src = brace_Lc(pkg, ctx, prm, e, L)
+    g = brace_geometry(pkg, ctx)
+    cr = g["cross"].get(tag)
+    c = dict(n=0, e=0, z=0, s=0, A=A_in2)
+    if cr is None:
+        Lcl = min(Lc, L); ez = 0.5 * (L - Lcl)
+        segs, chain = _pt_unit(tag, c, e["n1"], p1, e["n2"], p2, ez, ez, 1.0, w, fp["camber"], nseg, st, tr,
+                               tr_rigid, etype, mL, True, True, ax, yv)
+        geom = "single: clear length %.0f in of %.0f in (%s), end zones %.0f in" % (Lcl, L, lc_src, ez)
+    else:
+        # X connected at the crossing: this diagonal's own crossing node, translations tied to the partner's
+        X = cr["X"]
+        xn = PT_NODE_BASE + tag * 100 + 99
+        ops.node(xn, *X)
+        ctx.setdefault("pt_cross_nodes", {})[tag] = xn
+        pn = ctx["pt_cross_nodes"].get(cr["partner"])
+        if pn is not None:
+            ops.equalDOF(pn, xn, 1, 2, 3)
+        s = cr["s"]; L1 = s * L; L2 = (1 - s) * L
+        e1 = max(0.0, L1 - min(Lc, L1)); e2 = max(0.0, L2 - min(Lc, L2))
+        segs1, ch1 = _pt_unit(tag, c, e["n1"], p1, xn, X, e1, 0.0, 1.0, w, fp["camber"], nseg, st, tr,
+                              tr_rigid, etype, mL, True, False, ax, yv)
+        segs2, ch2 = _pt_unit(tag, c, xn, X, e["n2"], p2, 0.0, e2, -1.0, w, fp["camber"], nseg, st, tr,
+                              tr_rigid, etype, mL, False, True, ax, yv)
+        segs, chain = segs1 + segs2, ch1 + ch2[1:]
+        geom = "X crossing at s=%.2f with brace %d: halves %.0f / %.0f in, clear %.0f / %.0f in (%s)" % (
+            s, cr["partner"], L1, L2, L1 - e1, L2 - e2, lc_src)
     ctx.setdefault("pt_mass", []).append((e["n1"], e["n2"], mL * L))
     mat += 1
     ops.uniaxialMaterial("Elastic", mat, 1.0e-6)
     ops.element("corotTruss", tag, e["n1"], e["n2"], 1.0, mat)  # deformation monitor (no stiffness)
     hinges[tag] = _brace_hinge(e, sec, p1, p2, spec, mat, E_KSI_AL(spec), form="physical_theory", force_ele=segs[0],
-                               segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"])
+                               segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"], geometry=geom, Lc=Lc)
     stats["brace_physical_theory"] = stats.get("brace_physical_theory", 0) + 1
     stats.setdefault("pt_ele_tags", []).extend(segs)
+    stats.setdefault("pt_geometry", []).append(geom)
     for f in fp["flags"]:
         _note(stats, "physical-theory brace %s: %s" % (sec, f))
     return mat
