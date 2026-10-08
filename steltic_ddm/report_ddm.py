@@ -76,6 +76,17 @@ ul{padding-left:1.2em}li{margin:3px 0}
 """
 
 
+def verdict(runs):
+    """Overall DDM verdict (NL-R2-02): FAIL if any phi_s check fails; INCOMPLETE if any combination is NOT EVALUATED
+    (solver/control stop); PASS only when every checked combination passes and none is missing."""
+    marks = [(r.get("check") or (None, "n/a"))[1] for r in runs]
+    if "FAIL" in marks:
+        return "FAIL"
+    if "NOT EVALUATED" in marks:
+        return "INCOMPLETE"
+    return "PASS" if "PASS" in marks else "n/a"
+
+
 def phi_s_provisional(runs):
     """True when any combination checked used a phi_s class the policy flags provisional / extrapolated."""
     return any(r["phi"].get("phi_s") is not None and (r["phi"].get("provisional") or "provisional" in (r["phi"].get("status") or "")) for r in runs)
@@ -154,8 +165,11 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     prov = {f: _sha(os.path.join(nm.job_dir, f)) for f in ("cfg.py", "model_opensees.py", "design/calc_package.json")}
     strength = [r for r in runs if r["phi"]["phi_s"] is not None]
-    worst = min(strength, key=lambda r: r["phi"]["phi_s"] * r["res"]["lambda_u"]) if strength else None
+    evaluated = [r for r in strength if r["check"][0] is not None]         # NL-R2-02: numerical stops are NOT EVALUATED
+    worst = min(evaluated, key=lambda r: r["phi"]["phi_s"] * r["res"]["lambda_u"]) if evaluated else None
     n_pass = sum(1 for r in strength if r["check"][1] == "PASS")
+    n_ne = sum(1 for r in runs if r["check"][1] == "NOT EVALUATED")
+    overall = verdict(runs)
     R = cfg.get("seis", {}).get("R")
 
     parts = []
@@ -175,6 +189,9 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
         parts.append('<div class="tile"><div class="k">λ<sub>u</sub> (governing)</div><div class="v">%.2f</div></div>' % worst["res"]["lambda_u"])
         parts.append('<div class="tile"><div class="k">φ<sub>s</sub>·λ<sub>u</sub> (governing)</div><div class="v %s">%.2f</div></div>' % (worst["check"][1], worst["check"][0]))
     parts.append('<div class="tile"><div class="k">DDM checks</div><div class="v">%d / %d pass</div></div>' % (n_pass, len(strength)))
+    if n_ne:
+        parts.append('<div class="tile"><div class="k">not evaluated</div><div class="v FAIL">%d</div></div>' % n_ne)
+    parts.append('<div class="tile"><div class="k">DDM verdict</div><div class="v %s">%s</div></div>' % ("PASS" if overall == "PASS" else "FAIL", overall))
     parts.append('<div class="tile"><div class="k">transfer gate</div><div class="v %s">%s</div></div></div>' % ("PASS" if gate["ok"] else "FAIL", "PASS" if gate["ok"] else "FAIL"))
     parts.append(member_equivalence_html(member_equivalence(runs, member_table)))
 
@@ -316,6 +333,7 @@ def ddm_block(nm, gate, runs, sensitivity, options, member_table):
         "basis": ["Zhang, Shayan, Rasmussen & Ellingwood, JCSR 123 (2016) I & II",
                   "AISC 360-22 Appendix 1 (design by advanced analysis) -- cite via Query file manager"]
                  + [phi_s.SOURCES[k] for k in sorted({src for r in runs if r["phi"]["cls"] in phi_s.TABLE for src in phi_s.TABLE[r["phi"]["cls"]]["sources"]})],
+        "verdict": verdict(runs),
         "phi_s_provisional": phi_s_provisional(runs),
         "phi_s_status": phi_s_status_text(runs, as_html=False),
         "phi_s_classes": {r["phi"]["cls"]: dict(phi_s=r["phi"]["phi_s"], beta_T=r["phi"]["beta_T"], status=r["phi"]["status"]) for r in runs},
@@ -328,7 +346,7 @@ def ddm_block(nm, gate, runs, sensitivity, options, member_table):
             {"label": r["combo"][0], "kind": r["summary"]["kind"], "imperfection": r["imp"], "scheme": "proportional",
              "lambda_u": round(r["res"]["lambda_u"], 3), "lambda_first_yield": (round(r["res"]["first_yield"], 3) if r["res"]["first_yield"] else None),
              "phi_s": r["phi"]["phi_s"], "phi_class": r["phi"]["cls"], "phi_source": r["phi"]["source"],
-             "check": ("phi_s*lambda_u = %.3f %s" % r["check"]) if r["check"][0] is not None else "n/a",
+             "check": ("phi_s*lambda_u = %.3f %s" % r["check"]) if r["check"][0] is not None else r["check"][1],
              "mechanism": r["cls"]["mechanism"], "hinges_by_role": r["cls"]["hinges_by_role"], "buckled_braces": len(r["cls"]["buckled_braces"]),
              "roof_disp_at_peak_in": (round(r["res"]["snapshot"]["drifts"][0][-1], 3) if r["res"]["snapshot"].get("drifts") else None),
              "steps": r["res"]["steps"], "seconds": r["res"]["seconds"]} for r in runs],

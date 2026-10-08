@@ -157,7 +157,7 @@ def run(args):
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
         mat = "CFS-P" if portal else "HR"
         ph = phi_s.choose(summ["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)
-        runs.append(dict(combo=c, summary=summ, res=r["res"], cls=r["cls"], phi=ph, check=phi_s.check(ph["phi_s"], r["res"]["lambda_u"]),
+        runs.append(dict(combo=c, summary=summ, res=r["res"], cls=r["cls"], phi=ph, check=phi_s.check(ph["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"]),
                          imp=r["imp"], state=r["state"]))
     # member table from the governing strength combination per group
     member_table = []
@@ -184,7 +184,7 @@ def run(args):
     # sensitivity on the governing strength combination
     sens = []
     if args.sensitivity and runs:
-        strength = [r for r in runs if r["phi"]["phi_s"] is not None]
+        strength = [r for r in runs if r["phi"]["phi_s"] is not None and r["check"][0] is not None]
         gov = min(strength, key=lambda r: r["phi"]["phi_s"] * r["res"]["lambda_u"]) if strength else runs[0]
         lab, ref = gov["combo"][0], gov["res"]["lambda_u"]
         variants = []
@@ -286,7 +286,7 @@ def report(args):
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
         mat = "CFS-P" if PA.is_portal(cfg) else "HR"
         r["phi"] = phi_s.choose(r["summary"]["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)
-        r["check"] = phi_s.check(r["phi"]["phi_s"], r["res"]["lambda_u"])
+        r["check"] = phi_s.check(r["phi"]["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"])
         print("   %-40s lambda_u %.3f  %-7s phi_s %s  -> %s" % (r["combo"][0][:40], r["res"]["lambda_u"], r["phi"]["cls"], r["phi"]["phi_s"], r["check"][1]))
     opts_rep = dict(d.get("options", {}))
     opts_rep["nsub"] = tuple(opts_rep.get("nsub", (2, 2, 4)))

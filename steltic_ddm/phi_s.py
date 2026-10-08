@@ -155,7 +155,9 @@ def choose(combo_kind, system_R, cls, governed_by_braces=False, hss_braces=False
                       if prov and t["phi"] is not None else None))
 
 
-def check(phi, lam_u):
+def check(phi, lam_u, cls=None):
+    if cls == "numerical":
+        return None, "NOT EVALUATED"        # NL-R2-02: a solver/control stop is never a structural PASS or FAIL
     if phi is None or lam_u is None:
         return None, "n/a"
     v = phi * lam_u
