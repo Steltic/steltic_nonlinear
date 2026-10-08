@@ -499,7 +499,9 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
         lines.append("- Mean storey drift %s vs %s (2 × %s, Risk Category %s) — %s %s" % (_pct(v.get("mean_drift_max")), _pct(L.get("mean_limit")), _pct(L.get("table_12_12_1"), 1), L.get("risk_category"), "OK" if v.get("mean_drift_ok") else "NOT OK", cite["16.4.1.2"]))
         lines.append("- Unacceptable responses %s of %s (allowed %s) — %s %s" % (v.get("n_unacceptable"), v.get("n_records"), v.get("unacceptable_allowed"), "OK" if v.get("unacceptable_ok") else "NOT OK", cite["16.4.1.1"]))
         lines.append("- Deformation-controlled actions: worst CP D/C %s — %s; valid range %s" % (_f(sn.get("worst_DC_CP")), "OK" if v.get("deformation_ok") else "NOT OK", "OK" if v.get("valid_range_ok") else "NOT OK"))
-        lines.append("- Force-controlled columns: worst D/C %s — %s %s" % (_f(sn.get("worst_DC_force_controlled")), "OK" if v.get("force_controlled_ok") else "NOT OK", cite["16.4.2.1"]))
+        lines.append("- Force-controlled columns: worst D/C %s — %s %s%s" % (_f(sn.get("worst_DC_force_controlled")), "OK" if v.get("force_controlled_ok") else "NOT OK", cite["16.4.2.1"],
+                     ("; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4) used for %s (default check D/C %s)" % ("; ".join((v.get("FC_exception_2") or {}).get("members") or []), _f(v.get("worst_FC_DC_default"))))
+                     if (v.get("FC_exception_2") or {}).get("used") else ""))       # NL-R2-16
         lines.append("- Residual drift: %s" % ("not applicable at this height" if not v.get("residual_applicable") else ("OK" if v.get("residual_ok") else "NOT OK")))
     else:
         lines.append("Not in the run.")

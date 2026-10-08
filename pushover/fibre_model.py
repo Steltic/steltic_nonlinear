@@ -328,6 +328,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
                 hinges[hk] = dict(ele=e["tag"], end=end, kind=kind, section=("%s link" % sec) if is_link else sec,
                                   dof=dof, K0=None, mat=None,
                                   form="fibre_end", segs=region, comp=comp, mode=mode, Lp_in=Lp, rbs=rbs_end,
+                                  rbs_offset_in=(a_r + 0.5 * b_r) if rbs_end else 0.0,          # NL-R2-16: RBS centre (Emc beam shear)
                                   node=e["n1"] if end == 1 else e["n2"], z=p1[2] if end == 1 else p2[2], spec=spec)
                 stats["monitored_ends"] += 1
                 stats["monitored_%s_ends" % ("beam" if kind == "beam" else "col")] += 1

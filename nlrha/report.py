@@ -152,14 +152,25 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append("<tr><td>Unacceptable responses (16.4.1.1)</td><td>%d of %d records · allowed %d %s</td><td>16.4.1.1 · 250</td></tr>" % (v["n_unacceptable"], v["n_records"], v["unacceptable_allowed"], _tag(v["unacceptable_ok"])))
     H.append("<tr><td>Mean transient story drift ≤ limit (vertically aligned points)</td><td>max mean %s vs limit %s %s</td><td>16.4.1.2 · 250</td></tr>" % (_pct(v.get("mean_drift_max")), _pct(acc["limits"]["mean_limit"]), _tag(v["mean_drift_ok"])))
     H.append("<tr><td>Deformation-controlled elements (mean vs CP · vs valid range b)</td><td>%s · %s</td><td>16.4.2.2 · 251</td></tr>" % (_tag(v["deformation_ok"], "CP ok", "CP exceeded"), _tag(v["valid_range_ok"], "within b", "beyond b")))
-    H.append("<tr><td>Force-controlled columns: axial + concurrent flexure (H1-1), Eqs. (1.2+0.12S<sub>MS</sub>)D+0.5L+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and (0.9−0.12S<sub>MS</sub>)D+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) ≤ φBR<sub>n</sub></td><td>worst D/C %s %s</td><td>16.4.2.1 · 251</td></tr>"
-             % (_num(v.get("worst_FC_DC")), _tag(v["force_controlled_ok"])))
+    x2 = v.get("FC_exception_2") or {}
+    H.append("<tr><td>Force-controlled columns: axial + concurrent flexure (H1-1), Eqs. (1.2+0.12S<sub>MS</sub>)D+0.5L+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and (0.9−0.12S<sub>MS</sub>)D+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) ≤ φBR<sub>n</sub>%s</td><td>worst D/C %s %s%s</td><td>16.4.2.1%s · 251</td></tr>"
+             % ((";<br><b>Exception 2</b> for %d column group(s) whose axial force is limited by a yield mechanism: (1.2+0.12S<sub>MS</sub>)D+0.5L+0.2S+E<sub>mc</sub> and (0.9−0.12S<sub>MS</sub>)D+E<sub>mc</sub> ≤ φBR<sub>n</sub> (Eqs. 16.4-3 / 16.4-4)" % x2["n_columns"]) if x2.get("used") else "",
+                _num(v.get("worst_FC_DC")), _tag(v["force_controlled_ok"]),
+                ("<br><small>default check without Exception 2: worst D/C %s</small>" % _num(v.get("worst_FC_DC_default"))) if x2.get("used") else "",
+                " Exc. 2" if x2.get("used") else ""))
     H.append("<tr><td>Residual drift (> 240 ft only)</td><td>%s</td><td>16.4.1.3 · 250</td></tr>" % ("n/a — h<sub>n</sub> = %.0f ft" % (acc["hn_in"] / 12) if not v["residual_applicable"] else _tag(v["residual_ok"])))
     nlc = acc.get("no_live_case") or {}
     H.append("<tr><td>Gravity without live load, 1.0 D (16.3.2)</td><td>%s</td><td>16.3.2 · 250</td></tr>"
              % ("not required (exception applies)" if not nlc.get("required") and not nlc.get("run") else
                 ("run: %s" % _verdict_tag(nlc["verdict"])) if nlc.get("run") else '<span class="ng">REQUIRED, NOT RUN</span>'))
     H.append("<tr><td><b>Overall</b></td><td><b>%s</b></td><td>16.4</td></tr></table>" % _verdict_tag(v))
+    if x2.get("used"):        # NL-R2-16: the use of 16.4.2.1 Exception 2 is stated on the face of the report
+        H.append('<div class="note"><b>ASCE 7-22 16.4.2.1 Exception 2 was used</b> (user decision, 7 Oct 2026) for the axial force of these columns, which is limited by the yield '
+                 'mechanism of the beams / braces framing into their column lines: %s. For them the verdict is Eqs. (16.4-3) / (16.4-4) with E<sub>mc</sub> (load factor 1.0) in place of '
+                 'Eqs. (16.4-1) / (16.4-2) with 1.3 I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and the H1-1 interaction; the default check is reported beside it in section 5 '
+                 '(worst default D/C %s). All other columns: default check.</div>' % ("; ".join(x2.get("members") or []), _num(v.get("worst_FC_DC_default"))))
+    elif x2.get("apply") is False:
+        H.append('<div class="note">16.4.2.1 Exception 2 is switched off (ch16_params force_controlled.exception_2.apply = false): every column is checked by Eqs. (16.4-1) / (16.4-2).</div>')
     if v.get("not_evaluated"):
         H.append('<div class="note"><b>Not evaluated / incomplete:</b><ul>%s</ul></div>' % "".join("<li>%s</li>" % w for w in v["not_evaluated"]))
     nr = acc.get("records_not_run") or []
@@ -252,17 +263,41 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                      % (r["kind"], r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
     H.append("</table><h3>Force-controlled — columns: axial (critical) with concurrent flexure (AISC 360-22 H1-1 ≡ AISC 342-22 C3-9/C3-12/C3-13; φ = 0.9, B = 1.0, F<sub>y</sub> from the component parameters)</h3>")
     H.append("<table><tr><th>Section</th><th>elev. (in)</th><th>P<sub>u</sub> / P<sub>ns</sub> (kip)</th><th>P<sub>r</sub> (16.4-1) / T<sub>r</sub> (16.4-2)</th><th>φP<sub>n</sub> (E3) · KL/r</th>"
-             "<th>M<sub>u</sub> major · minor (k-in)</th><th>flexure major · minor (class / model)</th><th>M capacity major · minor</th><th>D/C axial · H1 comp · H1 tens · C3-10</th><th>D/C · governing</th></tr>")
+             "<th>M<sub>u</sub> major · minor (k-in)</th><th>flexure major · minor (class / model)</th><th>M capacity major · minor</th><th>default D/C axial · H1 comp · H1 tens · C3-10 → default D/C</th>"
+             "<th>16.4.2.1 Exception 2: E<sub>mc</sub> comp / tens (kip) · P<sub>r</sub> (16.4-3) / T<sub>r</sub> (16.4-4) · D/C</th><th>verdict D/C · basis · governing</th></tr>")
     for r in acc["force_controlled_columns"]:
-        H.append("<tr><td>%s</td><td>%.0f</td><td>%s / %s</td><td>%s / %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s · %s · %s</td><td>%s %s<br><small>%s</small></td></tr>"
+        e2 = r.get("exception_2")
+        if e2 is None:
+            x2c = "not evaluated"
+        elif e2.get("qualifies"):
+            x2c = ("%s / %s · %s / %s · <b>%s</b><br><small>E<sub>mc</sub>: %s (mechanism statics %s / %s, %s; suite max of the analysis %s / %s)%s</small>"
+                   % (_num(e2.get("Emc_c"), "%.0f"), _num(e2.get("Emc_t"), "%.0f"), _num(e2.get("Pr_16_4_3"), "%.0f"), _num(e2.get("Tr_16_4_4"), "%.0f"), _num(e2.get("DC")),
+                      e2.get("Emc_basis", ""), _num(e2.get("Emc_mech_c"), "%.0f"), _num(e2.get("Emc_mech_t"), "%.0f"), e2.get("governing_c") or "", _num(e2.get("analysed_max_c"), "%.0f"),
+                      _num(e2.get("analysed_max_t"), "%.0f"), ("; 0.2S = %.0f kip" % (0.2 * e2["S_kip"])) if e2.get("S_kip") else ""))
+        else:
+            x2c = "<small>not applicable: %s</small>" % (e2.get("reason") or "")
+        H.append("<tr><td>%s</td><td>%.0f</td><td>%s / %s</td><td>%s / %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s · %s · %s → %s</td><td>%s</td><td>%s %s<br><small>%s</small><br><small>%s</small></td></tr>"
                  % (r["section"], r["z_in"], _num(r.get("Qu"), "%.0f"), _num(r.get("Qns"), "%.0f"), _num(r.get("demand"), "%.0f"), _num(r.get("demand_tension"), "%.0f"),
                     _num(r.get("phiBRn"), "%.0f"), _num(r.get("KLr"), "%.0f"), _num(r.get("Mu_maj"), "%.0f"), _num(r.get("Mu_min"), "%.0f"),
                     "%s / %s" % (r.get("flexure_major", "—"), (r.get("modelled") or {}).get("major", "?")), "%s / %s" % (r.get("flexure_minor", "—"), (r.get("modelled") or {}).get("minor", "?")),
                     ("M<sub>CE</sub> %s" if r.get("flexure_major") == "deformation" else "φM<sub>n</sub> %s") % _num(r.get("MCEx") if r.get("flexure_major") == "deformation" else r.get("phiMnx"), "%.0f"),
                     ("M<sub>CE</sub> %s" if r.get("flexure_minor") == "deformation" else "φM<sub>n</sub> %s") % _num(r.get("MCEy") if r.get("flexure_minor") == "deformation" else r.get("phiMny"), "%.0f"),
-                    _num(r.get("DC_axial")), _num(r.get("DC_H1_comp")), _num(r.get("DC_H1_tens")), _num(r.get("DC_C3_10")),
-                    _num(r.get("DC")), _tag(r["DC"] <= 1.0, "ok", "NG"), r.get("governing", "") + "".join("<br><span class='ng'>%s</span>" % f for f in (r.get("flags") or []))))
+                    _num(r.get("DC_axial")), _num(r.get("DC_H1_comp")), _num(r.get("DC_H1_tens")), _num(r.get("DC_C3_10")), _num(r.get("DC_default", r.get("DC"))), x2c,
+                    _num(r.get("DC")), _tag(r["DC"] <= 1.0, "ok", "NG"), r.get("fc_basis", "16.4.2.1 Eqs. (16.4-1)/(16.4-2)"),
+                    r.get("governing", "") + "".join("<br><span class='ng'>%s</span>" % f for f in (r.get("flags") or []))))
     H.append("</table>")
+    if x2.get("apply", True) and acc["force_controlled_columns"]:
+        H.append('<p class="note"><b>16.4.2.1 Exception 2 (Eqs. 16.4-3 / 16.4-4).</b> Applied to the axial force of a column when (1) its flexure is deformation-controlled on both axes '
+                 '(AISC 342-22 C3.4) and the model represents that yielding, and (2) every member delivering vertical force to its column line at and above the column is a modelled '
+                 'yielding component with a bounded backbone (beam hinges, braces, BRBs) or a beam pinned at that end — then the axial force is limited by the yield mechanism. '
+                 'E<sub>mc</sub> = statics of the column line with every such component at its capacity in the model (expected strength F<sub>ye</sub> = R<sub>y</sub>F<sub>y</sub> with strain '
+                 'hardening: beam M<sub>c</sub> = (M<sub>c</sub>/M<sub>y</sub>)M<sub>pe</sub> over the clear length between hinges; braces h·P<sub>ye</sub> in tension and P<sub>cre</sub> or 0.3 P<sub>cre</sub> in '
+                 'compression = AISC 341-22 F2.3 analyses (a) and (b); BRBs ωQ<sub>CE</sub> / βωQ<sub>CE</sub>), sway in X, in Y and in both together (AISC 341-22 D1.4a, F2.3), and never less '
+                 'than the suite maximum the analysis delivered. Load factor 1.0 on E<sub>mc</sub>; φ = 0.9 and B = 1.0 as for 16.4-1; R<sub>n</sub> = P<sub>n</sub> (AISC 360 E3) / F<sub>y</sub>A<sub>g</sub> (D2); '
+                 'D and 0.5L from the model\'s gravity state as in the default check; S = roof snow tributary to the column line (%s). Applied moments are neglected in this axial check as '
+                 'AISC 341-22 D1.4a(b) permits; the column\'s flexural hinging is accepted as a deformation-controlled action (16.4.2.2, table above). AISC 342 C3-10 is kept. '
+                 'Columns that do not meet (1) and (2) keep the default check (reason in the table).%s</p>'
+                 % (x2.get("snow_basis") or "S = 0", (" " + x2["note"]) if x2.get("note") else ""))
     H.append('<p class="note">Q<sub>ns</sub> is the gravity state of the nonlinear model itself (16.3.2 loads), split into D and 0.5L by the level totals. '
              'Flexure is classified per AISC 342-22 C3.4: deformation-controlled for P<sub>G</sub>/P<sub>ye</sub> ≤ 0.6 (analysed moment with the expected strength M<sub>CE</sub>, F<sub>ye</sub> = R<sub>y</sub>F<sub>y</sub>, C3.4b.2.b with m = 1), '
              'force-controlled above (transformed by the 16.4.2.1 equations, resisted by φM<sub>n</sub>: F2 with L<sub>b</sub> = column length and C<sub>b</sub> = 1, F3/F6). '
@@ -275,7 +310,9 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
         H.append("<tr><td>Unacceptable responses</td><td>%d of %d (allowed %d) %s</td></tr>" % (vn["n_unacceptable"], vn["n_records"], vn["unacceptable_allowed"], _tag(vn["unacceptable_ok"])))
         H.append("<tr><td>Mean story drift</td><td>max %s %s</td></tr>" % (_pct(vn.get("mean_drift_max")), _tag(vn["mean_drift_ok"])))
         H.append("<tr><td>Deformation-controlled · valid range</td><td>%s · %s</td></tr>" % (_tag(vn["deformation_ok"], "CP ok", "CP exceeded"), _tag(vn["valid_range_ok"], "within b", "beyond b")))
-        H.append("<tr><td>Force-controlled columns</td><td>worst D/C %s %s</td></tr>" % (_num(vn.get("worst_FC_DC")), _tag(vn["force_controlled_ok"])))
+        H.append("<tr><td>Force-controlled columns</td><td>worst D/C %s %s%s</td></tr>" % (_num(vn.get("worst_FC_DC")), _tag(vn["force_controlled_ok"]),
+                 (" (16.4.2.1 Exception 2 for %d column group(s); default check %s)" % ((vn.get("FC_exception_2") or {}).get("n_columns", 0), _num(vn.get("worst_FC_DC_default"))))
+                 if (vn.get("FC_exception_2") or {}).get("used") else ""))
         H.append("<tr><td>Case verdict</td><td>%s</td></tr></table>" % _verdict_tag(vn))
 
     H.append("<h2>6. What this adds to the linear and pushover packages</h2>")
@@ -301,6 +338,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                    "required" if nlc.get("required", grav_split["no_live_case_needed"]) else "not required (exception: Σ0.5L ≤ 25% ΣD and L<sub>0</sub> &lt; 100 psf over ≥ 75% of the area)",
                    (" and " + ("was run" if nlc.get("run") else "was NOT run — the verdict cannot be ACCEPTABLE")) if nlc.get("required", grav_split["no_live_case_needed"]) else ""),
                "Accidental torsion is not applied (16.3.4 — only where a Type 1 irregularity exists); inherent eccentricity is whatever the diaphragm master/mass placement in the package gives.",
+               ("16.4.2.1 Exception 2 was applied to the axial force of %d column group(s) (%s) on the user's decision (7 Oct 2026); the engineer of record and the 16.5 reviewer must accept that these actions are limited by the yield mechanism and the E<sub>mc</sub> basis (section 5)."
+                % (x2["n_columns"], "; ".join(x2.get("members") or [])) if x2.get("used") else "16.4.2.1 Exception 2 was not used for any column (none qualified or it is switched off)."),
                "Force-controlled column check: AISC 360 E3 / F2–F6 / H1-1 nominal strengths computed here (F<sub>y</sub> = %s ksi from the component parameters, K = 1, L<sub>b</sub> = column length, C<sub>b</sub> = 1); connections, splices and base plates are not checked." % (((prm.get("material") or {}).get("Fy_ksi")) or 50),
                "16.1.4 documentation and 16.5 independent design review are procedural requirements outside this tool."):
         H.append("<li>%s</li>" % it)

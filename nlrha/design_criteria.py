@@ -322,6 +322,7 @@ def content(g, project=None, engineer=None, reviewer=None):
           ("verified -- %s" % (prm.get("source") or "")[:200]) if prm_ok else ("UNVERIFIED -- values not supplied by the user: %s" % unv_txt)]])
 
     s = Section("6. Acceptance criteria (16.4)"); S.append(s)
+    x2c = ch16["force_controlled"].get("exception_2") or {}
     tab = ch16["transient_drift"]["table_12_12_1_all_other"].get(rc, 0.02)
     mean_lim = ch16["transient_drift"]["factor_on_table_12_12_1"] * tab
     tall = None
@@ -334,6 +335,9 @@ def content(g, project=None, engineer=None, reviewer=None):
          ["Residual drift", ("<= %.1f%% of h_sx (h_n > %d ft)" % (100 * ch16["residual_drift"]["limit"], ch16["residual_drift"]["height_ft"])) if (hn_ft and hn_ft > ch16["residual_drift"]["height_ft"]) else "not applicable (h_n <= %d ft)" % ch16["residual_drift"]["height_ft"], ch16["residual_drift"]["clause"]],
          ["Deformation-controlled elements", "mean of the per-record peak deformations <= CP of the component model and within the valid modelling range b; " + ch16["deformation_controlled"]["rule"], ch16["deformation_controlled"]["clause"]],
          ["Force-controlled elements", ch16["force_controlled"]["rule"] + " -- gamma = %.1f, phi = %s (critical) / %.1f (ordinary), B = %.1f" % (ch16["force_controlled"]["gamma"], ch16["force_controlled"]["phi_critical"], ch16["force_controlled"]["phi_ordinary"], ch16["force_controlled"]["B"]), ch16["force_controlled"]["clause"]],
+         # NL-R2-16: the use of 16.4.2.1 Exception 2 is stated in the criteria before the analysis
+         ["Force-controlled actions limited by a yield mechanism", ((x2c.get("rule") or "") + ". APPLIED to: " + (x2c.get("implemented_for") or "") + " (" + (x2c.get("decision") or "") + ")")
+          if x2c.get("apply", True) else "16.4.2.1 Exception 2 NOT used: every force-controlled action by the default equations", x2c.get("clause", "16.4.2.1 Exception 2")],
          ["Gravity system", ch16["gravity_system"]["rule"], ch16["gravity_system"]["clause"]]])
     s.n("Table 12.12-1 values for Risk Category III and IV are transcribed in ch16_params.json and marked RE-VERIFY through Query file manager before use in a deliverable.")
     s.p("Element classification for this building:", style=None)
@@ -346,6 +350,8 @@ def content(g, project=None, engineer=None, reviewer=None):
     s.b("force-controlled: column axial compression in %s and any column with P_G/P_ye > 0.6 (critical; checked by the analysis, 16.4.2.1), column splices and base plates (critical; NOT checked by the analysis -- from the linear package), %sdiaphragm and collector forces (from the linear package with Omega_0)."
         % ("braced-frame and gravity columns" if (u["n_brace"] or u["n_brb"]) else "gravity columns",
            "beam-column panel-zone shear where rigid joints are assumed (ordinary), " if (u["n_moment_beam"] and pz_mode == "rigid") else ""), "Force-controlled --")
+    if x2c.get("apply", True):
+        s.b("16.4.2.1 Exception 2 is used for the axial force of moment-frame and braced-frame columns whose flexure is deformation-controlled and whose column line receives seismic force only from modelled yielding components (beam hinges, braces): such an axial force is limited by the yield mechanism and is checked by Eqs. (16.4-3) / (16.4-4) with the capacity-limited effect E_mc (load factor 1.0) instead of Eqs. (16.4-1) / (16.4-2). The analysis report lists the columns it was applied to and reports the default check beside it. Gravity columns and columns with force-controlled flexure keep the default check.", "Exception 2 --")
     s.b("[The engineer of record designates any further critical / ordinary / noncritical actions and the B factor where expected strength is used.]", "To complete --")
 
     s = Section("7. The linear analysis the design rests on (16.1.2)"); S.append(s)
@@ -383,7 +389,8 @@ def content(g, project=None, engineer=None, reviewer=None):
               if not prm_ok else "Component backbones were verified against %s." % ((prm.get("source") or "")[:160])),
              ("Ground motions are ranked against the site disaggregation; the tectonic regime and any pulse content rest on the library's metadata -- confirm against the project hazard report." if (gm and gm.get("deagg")) else "Ground-motion selection uses spectral-shape fit to the code spectrum; 16.2.2 consistency with the site's controlling M, R and tectonic regime needs the project hazard (run `nlrha hazard`)."),
              "Accidental torsion is not applied by the analysis; 16.3.4 requires it where a Type 1 horizontal irregularity exists -- the engineer of record confirms there is none. Gravity follows the framed floor plate (floors at L0, roofs at Lr, quarter-bay tributaries); the 1.0 D analysis without live load is required unless the 16.3.2 exception (sum 0.5L <= 25% sum D and L0 < 100 psf over >= 75% of the area) applies -- the verdict is withheld (INCOMPLETE) if it is required and was not run. " + nlc_txt,
-             "The force-controlled column check (16.4.2.1, both equations) combines axial force with concurrent flexure (AISC 360 H1-1 = AISC 342 C3-9) using AISC 360 E3 / F2-F6 with the F_y of the component parameters, K = 1, L_b = column length, C_b = 1; connections, splices and base plates are checked from the linear package, not from the nonlinear demands.",
+             "The force-controlled column check (16.4.2.1, both equations) combines axial force with concurrent flexure (AISC 360 H1-1 = AISC 342 C3-9) using AISC 360 E3 / F2-F6 with the F_y of the component parameters, K = 1, L_b = column length, C_b = 1; connections, splices and base plates are checked from the linear package, not from the nonlinear demands."
+             + (" Where 16.4.2.1 Exception 2 applies (column axial force limited by the yield mechanism), the verdict rests on Eqs. (16.4-3) / (16.4-4) with E_mc from the mechanism statics of the column line (model capacities, never below the analysed suite maximum), applied moments neglected as AISC 341-22 D1.4a(b) permits; the engineer of record and the reviewer must accept this interpretation (user decision 7 Oct 2026, review item NL-R2-16)." if x2c.get("apply", True) else ""),
              "Foundations, soil-structure interaction and vertical ground motion (16.1.3) are not modelled.",
              "[Site class and V_s30 from the geotechnical report; project-specific performance objectives beyond the code minimum, if any.]"]
     if rel:
@@ -400,7 +407,9 @@ def content(g, project=None, engineer=None, reviewer=None):
              ["Unacceptable responses", "%d of %d (allowed %d)" % (v["n_unacceptable"], v["n_records"], v["unacceptable_allowed"])],
              ["Mean transient story drift", "max %s vs %s" % (_pc(v.get("mean_drift_max")), _pc(l["mean_limit"]))],
              ["Deformation-controlled", "CP %s, valid range %s" % ("ok" if v["deformation_ok"] else "EXCEEDED", "ok" if v["valid_range_ok"] else "EXCEEDED")],
-             ["Force-controlled columns", "%s (worst D/C %s)" % ("ok" if v["force_controlled_ok"] else "NG", v.get("worst_FC_DC"))],
+             ["Force-controlled columns", "%s (worst D/C %s)" % ("ok" if v["force_controlled_ok"] else "NG", v.get("worst_FC_DC"))
+              + ((" -- 16.4.2.1 Exception 2 used for: %s; default check without it: worst D/C %s" % ("; ".join((v.get("FC_exception_2") or {}).get("members") or []), v.get("worst_FC_DC_default")))
+                 if (v.get("FC_exception_2") or {}).get("used") else (" -- 16.4.2.1 Exception 2 not used" if v.get("FC_exception_2") is not None else ""))],
              ["Overall", v.get("status") or ("ACCEPTABLE" if v["overall"] else "NOT ACCEPTABLE")]])
         s.n("Generated %s by the Nonlinear module; the report nlrha/nlrha_report.html carries the per-record and per-group tables." % g["nl"].get("generated"))
 
@@ -409,6 +418,9 @@ def content(g, project=None, engineer=None, reviewer=None):
     for k, v in ch16.items():
         if isinstance(v, dict) and v.get("clause"):
             rows.append([v["clause"], str(v.get("pdf_page", "")), (v.get("rule") or v.get("note") or "")[:400]])
+            x = v.get("exception_2")
+            if isinstance(x, dict) and x.get("clause"):                  # NL-R2-16
+                rows.append([x["clause"], str(x.get("pdf_page", "")), ("%s -- %s" % (x.get("rule") or "", "applied" if x.get("apply", True) else "NOT applied"))[:600]])
     s.t(rows)
     s = Section("Appendix B. Standards retrieval log", 1); S.append(s)
     if g["retrieval"]:
