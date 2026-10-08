@@ -1,9 +1,10 @@
 """cli.py -- Non Linear Dynamic Bot tool.
 
     python -m nlrha scale   <steltic package>  [--site-class D] [--n 11] [--out DIR]      # select + scale only (fast)
-    python -m nlrha run     <steltic package>  [--pushover-dir DIR] [--n 11] [--dt 0.01] [--records 1-11] [--only-records 4] [--out DIR]
+    python -m nlrha run     <steltic package>  [--pushover-dir DIR] [--n 11] [--dt 0.01] [--records 1-11] [--only-records 4] [--out DIR] [--resume]
                                                [--xi 0.025] [--params hinge_params.json] [--free-vib 5]
-Outputs (default <job>/nlrha/): nlrha_report.html, nlrha_package.json, gm_scaling.json, per-record peaks in the package.
+Outputs (default <job>/nlrha/): nlrha_report.html, nlrha_package.json, gm_scaling.json, per-record peaks in the package;
+records/r<i>.pkl, one per finished record (NL-R2-26: `run --resume` continues an interrupted suite from them).
 """
 from __future__ import annotations
 import argparse, json, os, sys, time
@@ -290,43 +291,93 @@ def _print_verdict(acc):
         print("[16.4]   records NOT run (%d): %s" % (len(nr), "; ".join(str(x.get("label")) for x in nr)))
 
 
-def _run_suite(jobs, labels, early_nc, allowed, parallel, tag=""):
+def _indexed_call(arg):
+    """multiprocessing entry (NL-R2-26): (k, worker, job) -> (k, worker(job)), so results can be saved as they finish."""
+    k, fn, job = arg
+    return k, fn(job)
+
+
+def _record_file(rec_dir, i, suffix=""):
+    return os.path.join(rec_dir, "r%d%s.pkl" % (i, suffix))
+
+
+def _save_record(path, key, result):
+    """NL-R2-26: one finished record -> <out>/records/r<i>.pkl, written atomically (a restart mid-write leaves no torn file)."""
+    import pickle
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(dict(key=key, result=result, saved=time.strftime("%Y-%m-%dT%H:%M:%S")), f)
+    os.replace(tmp, path)
+
+
+def _load_record(path, key):
+    """The saved result of one record, or None when there is none, it cannot be read, or it was run with other inputs
+    (record, scale factor, time step, window, parameters ... -- `key`): such a record is run again."""
+    import pickle
+    if not os.path.exists(path):
+        return None
+    try:
+        d = pickle.load(open(path, "rb"))
+    except Exception as ex:                                            # noqa: BLE001
+        print("[nlrha] resume: %s unreadable (%s) -- the record is run again" % (path, ex), flush=True); return None
+    if key is not None and d.get("key") != key:
+        print("[nlrha] resume: %s was run with other inputs -- the record is run again" % path, flush=True); return None
+    return d.get("result")
+
+
+def _run_suite(jobs, labels, early_nc, allowed, parallel, tag="", rec_dir=None, idx=None, keys=None, resume=False, suffix="", worker=None):
     """Run the record jobs. Early abort (off by default) only once the verdict is decided: genuine non-convergence
     (16.4.1.1 item 1) on more records than 16.4.1.1 permits for the Risk Category -- the remaining records cannot
-    change NOT ACCEPTABLE. Incomplete (time-out) records never trigger it. Returns (results, early_abort info|None);
-    the records not run are listed by the caller (`planned` minus results)."""
+    change NOT ACCEPTABLE. Incomplete (time-out) records never trigger it. Returns (results in job order, early abort
+    info|None); the records not run are listed by the caller (`planned` minus results).
+    NL-R2-26: with `rec_dir` each record's result is written to <rec_dir>/r<i><suffix>.pkl as soon as it finishes (i =
+    the 1-based suite index from `idx`; also in the parallel path); `resume` loads the records whose file exists and
+    whose `keys` entry matches, and runs only the others."""
     from . import run as RN, acceptance as AC
-    results = []
+    worker = worker or RN.run_record_worker
+    idx = list(idx) if idx is not None else list(range(1, len(jobs) + 1))
+    keys = list(keys) if keys is not None else [None] * len(jobs)
+    done = {}
+    if resume and rec_dir:
+        for k in range(len(jobs)):
+            r = _load_record(_record_file(rec_dir, idx[k], suffix), keys[k])
+            if r is not None:
+                done[k] = r
+        print("[nlrha]%s resume: %d of %d record(s) loaded from %s; %d to run" % (tag, len(done), len(jobs), rec_dir, len(jobs) - len(done)), flush=True)
     thr = max(int(early_nc), int(allowed) + 1) if early_nc and early_nc > 0 else 0
+    def finished(k, out):
+        done[k] = out
+        if rec_dir:
+            _save_record(_record_file(rec_dir, idx[k], suffix), keys[k], out)
     def check():
-        n_nc = sum(1 for r in results if AC.record_status(r) == "nonconvergence")
-        if thr and n_nc >= thr and len(results) < len(jobs):
-            return dict(n_nc=n_nc, threshold=thr, n_run=len(results), n_skipped=len(jobs) - len(results),
+        n_nc = sum(1 for r in done.values() if AC.record_status(r) == "nonconvergence")
+        if thr and n_nc >= thr and len(done) < len(jobs):
+            return dict(n_nc=n_nc, threshold=thr, n_run=len(done), n_skipped=len(jobs) - len(done),
                         basis=("ASCE 7-22 16.4.1.1: %d record(s) failed to converge (item 1) > %d unacceptable permitted for this Risk Category; "
-                               "the verdict is NOT ACCEPTABLE whatever the remaining %d record(s) give" % (n_nc, allowed, len(jobs) - len(results))))
+                               "the verdict is NOT ACCEPTABLE whatever the remaining %d record(s) give" % (n_nc, allowed, len(jobs) - len(done))))
         return None
-    early = None
-    if parallel > 1:
-        import multiprocessing as mp
-        with mp.get_context("spawn").Pool(parallel) as pool:
-            if not thr:
-                results = pool.map(RN.run_record_worker, jobs)
-            else:
-                for out in pool.imap(RN.run_record_worker, jobs):
-                    results.append(out)
+    early = check()
+    pending = [k for k in range(len(jobs)) if k not in done]
+    if pending and not early:
+        if parallel > 1:
+            import multiprocessing as mp
+            with mp.get_context("spawn").Pool(min(parallel, len(pending))) as pool:
+                for k, out in pool.imap_unordered(_indexed_call, [(k, worker, jobs[k]) for k in pending]):
+                    finished(k, out)
                     early = check()
                     if early:
                         pool.terminate(); break
-    else:
-        for j in jobs:
-            results.append(RN.run_record_worker(j))
-            if thr:
+        else:
+            for k in pending:
+                finished(k, worker(jobs[k]))
                 early = check()
                 if early:
                     break
+    results = [done[k] for k in sorted(done)]
     if early:
-        done = {r.get("record") for r in results}
-        early["records_not_run"] = [lab for rid, lab in labels if rid not in done]
+        ids = {r.get("record") for r in results}
+        early["records_not_run"] = [lab for rid, lab in labels if rid not in ids]
         print("[nlrha]%s early abort: %s. Records NOT run: %s" % (tag, early["basis"], "; ".join(early["records_not_run"])), flush=True)
     return results, early
 
@@ -379,17 +430,22 @@ def cmd_run(args):
     early_nc = int(getattr(args, "early_abort_nc", 0) or 0)
     rc = AC.risk_category(pkg, args.risk_category); print("[16.4] Risk Category", rc.replace("_", "/"))
     allowed = ch16["unacceptable_response"].get("max_unacceptable", {}).get(rc, ch16["unacceptable_response"]["max_unacceptable_RC_I_II"])
-    results, early = _run_suite(jobs, labels, early_nc, allowed, args.parallel)
+    # NL-R2-26: every finished record is saved to <out>/records/r<i>.pkl at once (a restarted container / PC loses only the
+    # records in flight); --resume loads those whose inputs match and runs the rest. raw_results.pkl and the report as before.
+    out = args.out or os.path.join(str(pkg.root), "nlrha"); os.makedirs(out, exist_ok=True)
+    rec_dir = os.path.join(out, "records"); resume = bool(getattr(args, "resume", False))
+    keys = [_record_key(args, chosen[i - 1]) for i in sel]
+    results, early = _run_suite(jobs, labels, early_nc, allowed, args.parallel, rec_dir=rec_dir, idx=list(sel), keys=keys, resume=resume)
     results_nl = early_nl = loads_nl = gtab_nl = split_nl = PG_nl = None
     if run_nl:
         print("[gravity 16.3.2] analysis WITHOUT live load (1.0 D) on the same %d record(s)" % len(jobs), flush=True)
         loads_nl, gtab_nl, split_nl = MD.ch16_gravity(pkg, ch16, with_live=False)
         PG_nl = NM.column_gravity_axials(pkg, loads_nl)
         jobs_nl = [j[:3] + (PG_nl, loads_nl) + j[5:] for j in jobs]
-        results_nl, early_nl = _run_suite(jobs_nl, labels, early_nc, allowed, args.parallel, tag=" [no-live]")
-    out = args.out or os.path.join(str(pkg.root), "nlrha"); os.makedirs(out, exist_ok=True)
+        results_nl, early_nl = _run_suite(jobs_nl, labels, early_nc, allowed, args.parallel, tag=" [no-live]", rec_dir=rec_dir, idx=list(sel),
+                                          keys=[dict(k, gravity="no_live") for k in keys], resume=resume, suffix="_nolive")
     meta = dict(planned=planned, suite_size=len(chosen), early_abort=early, early_abort_no_live=early_nl, early_aborted=bool(early or early_nl),
-                early_abort_nc=early_nc, budget=budget, no_live_mode=nl_mode)
+                early_abort_nc=early_nc, budget=budget, no_live_mode=nl_mode, resumed=resume, records_dir=rec_dir)
     import pickle
     with open(os.path.join(out, "raw_results.pkl"), "wb") as f:            # never lose a 30-minute suite to a report bug
         pickle.dump(dict(results=results, gm=gm, modal=modal, gtab=gtab, split=split, PG=PG, ch16=ch16, meta=meta,
@@ -411,6 +467,24 @@ def cmd_run(args):
     html = RP.write(out, pkg, ch16, prm, gm, results, acc, gtab, split, modal, time.time() - t0, pushover_pkg=pp)
     print("wrote", html, "(%.0f s)" % (time.time() - t0))
     _viewer(out, pkg, prm, ch16, gm, results, acc, modal, args.xi, pp)
+
+
+def _record_key(args, rec):
+    """NL-R2-26: what a saved record result depends on; a saved file with another key is not reused by --resume."""
+    import hashlib
+    def md5(*paths):
+        h = hashlib.md5(); n = 0
+        for p in paths:
+            if p and os.path.isfile(p):
+                h.update(open(p, "rb").read()); n += 1
+        return h.hexdigest() if n else None
+    prm_hash = md5(getattr(args, "params", None))
+    root = args.package if os.path.isdir(str(args.package)) else os.path.dirname(str(args.package))
+    pkg_hash = md5(*(os.path.join(root, f) for f in ("model_opensees.py", "cfg.py")))
+    w = rec.get("window") or {}
+    return dict(record=rec["id"], sf=round(float(rec["sf"]), 6), x_comp=rec.get("x_comp"), dt=args.dt, integrator=args.integrator, xi=args.xi,
+                free_vib=args.free_vib, window=(round(float(w.get("t_start", 0.0)), 4), round(float(w.get("t_end_rel", 0.0)), 4)) if w else None,
+                plasticity=getattr(args, "plasticity", None), member_nseg=getattr(args, "member_nseg", None), params=prm_hash, package=pkg_hash)
 
 
 def _viewer(out, pkg, prm, ch16, gm, results, acc, modal, xi, pp):
@@ -494,6 +568,8 @@ def main(argv=None):
                            "nominal steps x model nodes), so it grows with the record length, the time step and the model) or seconds (0 = none). "
                            "A record that runs out is reported 'incomplete (time-out)', never as non-convergence")
             p.add_argument("--step-budget", type=float, default=40.0, help="analyze-call budget per record, as a multiple of its nominal step count (0 = none)")
+            p.add_argument("--resume", action="store_true", help="NL-R2-26: reuse the per-record results already saved in <out>/records/r<i>.pkl (each record "
+                           "is saved as soon as it finishes) when their inputs match, and run only the missing records -- after a restart of the machine")
     lib = sub.add_parser("library", help="index a folder of PEER .AT2 / CSV record pairs (writes index.json; reads PEER _SearchResults.csv metadata when present)")
     lib.add_argument("folder")
     cr = sub.add_parser("criteria", help="draft the 16.1.4 design criteria document (docx + html) from the package and whatever analyses exist")

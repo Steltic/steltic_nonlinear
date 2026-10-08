@@ -96,6 +96,7 @@ def cmd_run(a):
             if a.sf_bounds: cmd += ["--sf-bounds", a.sf_bounds]
             if a.record_budget_s is not None: cmd += ["--record-budget-s", str(a.record_budget_s)]     # NL-R2-15
             if a.trim_records and a.trim_records != "off": cmd += ["--trim-records", a.trim_records, "--trim-ends", a.trim_ends]   # NL-R2-18
+            if a.resume: cmd += ["--resume"]                                                       # NL-R2-26
             # Product rule 1: NLRHA starts ModIMK; fibre via mesh-converge ladder
             plast = a.plasticity if a.plasticity else "imk"
             nseg = a.member_nseg if a.member_nseg is not None else (4 if plast in ("fibre", "fiber") else 1)
@@ -186,6 +187,7 @@ def main(argv=None):
                    help="NLRHA optional record trimming (default off; --trim-records alone = standard 0.1-99.5%% Arias, aggressive = 0.5-99%%); "
                         "2%% spectral check per record, disclosed in the NLRHA report and the 16.1.4 document")
     r.add_argument("--trim-ends", default="both", choices=["both", "head", "tail"], help="which quiet end(s) --trim-records trims")
+    r.add_argument("--resume", action="store_true", help="NLRHA: keep the records already finished by an interrupted run (<job>/nlrha/records/r<i>.pkl) and run only the rest")
     r.add_argument("--no-criteria", action="store_true", help="do not write the 16.1.4 design criteria draft at the end of the run")
     r.add_argument("--project", help="project name for the design criteria document"); r.add_argument("--engineer"); r.add_argument("--reviewer")
     fb = sub.add_parser("feedback", help="the three re-design loops back to HR Steel: plan (and optionally run) one, or promote a verified candidate")

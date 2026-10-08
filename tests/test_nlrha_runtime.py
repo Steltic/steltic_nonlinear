@@ -150,3 +150,94 @@ def test_trim_options_passed_by_snl_run(monkeypatch):
     assert cli.main(["run", job, "--only", "nlrha", "--trim-records", "aggressive", "--trim-ends", "head", "--no-criteria"]) == 0
     c = calls[-1]; assert c[c.index("--trim-records") + 1] == "aggressive" and c[c.index("--trim-ends") + 1] == "head"
     assert cli.main(["run", job, "--only", "nlrha", "--no-criteria"]) == 0 and "--trim-records" not in calls[-1]     # off by default
+
+
+# --------------------------------------------------------------------------- NL-R2-26 per-record save and resume
+def _fake_suite(n=4):
+    jobs = ["J%d" % i for i in range(n)]; labels = [("R%d" % i, "rec %d" % i) for i in range(n)]
+    keys = [dict(record="R%d" % i, sf=1.0 + i, dt=0.01) for i in range(n)]
+    return jobs, labels, keys
+
+
+def test_each_record_saved_when_it_finishes_and_resume_skips_them(tmp_path):
+    import pickle
+    from nlrha import cli
+    jobs, labels, keys = _fake_suite(4)
+    rec_dir = str(tmp_path / "records"); idx = [3, 4, 5, 6]                # suite indices (e.g. --records 3-6)
+    calls = []
+
+    def crashing(job):                                                      # the machine "restarts" during the 3rd record
+        if job == "J2":
+            raise KeyboardInterrupt("container restarted")
+        calls.append(job); return dict(record="R" + job[1:], converged=True, status="completed", peak=float(job[1:]))
+    with pytest.raises(KeyboardInterrupt):
+        cli._run_suite(jobs, labels, 0, 1, 1, rec_dir=rec_dir, idx=idx, keys=keys, worker=crashing)
+    assert sorted(os.listdir(rec_dir)) == ["r3.pkl", "r4.pkl"]              # the two finished records survived
+    d = pickle.load(open(os.path.join(rec_dir, "r4.pkl"), "rb"))
+    assert d["key"] == keys[1] and d["result"]["record"] == "R1"
+    calls.clear()
+
+    def ok(job):
+        calls.append(job); return dict(record="R" + job[1:], converged=True, status="completed", peak=float(job[1:]))
+    res, early = cli._run_suite(jobs, labels, 0, 1, 1, rec_dir=rec_dir, idx=idx, keys=keys, resume=True, worker=ok)
+    assert calls == ["J2", "J3"] and early is None                           # only the missing records ran
+    assert [r["record"] for r in res] == ["R0", "R1", "R2", "R3"]           # suite order, as a run without restart
+    assert sorted(os.listdir(rec_dir)) == ["r3.pkl", "r4.pkl", "r5.pkl", "r6.pkl"]
+    # without --resume everything runs again (and the files are rewritten)
+    calls.clear(); cli._run_suite(jobs, labels, 0, 1, 1, rec_dir=rec_dir, idx=idx, keys=keys, worker=ok)
+    assert calls == jobs
+    # a saved record run with other inputs (here: another scale factor) is not reused; nor is an unreadable file
+    keys2 = [dict(k) for k in keys]; keys2[0]["sf"] = 9.9
+    open(os.path.join(rec_dir, "r4.pkl"), "wb").write(b"torn")
+    calls.clear(); res, _ = cli._run_suite(jobs, labels, 0, 1, 1, rec_dir=rec_dir, idx=idx, keys=keys2, resume=True, worker=ok)
+    assert calls == ["J0", "J1"] and len(res) == 4
+    assert not [f for f in os.listdir(rec_dir) if f.endswith(".tmp")]
+
+
+def test_resume_counts_loaded_records_for_early_abort(tmp_path):
+    from nlrha import cli
+    jobs, labels, keys = _fake_suite(5)
+    rec_dir = str(tmp_path / "records")
+    nc = lambda job: dict(record="R" + job[1:], converged=False, status="nonconvergence", reason="nc")
+    for k in (0, 1):
+        cli._save_record(cli._record_file(rec_dir, k + 1), keys[k], nc(jobs[k]))
+    called = []
+    res, early = cli._run_suite(jobs, labels, 1, 1, 1, rec_dir=rec_dir, keys=keys, resume=True, worker=lambda j: called.append(j))
+    assert called == [] and len(res) == 2 and early["n_skipped"] == 3 and len(early["records_not_run"]) == 3
+
+
+def test_parallel_path_saves_records_and_resumes(tmp_path):
+    """--parallel: results arrive out of order (imap_unordered) and are saved one by one; the suite comes back in
+    suite order. The worker is `dict` (picklable for the spawn pool): job = the record's items."""
+    import pickle
+    from nlrha import cli
+    jobs = [(("record", "R%d" % i), ("converged", True), ("status", "completed")) for i in range(3)]
+    labels = [("R%d" % i, "rec %d" % i) for i in range(3)]; keys = [dict(record="R%d" % i) for i in range(3)]
+    rec_dir = str(tmp_path / "records")
+    res, early = cli._run_suite(jobs, labels, 0, 1, 2, rec_dir=rec_dir, keys=keys, worker=dict)
+    assert [r["record"] for r in res] == ["R0", "R1", "R2"] and early is None
+    assert sorted(os.listdir(rec_dir)) == ["r1.pkl", "r2.pkl", "r3.pkl"]
+    assert pickle.load(open(os.path.join(rec_dir, "r2.pkl"), "rb"))["result"]["record"] == "R1"
+    os.remove(os.path.join(rec_dir, "r2.pkl"))
+    res, _ = cli._run_suite(jobs, labels, 0, 1, 2, rec_dir=rec_dir, keys=keys, resume=True, worker=dict, suffix="")
+    assert [r["record"] for r in res] == ["R0", "R1", "R2"] and os.path.exists(os.path.join(rec_dir, "r2.pkl"))
+    # the no-live-load suite keeps its own files
+    cli._run_suite(jobs, labels, 0, 1, 1, rec_dir=rec_dir, keys=keys, worker=dict, suffix="_nolive")
+    assert os.path.exists(os.path.join(rec_dir, "r1_nolive.pkl"))
+
+
+def test_record_key_and_resume_flags(monkeypatch, tmp_path):
+    import types
+    from nlrha import cli as NC
+    prm = tmp_path / "p.json"; prm.write_text("{}")
+    args = types.SimpleNamespace(params=str(prm), package=EX22, dt=0.01, integrator="hht", xi=0.025, free_vib=5.0, plasticity="imk", member_nseg=1)
+    rec = dict(id="R1", sf=1.234567891, x_comp=1, window=dict(t_start=0.0, t_end_rel=31.2))
+    k1 = NC._record_key(args, rec)
+    assert k1["record"] == "R1" and k1["params"] and k1["package"] and k1 == NC._record_key(args, dict(rec))
+    prm.write_text('{"x": 1}'); assert NC._record_key(args, rec) != k1               # other component parameters -> re-run
+    from snl import cli
+    calls = []
+    monkeypatch.setattr(cli, "_run", lambda cmd, log, env=None, cwd=None: calls.append(cmd) or dict(returncode=0, seconds=0, log=log))
+    job = os.path.join(str(tmp_path), "Ex22_SMF")
+    shutil.copytree(EX22, job, ignore=shutil.ignore_patterns("*.pkl", "__pycache__"))
+    assert cli.main(["run", job, "--only", "nlrha", "--resume", "--no-criteria"]) == 0 and "--resume" in calls[-1]
