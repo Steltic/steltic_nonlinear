@@ -159,3 +159,27 @@ def test_nl_r2_03_no_hr_geometry_falls_back_loudly():
     assert g._grav_geo is False
     assert any("legacy two-way" in str(row[-1]) for row in g.builder.log)
 
+
+def test_nl_r2_23_singular_gate_refuses_dense_eigen(tmp_path):
+    """ARPACK fails on a singular K (an unconnected node): above the memory limit the dense -fullGenLapack fallback
+    is refused and the gate fails with 'stiffness matrix singular' naming the node (Ex12: 1.5 h, OOM at 6 GB)."""
+    from steltic_ddm import transfer_gate as TG
+    assert abs(TG.dense_eigen_gb(12000) - 3.456) < 1e-3 and TG.dense_eigen_gb(12000) > TG.DENSE_EIGEN_MAX_GB
+    lines = ["import openseespy.opensees as ops", "ops.wipe()", "ops.model('basic', '-ndm', 3, '-ndf', 6)",
+             "ops.node(1, 0.0, 0.0, 0.0)", "ops.node(2, 0.0, 0.0, 144.0)", "ops.node(7, 300.0, 0.0, 144.0)",
+             "ops.fix(1, 1, 1, 1, 1, 1, 1)", "ops.geomTransf('Linear', 1, 1.0, 0.0, 0.0)",
+             "ops.element('elasticBeamColumn', 1, 1, 2, 26.5, 29000.0, 11200.0, 4.06, 362.0, 999.0, 1)",
+             "ops.mass(2, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)", "ops.mass(7, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)"]
+    (tmp_path / "model_opensees.py").write_text("\n".join(lines) + "\n")
+    nm, cfg = _frame()
+    nm.job_dir = str(tmp_path)
+    g = TG.run(nm, cfg, {1: (1.0, 0.0, 0.0)}, {1: (0.0, 1.0, 0.0)}, max_dense_gb=1e-9)
+    assert g["ok"] is False and g.get("singular") and g["rows"] == []
+    assert "stiffness matrix singular" in g["hint"] and "unconnected nodes (7)" in g["hint"] and "Steltic replay" in g["hint"]
+    # the limit: param > env STELTIC_DDM_DENSE_EIGEN_GB > 2 GB default
+    os.environ[TG.DENSE_EIGEN_ENV] = "1e-9"
+    try:
+        assert TG._dense_limit_gb() == 1e-9 and TG._dense_limit_gb(4.0) == 4.0
+    finally:
+        del os.environ[TG.DENSE_EIGEN_ENV]
+    assert TG._dense_limit_gb() == TG.DENSE_EIGEN_MAX_GB

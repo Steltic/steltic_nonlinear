@@ -113,9 +113,11 @@ def run(args):
     else:
         latx = [c for c in cases if "EX+t+" in c[0] and c[1] > 1.0][0][4]
         laty = [c for c in cases if "EY+t+" in c[0] and c[1] > 1.0][0][4]
-        gate = transfer_gate.run(nm, cfg, latx, laty, tol=args.gate_tol)
+        gate = transfer_gate.run(nm, cfg, latx, laty, tol=args.gate_tol, max_dense_gb=args.dense_eigen_gb)
     for r in gate["rows"]:
         print("   gate %-36s steltic %.4f gmnia %.4f ratio %.3f %s" % (r["quantity"], r["steltic"], r["gmnia"], r["ratio"], "ok" if r["ok"] else "FAIL"))
+    if gate.get("singular"):                          # NL-R2-23: a singular model is never analysed, --force or not
+        print("!! transfer gate FAILED --", gate["hint"]); sys.exit(2)
     if not gate["ok"] and not args.force:
         print("!! transfer gate FAILED --", gate["hint"]); sys.exit(2)
 
@@ -347,6 +349,9 @@ def main(argv=None):
     r.add_argument("--fast", action="store_true", help="dispBeamColumn instead of forceBeamColumn")
     r.add_argument("--sensitivity", action="store_true")
     r.add_argument("--gate-tol", type=float, default=0.05)
+    r.add_argument("--dense-eigen-gb", type=float, default=None,
+                   help="memory limit (GB) for the dense eigen fallback of the transfer gate when ARPACK fails "
+                        "(default env STELTIC_DDM_DENSE_EIGEN_GB or 2.0); above it the gate fails: singular stiffness")
     r.add_argument("--risk-category", default=None, choices=["I", "II", "III", "IV"], help="ASCE 7 Risk Category (default: from cfg / Ie)")
     r.add_argument("--force", action="store_true", help="continue even if the transfer / CFS fidelity gate fails")
     r.add_argument("--rigid-end-offset", type=float, default=None, metavar="FRAC",
