@@ -95,6 +95,33 @@ def fig_brace(results, label):
     return _png(fig)
 
 
+def window_cell(w):
+    """NL-R2-18: one record's analysed window and its spectral check, for the suite tables."""
+    if not w:
+        return "0 – 99.5% Arias + free vibration (not checked: results predate NL-R2-18)"
+    c = w.get("check") or {}
+    chk = ("not checked" if c.get("ok") is None else "Δ ≤ %.1f%% %s (%s, T %.2f s)%s" % (
+        100 * (c.get("max_change") or 0), "ok" if c.get("ok") else "<b>&gt; %.0f%%</b>" % (100 * (c.get("tol") or 0.02)), c.get("at"), c.get("T") or 0,
+        (" — widened %d step(s)%s" % (c["n_widened"], " to the full record" if c.get("full_record") else "")) if c.get("n_widened") else ""))
+    trim = (" · trimmed (%s, saved %.1f s)" % (w.get("mode"), w.get("saved_s") or 0.0)) if w.get("trimmed") else (" · %s" % w["note"] if w.get("note") else "")
+    return "%.2f – %.2f of %.1f + %.0f free vib.%s · %s" % (w["t_start"], w["t_sig"], w.get("record_s") or 0.0, w.get("free_vib_s") or 0.0, trim, chk)
+
+
+def window_text(t):
+    """NL-R2-18: the suite-level disclosure of the record windows (report section 3, 16.1.4 document)."""
+    head = ("<b>Record trimming %s</b> (%s end%s): each record is integrated over %s %s of the Arias intensity of both components together, "
+            "starting / stopping at a zero crossing with a %.1f s cosine taper outside that window, then %.0f s of free vibration (zero ground motion)."
+            % (t["mode"].upper(), t["ends"], "s" if t["ends"] == "both" else "", "the window holding", {"standard": "0.1–99.5 %", "aggressive": "0.5–99 %"}.get(t["mode"], ""),
+               t.get("taper_s") or 0.0, t.get("free_vib_s") or 0.0)) if t.get("mode") not in (None, "off") else \
+           ("<b>Record window (no trimming):</b> each record is integrated from its start to the 99.5 %% Arias point of both components plus %.0f s." % (t.get("free_vib_s") or 0.0))
+    return ("%s The end cut%s is checked: the 5 %%-damped spectra of the motion the analysis sees, up to the end of the analysis (both components and the maximum direction), "
+            "stay within %.0f %% of the spectra of the full record followed by %.0f s of free vibration over the scaling range %.2f–%.2f s (16.2.3.2), or the window is widened step by "
+            "step back to the full record and the free vibration lengthened (%d record(s) widened, %d still outside). Scale factors are those of the full records. Integrated %.0f s in all%s. Histories are plotted on the record's own time axis. "
+            "Disclosed as a modification of the motions under 16.1.4."
+            % (head, " (and any trimmed head)" if t.get("mode") not in (None, "off") else "", 100 * t["tol"], t.get("fv_ref_s", 30.0), t["period_range"][0], t["period_range"][1], t["n_widened"], t["n_check_failed"],
+               t["integrated_s"], (" against %.0f s untrimmed (%.0f s, %.0f %% saved)" % (t["untrimmed_s"], t["saved_s"], 100 * t["saved_s"] / max(t["untrimmed_s"], 1e-9))) if t.get("mode") not in (None, "off") else ""))
+
+
 def _gravity_text(ch16, grav_table, grav_split, acc):
     nlc = acc.get("no_live_case") or {}
     req = nlc.get("required", grav_split.get("no_live_case_needed"))
@@ -223,11 +250,12 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append("<h2>3. Ground motions (16.2)</h2>")
     H.append('<figure><img src="%s"><figcaption>Selected pairs (grey), suite mean of the maximum-direction spectra (blue) vs the MCE<sub>R</sub> target and its 90%% floor over the scaling range. Suite mean / target: min %.3f, mean %.3f %s. Orientation check 16.2.4 (±10%%): X %.2f, Y %.2f %s.</figcaption></figure>'
              % (fig_scaling(gm), gm["min_ratio_in_range"], gm["mean_ratio_in_range"], _tag(gm["passes_90pct"]), gm["orientation_dev_x"], gm["orientation_dev_y"], _tag(gm["orientation_ok"])))
-    H.append("<table><tr><th>#</th><th>Earthquake · station</th><th>M</th><th>R<sub>rup</sub> km</th><th>Site</th><th>dt (s)</th><th>duration (s)</th><th>scale factor</th><th>comp → X</th><th>shape misfit σ<sub>ln</sub></th><th>pulse</th></tr>")
+    H.append("<table><tr><th>#</th><th>Earthquake · station</th><th>M</th><th>R<sub>rup</sub> km</th><th>Site</th><th>dt (s)</th><th>duration (s)</th><th>scale factor</th><th>comp → X</th><th>shape misfit σ<sub>ln</sub></th><th>pulse</th><th>analysed window (s) · spectral check</th></tr>")
     _f = lambda v, fmt: (fmt % v) if isinstance(v, (int, float)) else "—"
     for i, r in enumerate(gm["selected"]):
-        H.append("<tr><td>%d</td><td>%s · %s</td><td>%s</td><td>%s</td><td>%s</td><td>%.4g</td><td>%.1f</td><td>%.2f</td><td>%s</td><td>%.2f</td><td>%s</td></tr>"
-                 % (i + 1, r.get("earthquake") or r["id"], r.get("station") or "", _f(r.get("M"), "%.1f"), _f(r.get("r_rup_km"), "%.1f"), r.get("site_class") or "—", r["dt"], r["duration_s"], r["sf"], r["comp1" if r["x_comp"] == 1 else "comp2"], r["shape_misfit"], "yes" if r.get("pulse") else ""))
+        H.append("<tr><td>%d</td><td>%s · %s</td><td>%s</td><td>%s</td><td>%s</td><td>%.4g</td><td>%.1f</td><td>%.2f</td><td>%s</td><td>%.2f</td><td>%s</td><td>%s</td></tr>"
+                 % (i + 1, r.get("earthquake") or r["id"], r.get("station") or "", _f(r.get("M"), "%.1f"), _f(r.get("r_rup_km"), "%.1f"), r.get("site_class") or "—", r["dt"], r["duration_s"], r["sf"], r["comp1" if r["x_comp"] == 1 else "comp2"], r["shape_misfit"], "yes" if r.get("pulse") else "",
+                    window_cell(r.get("window"))))
     sets = "; ".join("%s (%s pairs)" % (x.get("set"), x.get("n")) for x in gm.get("sets") or []) or "FEMA P-695 far-field set (22 pairs, PEER NGA as distributed by ATC-63)"
     if gm.get("deagg"):
         d = gm["deagg"]
@@ -241,6 +269,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     sfb = gm.get("sf_bounds")
     sf_txt = (" Scale factors bounded to %.2f–%.2f before scaling%s." % (sfb[0], sfb[1], (" — <b>%s</b>" % gm["sf_note"]) if gm.get("sf_note") else "")) if sfb else " Scale factors <b>unbounded</b> (no --sf-bounds)."
     H.append("</table><p>Record set: %s. One amplitude factor per pair; no spectral matching.%s %s</p>" % (sets, sf_txt, site_note))
+    if gm.get("record_window"):
+        H.append('<div class="note">%s</div>' % window_text(gm["record_window"]))
 
     H.append("<h2>4. Response per record</h2><table><tr><th>Record</th><th>SF</th><th>status</th><th>peak story drift</th><th>peak roof X / Y (in)</th><th>residual drift</th><th>unacceptable?</th><th>steps · s</th></tr>")
     st_lab = {"completed": "completed", "nonconvergence": "<span class='ng'>NO — failed to converge</span>", "incomplete": "<span class='warn'>incomplete (time-out)</span>"}
@@ -370,7 +400,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
               records_not_run=acc.get("records_not_run") or [], no_live_case=acc.get("no_live_case") or {},
               results=[{"converged": r.get("converged"), "status": r.get("status") or ("completed" if r.get("converged") else ("incomplete" if str(r.get("reason", "")).startswith("crawl abort") else "nonconvergence")),
                         "label": r.get("label"), "record": r.get("record"), "reason": r.get("reason"), "retry": r.get("retry"),
-                        "drift_points": r.get("drift_points"), "peak_drift_at": r.get("peak_drift_at"), "algorithmic_damping": r.get("algorithmic_damping")} for r in results])
+                        "drift_points": r.get("drift_points"), "peak_drift_at": r.get("peak_drift_at"), "algorithmic_damping": r.get("algorithmic_damping"),
+                        "window": r.get("window"), "budget": r.get("budget")} for r in results])
     with open(os.path.join(outdir, "nlrha_package.json"), "w", encoding="utf-8") as f:
         json.dump(pk, f, indent=1, default=str)
     return os.path.join(outdir, "nlrha_report.html")

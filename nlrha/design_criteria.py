@@ -207,6 +207,7 @@ class Section:
 
 
 def content(g, project=None, engineer=None, reviewer=None):
+    from . import report as RP                                     # NL-R2-18: the record-window disclosure texts
     pkg, b, ch16, prm, rc = g["pkg"], g["pkg"].basis, g["ch16"], g["prm"], g["rc"]
     calc = g["calc"]; cd = calc.get("capacity_design") or {}
     rcs = rc.replace("_", "/")
@@ -270,12 +271,16 @@ def content(g, project=None, engineer=None, reviewer=None):
          ["Scaling", ch16["amplitude_scaling"]["rule"] + ((" -- suite mean / target min %.3f, factors %.2f-%.2f" % (gm["min_ratio_in_range"], min(r["sf"] for r in gm["selected"]), max(r["sf"] for r in gm["selected"]))) if gm else ""), ch16["amplitude_scaling"]["clause"]],
          ["Spectral matching", "not used", ch16["spectral_matching"]["clause"]],
          ["Orientation", ch16["orientation"]["rule"] + ((" -- deviations X %.2f, Y %.2f" % (gm["orientation_dev_x"], gm["orientation_dev_y"])) if gm else ""), ch16["orientation"]["clause"]],
-         ["Pulse-type share", ("%.0f%% of the suite (%d records)" % (100 * gm.get("pulse_fraction", 0), gm.get("n_pulse", 0))) if gm and gm.get("pulse_fraction") else "none required (not near-fault) [confirm]", "16.2.2 / 16.2.4"]])
+         ["Pulse-type share", ("%.0f%% of the suite (%d records)" % (100 * gm.get("pulse_fraction", 0), gm.get("n_pulse", 0))) if gm and gm.get("pulse_fraction") else "none required (not near-fault) [confirm]", "16.2.2 / 16.2.4"],
+         # NL-R2-18: the record window (end cut, optional trimming) is a modification of the motions -> disclosed here
+         ["Record window / trimming", re.sub(r"<[^>]+>", "", RP.window_text(gm["record_window"])) if gm and gm.get("record_window") else
+          "each record from its start to the 99.5 % Arias point plus free vibration [end cut not yet checked: re-run `nlrha scale`]", "16.1.4 / 16.2.3.2"]])
     if gm:
-        rows = [["#", "Earthquake · station", "M", "R_rup (km)", "scale factor", "component to X", "pulse"]]
+        rows = [["#", "Earthquake · station", "M", "R_rup (km)", "scale factor", "component to X", "pulse", "analysed window (s) · spectral check"]]
         for i, r in enumerate(gm["selected"]):
             rows.append([str(i + 1), "%s · %s" % (r.get("earthquake") or r["id"], r.get("station") or ""), ("%.1f" % r["M"]) if isinstance(r.get("M"), (int, float)) else "-", ("%.1f" % r["r_rup_km"]) if isinstance(r.get("r_rup_km"), (int, float)) else "-",
-                         "%.2f" % r["sf"], str(r["comp1"] if r["x_comp"] == 1 else r["comp2"]), "yes" if r.get("pulse") else ""])
+                         "%.2f" % r["sf"], str(r["comp1"] if r["x_comp"] == 1 else r["comp2"]), "yes" if r.get("pulse") else "",
+                         re.sub(r"<[^>]+>", "", RP.window_cell(r.get("window"))).replace("&gt;", ">")])
         s.p("Selected suite (from %s):" % ("nlrha/gm_scaling.json" if g["gm"] else "nlrha/nlrha_package.json")); s.t(rows)
     else:
         s.p("[The suite has not been selected yet: run `nlrha scale` (or the full analysis) and re-issue this document; the selected records, factors and orientation are then tabulated here.]")
@@ -319,7 +324,7 @@ def content(g, project=None, engineer=None, reviewer=None):
          ["P-delta", ch16["p_delta"]["rule"], ch16["p_delta"]["clause"]],
          ["Torsion", "inherent eccentricity of the package masses; accidental torsion is NOT applied by the analysis (16.3.4 requires it where a Type 1 horizontal irregularity exists) [engineer to confirm]", ch16["torsion"]["clause"]],
          ["Damping", "%.1f%% Rayleigh on the elastic elements and mass at T_1 and 0.2 T_1 (cap %.1f%%)" % (100 * nl_damp.get("xi_used", 0.025), 100 * nl_damp.get("xi_max", 0.025)), ch16["damping"]["clause"]],
-         ["Integration", "%s, dt %s s, adaptive sub-stepping on non-convergence, free vibration after the record" % (str(nl_damp.get("integrator", "hht")).upper(), nl_damp.get("dt_s", 0.01)), "analysis settings"],
+         ["Integration", "%s, dt %s s, adaptive sub-stepping on non-convergence, free vibration after the record window (section 4)" % (str(nl_damp.get("integrator", "hht")).upper(), nl_damp.get("dt_s", 0.01)), "analysis settings"],
          ["Diaphragms / foundations", "%s; column bases as replayed from the package model (%s); no soil-structure interaction" % (("%d rigid diaphragm(s) as in the linear model" % len(pkg.model.diaphragms)) if pkg.model.diaphragms else "no rigid-diaphragm constraint in the package model", _base_text(pkg)), "16.3.6 [engineer to confirm]"],
          ["Component parameters file", os.path.basename(g["prm_path"]) if g["prm_path"] else "repository template (UNVERIFIED)",
           ("verified -- %s" % (prm.get("source") or "")[:200]) if prm_ok else ("UNVERIFIED -- values not supplied by the user: %s" % unv_txt)]])

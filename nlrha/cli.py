@@ -171,9 +171,40 @@ def cmd_scale(args):
     sets, recs = _library(args)
     tgt, deagg, pf, hz = _target(args, pkg)
     gm, chosen = GM.select_and_scale(recs, pkg.basis.SDS, pkg.basis.SD1, TL, lo, hi, n_select=args.n, target=tgt, deagg=deagg, pulse_fraction=pf, sf_bounds=_sf_bounds(args), sets=sets)
+    _attach_windows(gm, chosen, 5.0, args.trim_records, args.trim_ends)              # NL-R2-18
     out = args.out or os.path.join(str(pkg.root), "nlrha"); os.makedirs(out, exist_ok=True)
     json.dump(dict(modal=modal, gm={k: v for k, v in gm.items()}), open(os.path.join(out, "gm_scaling.json"), "w"), indent=1, default=str)
     print("wrote", os.path.join(out, "gm_scaling.json"))
+
+
+def _attach_windows(gm, chosen, free_vib_s=5.0, mode="off", ends="both"):
+    """NL-R2-18: the analysed window of every selected record (record_window: checked end cut, optional trimming),
+    checked against the spectra that set its scale factor over the scaling period range. Stored on the record (the
+    run uses it) and in gm (report, package, 16.1.4 document). Returns the suite summary."""
+    import numpy as np
+    from . import run as RN, ground_motions as GM
+    P = np.asarray(gm["periods"], float); m = (P >= gm["T_lower"] - 1e-9) & (P <= gm["T_upper"] + 1e-9)
+    tot = dict(mode=mode, ends=ends if mode != "off" else "none", tol=RN.SPECTRAL_TOL, taper_s=RN.TAPER_S if mode != "off" else 0.0,
+               free_vib_s=free_vib_s, fv_ref_s=RN.FV_REF_S, period_range=[gm["T_lower"], gm["T_upper"]], integrated_s=0.0, untrimmed_s=0.0, record_s=0.0,
+               n_widened=0, n_check_failed=0, n_trimmed=0)
+    for r, g in zip(chosen, gm["selected"]):
+        nz = int(round(RN.FV_REF_S / r["dt"]))                          # reference: full record + free vibration
+        ref = GM.pair_spectra(np.concatenate([r["a1"], np.zeros(nz)]), np.concatenate([r["a2"], np.zeros(nz)]), r["dt"], P[m])
+        w = RN.record_window(r["a1"], r["a2"], r["dt"], free_vib_s, periods=P[m], ref=ref, mode=mode, ends=ends)
+        r["window"] = w; g["window"] = w
+        tot["integrated_s"] += w["t_end_rel"]; tot["untrimmed_s"] += w["untrimmed_s"]; tot["record_s"] += w["record_s"]
+        tot["n_widened"] += int(bool((w.get("check") or {}).get("n_widened"))); tot["n_check_failed"] += int((w.get("check") or {}).get("ok") is False)
+        tot["n_trimmed"] += int(bool(w["trimmed"]))
+        c = w.get("check") or {}
+        print("[window] %-34s %6.2f-%6.2f s of %6.1f s (+%.0f s free vib.)%s; spectra vs full record max %.1f%% (%s, T %.2f s)%s"
+              % (("%s %s" % (r.get("earthquake") or r["id"], r.get("station") or ""))[:34], w["t_start"], w["t_sig"], w["record_s"], w["free_vib_s"],
+                 " trimmed" if w["trimmed"] else "", 100 * (c.get("max_change") or 0), c.get("at"), c.get("T") or 0,
+                 (" -- widened %d step(s)" % c["n_widened"]) if c.get("n_widened") else ""))
+    tot["saved_s"] = tot["untrimmed_s"] - tot["integrated_s"]
+    gm["record_window"] = tot
+    print("[window] record trimming %s%s: %.0f s integrated (untrimmed %.0f s, saved %.0f s); %d record(s) widened by the %.0f%% spectral check"
+          % (mode, (" (%s)" % ends) if mode != "off" else "", tot["integrated_s"], tot["untrimmed_s"], tot["saved_s"], tot["n_widened"], 100 * RN.SPECTRAL_TOL))
+    return tot
 
 
 def _fmt_pct(v, nd=2):
@@ -329,6 +360,7 @@ def cmd_run(args):
     sets, recs = _library(args)
     tgt, deagg, pf, hz = _target(args, pkg)
     gm, chosen = GM.select_and_scale(recs, pkg.basis.SDS, pkg.basis.SD1, TL, lo, hi, n_select=args.n, target=tgt, deagg=deagg, pulse_fraction=pf, sf_bounds=_sf_bounds(args), sets=sets)
+    _attach_windows(gm, chosen, args.free_vib, getattr(args, "trim_records", "off") or "off", getattr(args, "trim_ends", "both") or "both")   # NL-R2-18
     sel = range(1, len(chosen) + 1)
     only = getattr(args, "only_records", None)
     if only:
@@ -427,6 +459,11 @@ def main(argv=None):
             p.add_argument("--cs-period", type=float, help="which conditioning period of the site hazard to use with --target cs (default: the first)")
             p.add_argument("--pulse-fraction", type=float, default=None, help="share of the suite reserved for pulse-type records (default: the near-fault screen of the site hazard, else 0)")
             p.add_argument("--sf-bounds", help="keep only records whose shape-fit scale factor lies in lo-hi (default 0.25-4; 'none' = unbounded)")
+            p.add_argument("--trim-records", default="off", choices=["off", "standard", "aggressive"],
+                           help="NL-R2-18 optional record trimming (default off): standard = 0.1-99.5%% Arias, aggressive = 0.5-99%%, both components "
+                                "together; zero-crossing ends with a 0.5 s cosine taper; any record whose spectra over the scaling range change by more than "
+                                "2%% is widened back towards the full record; scale factors stay those of the full record; disclosed per record")
+            p.add_argument("--trim-ends", default="both", choices=["both", "head", "tail"], help="which quiet end(s) --trim-records trims (default both)")
         if name == "hazard":
             p.add_argument("--lat", type=float, required=True); p.add_argument("--lon", type=float, required=True)
             p.add_argument("--vs30", type=float, help="Vs30 for the disaggregation (default: the USGS site-class value)")
