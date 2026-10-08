@@ -154,12 +154,12 @@ def test_dry_run_nlrha_product_ladder(tmp_path):
     (tmp_path / "fake_job").mkdir()
     rc = main(a)
     assert rc == 0
-    sc = tmp_path / "out" / "mesh_convergence_scorecard_nlrha.json"
+    sc = tmp_path / "out" / "mesh_convergence_DRYRUN_scorecard_nlrha.json"         # NL-R2-L1: dry-run names
     doc = json.loads(sc.read_text())
-    assert doc["extra"]["nlrha_method_ladder"] is True
+    assert doc["extra"]["nlrha_method_ladder"] is True and doc["status"] == "dry-run"
     assert doc["extra"]["early_abort_nc"] == 2
-    assert (tmp_path / "out" / "mesh_convergence_scorecard_nlrha.md").exists()
-    assert (tmp_path / "out" / "mesh_convergence_summary.md").exists()
+    assert (tmp_path / "out" / "mesh_convergence_DRYRUN_scorecard_nlrha.md").exists()
+    assert (tmp_path / "out" / "mesh_convergence_DRYRUN_summary.md").exists()
 
 
 def test_dry_run_nsp_fibre(tmp_path):
@@ -184,5 +184,5 @@ def test_dry_run_nsp_fibre(tmp_path):
     )
     (tmp_path / "fake_job").mkdir()
     assert main(a) == 0
-    doc = json.loads((tmp_path / "out" / "mesh_convergence_scorecard_nsp.json").read_text())
-    assert doc["method"] == "fibre"
+    doc = json.loads((tmp_path / "out" / "mesh_convergence_DRYRUN_scorecard_nsp.json").read_text())
+    assert doc["method"] == "fibre" and doc["status"] == "dry-run"

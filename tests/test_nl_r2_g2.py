@@ -169,3 +169,21 @@ def test_brb_member_inputs_still_take_precedence():
     d = HM.brb_package_data(calc, dict(brb=dict(Asc={"BRB-Asc10.5": 10.5}, Fysc=44.0, Ry=1.0, beta=1.1, omega=1.45)))
     s = HM.brb_spec("BRB-Asc10.5", 390.0, HM.load_params(None), pkg_data=d)
     assert s.Fysc_ksi == 42.0 and s.omega == 1.45 and any("members[b].inputs.Fysc_ksi" in f for f in s.flags)
+
+
+# --------------------------------------------------------------------------- NL-R2-L1: mesh-converge --dry-run
+def test_mesh_converge_dry_run_is_labelled_and_kept_apart(tmp_path, capsys):
+    from snl import cli as CLI
+    job = tmp_path / "job"; job.mkdir()
+    assert CLI.main(["mesh-converge", str(job), "--analyses", "nsp", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "status= dry-run" in out and "status= converged" not in out and "synthetic metrics" in out
+    assert not (job / "mesh_convergence").exists()                   # nothing under the real result folder
+    d = job / "mesh_convergence_dryrun"
+    names = sorted(p.name for p in d.iterdir())
+    assert names and all("DRYRUN" in n for n in names), names         # no rung folders, no real-looking file names
+    doc = json.loads((d / "mesh_convergence_DRYRUN_scorecard_nsp.json").read_text())
+    assert doc["status"] == "dry-run" and doc["dry_run"] and doc["rehearsal_status"]
+    summ = json.loads((d / "mesh_convergence_DRYRUN_summary.json").read_text())
+    assert summ["dry_run"] and summ["analyses"]["nsp"]["ladder"]["status"] == "dry-run"
+    assert "DRY RUN" in (d / "mesh_convergence_DRYRUN_summary.md").read_text()

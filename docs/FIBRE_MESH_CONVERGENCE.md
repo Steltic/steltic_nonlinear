@@ -87,6 +87,8 @@ python -m mesh_convergence --package /path/to/job --analyses nlrha --dry-run
 ```
 
 Each analysis writes `mesh_convergence_scorecard_<analysis>.{json,md}` plus `mesh_convergence_summary.{json,md}`.
+A `--dry-run` (synthetic metrics, no analysis) writes `mesh_convergence_DRYRUN_*` files instead (default folder
+`<job>/mesh_convergence_dryrun`), with status `dry-run` and the stop rule's answer as `rehearsal_status` (NL-R2-L1).
 
 ## Env knobs
 
