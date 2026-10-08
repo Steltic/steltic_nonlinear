@@ -1475,7 +1475,7 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
     progress = _Progress(direction, H, progress_s, verbose)
     progress.t0 = t_entry                                       # elapsed counts gravity + eigen too
     stop_reason = "reached max roof drift %.1f%% of H" % (100 * max_roof_drift)
-    while rec["u"][-1] < umax:
+    while rec["u"][-1] < umax * (1.0 - 1e-6):                  # relative tolerance: a step landing on the cap within round-off stops there
         if not _try_analyze(an, dU, roof, dof):
             halvings += 1; dU /= 2.0
             progress("push", step, rec["u"][-1], rec["V"][-1], Vmax, "not converged: step halved (%d), dU %.3g in" % (halvings, dU))
