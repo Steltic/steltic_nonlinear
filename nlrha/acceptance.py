@@ -669,8 +669,16 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
             if info["qualifies"]:
                 x = _exc2_column_check(info["Emc_c"], info["Emc_t"], Qns, cap, frac_D, SMS, (snow_col or {}).get(c, 0.0))
                 info.update(x)
-                chk = dict(chk, DC=x["DC"], governing=x["governing"] + " [default 16.4-1/16.4-2 + H1-1: %.2f]" % chk["DC_default"],
-                           fc_basis="16.4.2.1 Exception 2, Eqs. (16.4-3)/(16.4-4)")
+                # An exception RELAXES the requirement ("need only satisfy"): a qualifying column is acceptable when it meets
+                # EITHER the default equations or Eqs. (16.4-3)/(16.4-4). Exception 2 is used only where it gives the
+                # lower D/C; where the full-mechanism E_mc exceeds the analysed demand (e.g. braces far from their capacity in
+                # a low-seismic building) the default check governs and Exception 2 is reported for information.
+                info["used"] = bool(x["DC"] < chk["DC_default"])
+                if info["used"]:
+                    chk = dict(chk, DC=x["DC"], governing=x["governing"] + " [default 16.4-1/16.4-2 + H1-1: %.2f]" % chk["DC_default"],
+                               fc_basis="16.4.2.1 Exception 2, Eqs. (16.4-3)/(16.4-4)")
+                else:
+                    chk = dict(chk, governing=chk["governing"] + " [Exception 2 not needed: 16.4-3/16.4-4 D/C %.2f >= default]" % x["DC"])
             chk["exception_2"] = info
         if not chk["moments_recorded"] and not (chk.get("exception_2") or {}).get("qualifies"):
             moments_missing = True
@@ -759,7 +767,7 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
 
 def _exc2_summary(col_table, on, note, snow_basis):
     """NL-R2-16: which columns were accepted under 16.4.2.1 Exception 2, for the verdict, the report and the 16.1.4 document."""
-    used = [r for r in col_table if (r.get("exception_2") or {}).get("qualifies")]
+    used = [r for r in col_table if (r.get("exception_2") or {}).get("qualifies") and (r.get("exception_2") or {}).get("used", True)]
     return dict(clause="ASCE 7-22 16.4.2.1 Exception 2, Eqs. (16.4-3)/(16.4-4)", apply=bool(on), used=bool(used), n_columns=len(used),
                 members=["%s @ z %.0f in" % (r["section"], r["z_in"]) for r in used],
                 not_applied=["%s @ z %.0f in: %s" % (r["section"], r["z_in"], (r.get("exception_2") or {}).get("reason")) for r in col_table

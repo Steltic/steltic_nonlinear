@@ -312,7 +312,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
         if e2 is None:
             x2c = "not evaluated"
         elif e2.get("qualifies"):
-            x2c = ("%s / %s · %s / %s · <b>%s</b><br><small>E<sub>mc</sub>: %s (mechanism statics %s / %s, %s; suite max of the analysis %s / %s)%s</small>"
+            x2c = (("%s / %s · %s / %s · <b>%s</b>" + ("" if e2.get("used", True) else " <small>(not used: the default check gives the lower D/C)</small>") + "<br><small>E<sub>mc</sub>: %s (mechanism statics %s / %s, %s; suite max of the analysis %s / %s)%s</small>")
                    % (_num(e2.get("Emc_c"), "%.0f"), _num(e2.get("Emc_t"), "%.0f"), _num(e2.get("Pr_16_4_3"), "%.0f"), _num(e2.get("Tr_16_4_4"), "%.0f"), _num(e2.get("DC")),
                       e2.get("Emc_basis", ""), _num(e2.get("Emc_mech_c"), "%.0f"), _num(e2.get("Emc_mech_t"), "%.0f"), e2.get("governing_c") or "", _num(e2.get("analysed_max_c"), "%.0f"),
                       _num(e2.get("analysed_max_t"), "%.0f"), ("; 0.2S = %.0f kip" % (0.2 * e2["S_kip"])) if e2.get("S_kip") else ""))

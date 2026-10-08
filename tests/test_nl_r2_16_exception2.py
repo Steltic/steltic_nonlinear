@@ -186,3 +186,23 @@ def test_roof_snow_axial_of_the_column_lines(tmp_path):
     assert S[col[(360.0, 360.0, 0.0)]] == pytest.approx(30.0 * (3 * 225.0 + 225.0) / 1000.0)   # 3 L1 roof quarters + L2 corner
     assert "30.0 psf" in basis
     assert GR.column_snow_axial(_setback_pkg(tmp_path, "cfg = dict(L_floor=50.0)\n")) == ({}, "S = 0 (no roof snow load in cfg.py)")
+
+
+def test_exception_2_only_relaxes_the_default_check():
+    """An exception relaxes the requirement ("need only satisfy"): where the full-mechanism E_mc gives a HIGHER D/C than
+    the default equations (low-seismic braced frames far from their capacity -- Ex18 in round 2: default 0.78,
+    16.4-3 with the brace-capacity E_mc 2.38), the default check governs; Exception 2 is reported, not used."""
+    acc = _evaluate(_recs(Pc=210.0, Pt=190.0, M=10.0))                # analysed 10 kip, small moments: default << mechanism E_mc
+    n_not_used = 0
+    for r in acc["force_controlled_columns"]:
+        e = r.get("exception_2") or {}
+        assert r["DC"] <= r["DC_default"] + 1e-12
+        n_not_used += bool(e.get("qualifies") and not e.get("used"))
+        if e.get("qualifies"):
+            assert e["used"] == (e["DC"] < r["DC_default"])
+            assert r["DC"] == pytest.approx(min(e["DC"], r["DC_default"]))
+            assert r["fc_basis"].startswith("16.4.2.1 Exception 2") == e["used"]
+    used = acc["verdict"]["FC_exception_2"]["members"]
+    assert all(("%s @ z %.0f in" % (r["section"], r["z_in"]) in used) == bool((r.get("exception_2") or {}).get("used"))
+               for r in acc["force_controlled_columns"] if (r.get("exception_2") or {}).get("qualifies"))
+    assert n_not_used >= 1 and acc["verdict"]["worst_FC_DC"] == pytest.approx(acc["verdict"]["worst_FC_DC_default"])
