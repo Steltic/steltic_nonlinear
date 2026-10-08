@@ -339,7 +339,7 @@ def cmd_run(args):
     elif args.records:
         a, b = args.records.split("-"); sel = range(int(a), int(b) + 1)
     sample_brace = next((t for t, e in ((e["tag"], e) for e in pkg.model.elements) if pkg.schedule.get(t, {}).get("member") == "brace"), None)
-    budget = dict(step_budget_factor=float(getattr(args, "step_budget", 40.0)), wall_budget_s=float(getattr(args, "record_budget_s", 1800.0)))
+    budget = dict(step_budget_factor=float(getattr(args, "step_budget", 40.0)), wall_budget_s=_wall_budget_arg(getattr(args, "record_budget_s", None)))
     planned = [dict(record=chosen[i - 1]["id"], label="%s %s" % (chosen[i - 1].get("earthquake") or chosen[i - 1]["id"], chosen[i - 1].get("station") or "")) for i in sel]
     labels = [(q["record"], q["label"]) for q in planned]
     jobs = [(str(pkg.root), args.params, ch16, PG, loads, chosen[i - 1], args.xi, args.dt, args.free_vib, sample_brace, args.integrator, budget) for i in sel]
@@ -388,6 +388,19 @@ def _viewer(out, pkg, prm, ch16, gm, results, acc, modal, xi, pp):
         print("wrote", V3.write(out, pkg, prm, ch16, gm, results, acc, modal, xi, pushover_pkg=pp))
     except Exception as ex:                                            # noqa: BLE001
         print("[viewer] skipped:", ex)
+
+
+def _wall_budget_arg(v):
+    """--record-budget-s: None / 'auto' -> 'auto' (NL-R2-15: scaled to the record window and the model size; an explicit
+    SNL_NLRHA_RECORD_BUDGET_S still wins when the option is absent), a number -> fixed seconds, 0 -> unlimited."""
+    if v is None:
+        return None
+    if str(v).strip().lower() == "auto":
+        return "auto"
+    try:
+        return float(v)
+    except ValueError:
+        sys.exit("--record-budget-s must be 'auto' or a number of seconds (0 = unlimited), got %r" % v)
 
 
 def _sf_bounds(args):
@@ -440,8 +453,9 @@ def main(argv=None):
             p.add_argument("--no-live-case", default="auto", choices=["auto", "run", "skip"],
                            help="16.3.2 analysis without live load (1.0 D): auto = run it when the exception does not apply (default); run = always; "
                                 "skip = never (the verdict then cannot be ACCEPTABLE when the case is required)")
-            p.add_argument("--record-budget-s", type=float, default=1800.0, help="wall-time budget per record (s; 0 = none). A record that runs out is "
-                           "reported 'incomplete (time-out)', never as non-convergence")
+            p.add_argument("--record-budget-s", default=None, help="wall-time budget per record: 'auto' (default; NL-R2-15: max(4 h, 6e-4 s x "
+                           "nominal steps x model nodes), so it grows with the record length, the time step and the model) or seconds (0 = none). "
+                           "A record that runs out is reported 'incomplete (time-out)', never as non-convergence")
             p.add_argument("--step-budget", type=float, default=40.0, help="analyze-call budget per record, as a multiple of its nominal step count (0 = none)")
     lib = sub.add_parser("library", help="index a folder of PEER .AT2 / CSV record pairs (writes index.json; reads PEER _SearchResults.csv metadata when present)")
     lib.add_argument("folder")

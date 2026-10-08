@@ -134,21 +134,49 @@ def arias_window(a1, a2, dt, lo=0.001, hi=0.995):
     return i0 * dt, i1 * dt
 
 
+# NL-R2-15: the per-record wall-time budget scales with the record and the model instead of a fixed 1800 s (which cut
+# the 91.5-s Imperial Valley Delta record at t = 25-28 s on the braced Ex18 / Ex30 while every step was converging).
+# auto = max(4 h, BUDGET_S_PER_STEP_NODE x nominal steps (t_end / dt) x model nodes). Calibration (round 2 suites, 1 core,
+# dt 0.01, IMK models): completed records ran at 1.1e-4 (SMF Ex22, 887 nodes) to 1.9e-4 s per step per node (braced
+# Ex18, 1,846 nodes; Ex30, 1,374 nodes); 6e-4 is ~3x the slowest. Ex18 Delta (9,650 steps x 1,846 nodes = 3.0 h) -> the
+# 4 h floor; its dt/2 retry -> 5.9 h; a 5,000-node model on the same record -> 8 h.
+BUDGET_FLOOR_S = 4 * 3600.0
+BUDGET_S_PER_STEP_NODE = 6e-4
+
+
+def record_wall_budget(setting, t_end, dt_max, n_nodes):
+    """(seconds, basis) of the wall-time budget of one record (NL-R2-15). `setting`: None -> env
+    SNL_NLRHA_RECORD_BUDGET_S, else "auto"; "auto" -> scaled to the record window and the model size (above);
+    a number -> that many seconds; 0 -> unlimited (seconds 0)."""
+    import os
+    if setting is None:
+        setting = os.environ.get("SNL_NLRHA_RECORD_BUDGET_S") or "auto"
+    if str(setting).strip().lower() != "auto":
+        try:
+            s = float(setting)
+            return (s, "fixed %.0f s" % s) if s > 0 else (0.0, "unlimited")
+        except ValueError:
+            pass
+    n_nom = max(1, int(math.ceil(t_end / dt_max)))
+    scaled = BUDGET_S_PER_STEP_NODE * n_nom * max(1, int(n_nodes or 0))
+    s = max(BUDGET_FLOOR_S, scaled)
+    return s, ("auto: max(%.0f s, %.0e s x %d nominal steps x %d nodes = %.0f s)" % (BUDGET_FLOOR_S, BUDGET_S_PER_STEP_NODE, n_nom, int(n_nodes or 0), scaled))
+
+
 def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02, free_vib_s=5.0, rec_every=5, verbose=True,
                sample_brace=None, integrator="hht", step_budget_factor=40.0, wall_budget_s=None):
     """Build a fresh model and run one scaled pair. Returns peaks/histories for the acceptance module.
 
     Work budget (NL-17): at most `step_budget_factor` x the nominal number of steps of ops.analyze calls, and at most
-    `wall_budget_s` seconds (None -> env SNL_NLRHA_RECORD_BUDGET_S, else 1800 s; 0 = unlimited). Running out of budget
-    ends the record as status "incomplete" (not non-convergence)."""
-    import os
+    `wall_budget_s` seconds (NL-R2-15: None -> env SNL_NLRHA_RECORD_BUDGET_S, else "auto" = scaled to the record window
+    and the model size, see record_wall_budget; a number = fixed; 0 = unlimited). Running out of budget ends the record
+    as status "incomplete" (not non-convergence)."""
     t0 = time.time()
-    if wall_budget_s is None:
-        try:
-            wall_budget_s = float(os.environ.get("SNL_NLRHA_RECORD_BUDGET_S", "1800"))
-        except ValueError:
-            wall_budget_s = 1800.0
     hinges, stats, elastic = MD.build(pkg, prm, ch16, PG)
+    try:
+        n_nodes = len(ops.getNodeTags())
+    except Exception:                                               # noqa: BLE001
+        n_nodes = len(getattr(pkg.model, "nodes", {}) or {})
     ok = _apply_gravity(loads)
     if ok != 0:
         return dict(record=rec["id"], label=rec.get("earthquake") or rec["id"], sf=rec.get("sf"), x_comp=rec.get("x_comp"), converged=False,
@@ -194,6 +222,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     next_rec = rec_every * dt_max; next_hist = 5 * dt_max                 # time-based recording (the step is adaptive)
     t_start, t_sig = arias_window(ax, ay, dt_rec)
     t_end = t_sig + free_vib_s
+    wall_budget_s, budget_basis = record_wall_budget(wall_budget_s, t_end, dt_max, n_nodes)
     t = 0.0
     lv = NM.levels(pkg)
     H = [lv[0][1]] + [lv[i][1] - lv[i - 1][1] for i in range(1, len(lv))]
@@ -230,9 +259,9 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     while t < t_end - 1e-9:
         if (step_budget and calls >= step_budget) or (wall_budget_s and time.time() - t0 > wall_budget_s):
             status = "incomplete"
-            reason = ("incomplete (time-out) at t=%.2f of %.2f s: work budget exhausted (%d analyze calls, budget %s; %.0f s wall, budget %s); "
+            reason = ("incomplete (time-out) at t=%.2f of %.2f s: work budget exhausted (%d analyze calls, budget %s; %.0f s wall, budget %s [%s]); "
                       "all %d committed steps converged (smallest dt %.2e s) -- NOT a 16.4.1.1(1) non-convergence"
-                      % (t, t_end, calls, step_budget or "none", time.time() - t0, ("%.0f s" % wall_budget_s) if wall_budget_s else "none", step, dt_min_used))
+                      % (t, t_end, calls, step_budget or "none", time.time() - t0, ("%.0f s" % wall_budget_s) if wall_budget_s else "none", budget_basis, step, dt_min_used))
             break
         ok = _analyze(dt_cur)
         if ok != 0:
@@ -332,6 +361,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                        conc_c=v["conc_c"], conc_t=v["conc_t"]) for c, v in col_env.items()}
     out = dict(record=rec["id"], label="%s %s (%s)" % (rec.get("earthquake") or rec["id"], rec.get("station") or "", rec.get("year") or "?"), sf=sf, x_comp=rec["x_comp"],
                converged=(status == "completed"), status=status, reason=reason, steps=step, fails=fails, fallback_steps=n_fallback, analyze_calls=calls,
+               budget=dict(wall_s=wall_budget_s, basis=budget_basis, step_calls=step_budget, n_nodes=n_nodes),
                dt_min=dt_min_used, t_reached=t, t_end=t_end, seconds=time.time() - t0, t_window=(t_start, t_sig), T1x=modal["T1x"], T1y=modal["T1y"],
                damping=damp, algorithmic_damping=alg_damp, solver=dict(newton_disp_tol_in=tol, fallback="legacy ladder" if ladder else "none (Newton with dt halving)"), peak_story_drift=peak_drift.tolist(), peak_drift_at=peak_at, drift_method="aligned_points",
                drift_points=DR.summary(pts), peak_roof_in=peak_roof.tolist(), residual_drift=resid.tolist(),

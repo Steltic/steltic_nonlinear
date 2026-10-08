@@ -94,6 +94,7 @@ def cmd_run(a):
             if a.site_hazard: cmd += ["--site-hazard", os.path.abspath(a.site_hazard)]
             if a.pulse_fraction is not None: cmd += ["--pulse-fraction", str(a.pulse_fraction)]
             if a.sf_bounds: cmd += ["--sf-bounds", a.sf_bounds]
+            if a.record_budget_s is not None: cmd += ["--record-budget-s", str(a.record_budget_s)]     # NL-R2-15
             # Product rule 1: NLRHA starts ModIMK; fibre via mesh-converge ladder
             plast = a.plasticity if a.plasticity else "imk"
             nseg = a.member_nseg if a.member_nseg is not None else (4 if plast in ("fibre", "fiber") else 1)
@@ -178,6 +179,8 @@ def main(argv=None):
     r.add_argument("--site-hazard", help="site_hazard.json from `nlrha hazard` (default <job>/nlrha/site_hazard.json)")
     r.add_argument("--pulse-fraction", type=float, default=None, help="share of the suite reserved for pulse-type records")
     r.add_argument("--sf-bounds", help="NLRHA: keep records whose shape-fit scale factor lies in lo-hi, e.g. 0.25-4")
+    r.add_argument("--record-budget-s", default=None, help="NLRHA wall-time budget per record: 'auto' (default: scaled to the record and the model, "
+                                                            "at least 4 h) or seconds (0 = none); a record that runs out is 'incomplete (time-out)'")
     r.add_argument("--no-criteria", action="store_true", help="do not write the 16.1.4 design criteria draft at the end of the run")
     r.add_argument("--project", help="project name for the design criteria document"); r.add_argument("--engineer"); r.add_argument("--reviewer")
     fb = sub.add_parser("feedback", help="the three re-design loops back to HR Steel: plan (and optionally run) one, or promote a verified candidate")
