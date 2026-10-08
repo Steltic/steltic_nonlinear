@@ -209,7 +209,7 @@ def _example_job():
     return job
 
 
-@pytest.mark.parametrize("mode", ["not_evaluated", "legacy_empty", "target_not_reached", "evaluated", "stopped_numerically"])
+@pytest.mark.parametrize("mode", ["not_evaluated", "legacy_empty", "target_not_reached", "evaluated", "stopped_numerically", "partial"])
 def test_compare_bpon_never_turns_missing_into_pass(mode):
     from snl import compare
     job = _example_job()
@@ -227,8 +227,10 @@ def test_compare_bpon_never_turns_missing_into_pass(mode):
             elif mode == "stopped_numerically" and lvl == "BSE-2N":      # NL-R2-24
                 a.update(status="not_evaluated", reason="stopped_before_target", shortfall=dict(kind="numerical", V_end_over_Vmax=1.0),
                          groups=[], worst_DC=dict(IO=None, LS=None, CP=None), max_story_drift=None, story_drifts=[], census=[], roof_disp_in=None)
-            elif mode == "evaluated":
+            elif mode in ("evaluated", "partial"):
                 a.update(worst_DC=dict(IO=0.5, LS=0.2, CP=0.1))
+    if mode == "partial":                                          # NL-R2-14: Y still running
+        po["directions_pending"] = ["Y"]; po["complete"] = False
     json.dump(po, open(pj, "w"))
     compare.build(job)
     s = json.load(open(os.path.join(job, "snl_summary.json")))["pushover"]
@@ -237,6 +239,8 @@ def test_compare_bpon_never_turns_missing_into_pass(mode):
         assert s["bpon_ok"] is None and "NOT EVALUATED" in t and "both pass" not in t
     elif mode == "target_not_reached":
         assert s["bpon_ok"] is False and "target displacement not reached" in t
+    elif mode == "partial":
+        assert s["bpon_ok"] is None and s["directions_pending"] == ["Y"] and "PARTIAL pushover" in t and "both pass" not in t
     elif mode == "stopped_numerically":
         assert s["bpon_ok"] is None and s["bpon_stopped_before_target"] and "stopped numerically" in t
         assert "target displacement not reached" not in t and "both pass" not in t
@@ -398,6 +402,57 @@ def test_report_states_both_7321_tests(tmp_path):
     po = json.load(open(tmp_path / "pushover_package.json"))
     hm = po["directions"]["X"]["nsp"]["BSE-1N"]["higher_modes"]
     assert hm["ratios"] and hm["clause"] == "ASCE 41-23 7.3.2.1 item 2"
+
+
+def test_each_direction_written_when_done_and_progress_lines(tmp_path, capsys):
+    """NL-R2-14 (no time limit, user decision): X is on disk, marked partial, before Y starts -- a Y that hangs or dies
+    never loses X -- and the push prints progress lines (step, roof drift, V/Vmax, elapsed)."""
+    import time
+    from pushover import cli, nonlinear_model as NM
+    pkg = _portal(); prm = _fr_params()
+    loads, table = NM.gravity_loads(pkg, prm, verbose=False)
+    PG = NM.column_gravity_axials(pkg, loads)
+    seen = {}
+
+    def push(pkg_, hinges, d, loads_, prm_, **kw):
+        if d == "Y":                                       # X must already be written when Y starts
+            seen["po"] = json.load(open(tmp_path / "pushover_package.json"))
+            seen["html"] = (tmp_path / "pushover_report.html").read_text(encoding="utf-8")
+            seen["csv"] = (tmp_path / "curve_X.csv").exists()
+            raise KeyboardInterrupt("Y stopped by hand after 90 min")
+        kw.update(max_roof_drift=0.03, tail_strategies=())
+        return NM.pushover(pkg_, hinges, d, loads_, prm_, progress_s=0, **kw)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.run_directions(pkg, prm, ["X", "Y"], str(tmp_path), loads, table, PG, time.time(), site_class="D", push=push)
+    po = seen["po"]
+    assert list(po["directions"]) == ["X"] and po["directions_pending"] == ["Y"] and po["complete"] is False
+    assert po["directions"]["X"]["curve_u_in"] and seen["csv"] and "PARTIAL RESULTS" in seen["html"]
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if l.startswith("[pushover X push] step ")]
+    assert lines and all("roof u" in l and "drift" in l and "V/Vmax" in l and "elapsed" in l for l in lines)
+    assert ">> [X] results written" in out and "still to run: Y" in out and "[X NSP 7.3.2.1]" in out
+    # the finished X survives on disk; a later complete run clears the partial flag
+    assert json.load(open(tmp_path / "pushover_package.json"))["directions_pending"] == ["Y"]
+    capsys.readouterr()
+    runs, results, stats = cli.run_directions(pkg, prm, ["X"], str(tmp_path), loads, table, PG, time.time(), push=push)
+    po = json.load(open(tmp_path / "pushover_package.json"))
+    assert po["complete"] is True and po["directions_pending"] == [] and "PARTIAL" not in (tmp_path / "pushover_report.html").read_text(encoding="utf-8")
+
+
+def test_progress_line_throttled_by_wall_clock():
+    from pushover import nonlinear_model as NM
+    import io, contextlib
+    clock = [0.0]
+    p = NM._Progress("Y", 1200.0, every_s=60.0)
+    p._time = lambda: clock[0]; p.t0 = p.last = 0.0
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        for k in range(1, 400):                            # one step per second for 400 s -> 6 lines, not 400
+            clock[0] = float(k)
+            p("push", k, 0.01 * k, 900.0, 1000.0)
+    lines = buf.getvalue().splitlines()
+    assert len(lines) == 6 and lines[0] == "[pushover Y push] step 60  roof u 0.60 in (drift 0.05% H)  V/Vmax 0.900  elapsed 1m00s"
 
 
 # --------------------------------------------------------------------------- NL-11: memory stays flat

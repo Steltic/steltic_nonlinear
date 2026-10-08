@@ -251,16 +251,24 @@ def build(job, out_name="four_analyses.html", title=None):
                    [level_verdict(d["acceptance"].get("BSE-2N"), lv2) for d in dirs.values()]
         reached = not any((d["acceptance"].get(l) or {}).get("status") == "target_not_reached" for d in dirs.values() for l in ("BSE-1N", "BSE-2N"))
         bpon_ok = False if any(v is False for v in verdicts) else (None if any(v is None for v in verdicts) else True)
+        po_pending = list(po.get("directions_pending") or [])         # NL-R2-14: a partial package (a direction still running)
+        if po_pending and bpon_ok is True:
+            bpon_ok = None
         stopped = any((d["acceptance"].get(l) or {}).get("reason") == "stopped_before_target" for d in dirs.values() for l in ("BSE-1N", "BSE-2N"))
         bpon_word = {True: "both pass", False: ("NOT satisfied" if reached else "NOT ACCEPTABLE — target displacement not reached after strength loss (ASCE 41-23 7.4.3.3.1)"),
                      None: ("NOT EVALUATED — analysis stopped numerically before the target displacement (V still above 0.8 V<sub>max</sub>; "
                             "not evidence of collapse); no pass can be claimed" if stopped else
                             "NOT EVALUATED (no monitored beam/column components at δ<sub>t</sub>; no pass can be claimed)")}[bpon_ok]
+        if po_pending:
+            bpon_word = (("NOT EVALUATED" if bpon_ok is None else bpon_word)
+                         + " — PARTIAL pushover: direction %s still running, results so far only" % ", ".join(po_pending))
         # NL-R2-12: both tests of ASCE 41-23 7.3.2.1; a package without the higher-mode test is never "permitted"
         def _nst(n):
             return n.get("nsp_status") or ("not_permitted" if n.get("nsp_permitted") is False else "not_evaluated")
         _sts = [_nst(n) for d in dirs.values() for n in d["nsp"].values()]
         nsp_st = next((x for x in ("not_permitted", "not_evaluated", "permitted_with_LDP") if x in _sts), "permitted")
+        if po_pending and nsp_st == "permitted":
+            nsp_st = "not_evaluated"
         nsp_ok = nsp_st == "permitted"
         _hm = {k: (d["nsp"].get("BSE-1N") or {}).get("higher_modes") or {} for k, d in dirs.items()}
         _hm_txt = ", ".join(f"{k} {h['max_ratio']:.2f}" for k, h in _hm.items() if isinstance(h.get("max_ratio"), (int, float)))
@@ -285,7 +293,7 @@ def build(job, out_name="four_analyses.html", title=None):
                                    max_story_drift_BSE2N={k: d["acceptance"]["BSE-2N"]["max_story_drift"] for k, d in dirs.items()}, tail=tails, params_verified=po.get("params_verified"),
                                    bpon_status={k: {l: (d["acceptance"].get(l) or {}).get("status", "evaluated" if (d["acceptance"].get(l) or {}).get("groups") else "not_evaluated")
                                                     for l in ("BSE-1N", "BSE-2N")} for k, d in dirs.items()},
-                                   bpon_stopped_before_target=stopped,
+                                   bpon_stopped_before_target=stopped, directions_pending=po_pending,
                                    monitored=mon)
     else:
         po_v, po_vl, po_foot = "not run", "", "pushover/pushover_package.json not found in the job folder."

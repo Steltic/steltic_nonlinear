@@ -216,6 +216,8 @@ def results_verdict(ev: dict) -> dict:
         evaluated = sp.get("bpon_evaluated")
         if evaluated is False or "NOT EVALUATED" in status.upper() or sp.get("bpon_ok") is None or (po and not groups):
             notev.append("pushover BPON (%s) NOT EVALUATED -- %s" % ("/".join(sp.get("bpon_levels") or []),
+                         "the pushover is PARTIAL: direction %s not finished" % ", ".join(sp["directions_pending"])
+                         if sp.get("directions_pending") else
                          "the push stopped numerically before the target displacement (V above 0.8 Vmax; not a collapse)"
                          if sp.get("bpon_stopped_before_target") else "no component group was checked"))
         elif not sp.get("bpon_ok"):

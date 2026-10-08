@@ -145,8 +145,11 @@ def _tag(ok, txt_ok="PASS", txt_ng="NG"):
     return '<span class="ok">%s</span>' % txt_ok if ok else '<span class="ng">%s</span>' % txt_ng
 
 
-def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s):
+def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s, pending=()):
+    """`pending` (NL-R2-14): directions still running -- the files are written after each direction and marked
+    PARTIAL until the last one is in (pushover_package.json: complete / directions_pending)."""
     os.makedirs(outdir, exist_ok=True)
+    pending = list(pending or [])
     b = pkg.basis
     ts = datetime.datetime.now().isoformat(timespec="seconds")
     H = []
@@ -162,6 +165,11 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                  % ("the parameter file claims verified=true, but some values the model used are not user-verified."
                     if prm.get("_verified_claimed") else "the parameter file has verified=false.",
                     _which or "the whole file (no per-field record)", prm.get("source", "")))
+    if pending:
+        H.append('<div class="banner">PARTIAL RESULTS — direction%s %s still running; finished: %s. This report is rewritten when '
+                 'the remaining direction%s finish%s; no overall verdict can be drawn from it yet.</div>'
+                 % ("s" if len(pending) > 1 else "", ", ".join(pending), ", ".join(runs) or "none",
+                    "s" if len(pending) > 1 else "", "" if len(pending) > 1 else "es"))
     H.append('<div class="note"><b>Not for construction.</b> Prototype output produced by an AI-driven tool from an automatically converted '
              'analysis model. Every result must be independently checked and sealed by a licensed professional engineer.</div>')
     if hinge_stats and hinge_stats.get("model_warnings"):      # NL-02/03/10: element-model disclosures from the builder
@@ -356,7 +364,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
               params_unverified=prm.get("_used_unverified") or {}, params_verified_claimed=bool(prm.get("_verified_claimed")),
               risk_category=prm.get("_risk_category"), bpon_levels=list(_PF.bpon_levels(prm.get("_risk_category") or "I_II")),
               numerics=prm.get("numerics", {}),
-              basis=vars(b) | {"sources": b.sources}, hinge_stats=hinge_stats, gravity=gravity_table, directions={})
+              basis=vars(b) | {"sources": b.sources}, hinge_stats=hinge_stats, gravity=gravity_table, directions={},
+              complete=not pending, directions_pending=pending, elapsed_s=round(elapsed_s, 1))
     for d, run in runs.items():
         R = results[d]
         pk["directions"][d] = dict(T1=run["pattern"]["T1"], mode=run["pattern"]["mode"], meff_frac=run["pattern"]["meff_frac"],
@@ -365,6 +374,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                                    acceptance={k: {kk: vv for kk, vv in a.items()} for k, a in R["acc"].items()})
         with open(os.path.join(outdir, "curve_%s.csv" % d), "w") as f:
             f.write("roof_disp_in,base_shear_kip\n" + "\n".join("%.5f,%.3f" % (u, V) for u, V in zip(run["rec"]["u"], run["rec"]["V"])))
-    with open(os.path.join(outdir, "pushover_package.json"), "w", encoding="utf-8") as f:
+    tmp = os.path.join(outdir, "pushover_package.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(pk, f, indent=1, default=str)
+    os.replace(tmp, os.path.join(outdir, "pushover_package.json"))      # atomic: readers never see a half-written file
     return os.path.join(outdir, "pushover_report.html")

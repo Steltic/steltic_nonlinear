@@ -12,7 +12,7 @@ import argparse, json, os, shutil, sys, time
 
 
 def _run(args):
-    from . import package_reader as PR, nonlinear_model as NM, hinge_models as HM, postprocess as PP, report_supplement as RS
+    from . import package_reader as PR, nonlinear_model as NM, hinge_models as HM
     t0 = time.time()
     pkg = PR.load(args.package)
     print(PR.summary(pkg))
@@ -46,48 +46,77 @@ def _run(args):
     os.makedirs(out, exist_ok=True)
     loads, gtable = NM.gravity_loads(pkg, prm)
     PG = NM.column_gravity_axials(pkg, loads)
-    runs, results, stats = {}, {}, None
-    for d in args.dirs:
-        hinges, stats = NM.build_nonlinear(pkg, prm, PG)
-        run = NM.pushover(pkg, hinges, d, loads, prm, max_roof_drift=args.max_drift, gravity_table=gtable, tail_strategies=strategies)
-        nsp = {lvl: PP.nsp_target(run, pkg.basis, prm, f, args.site_class) for lvl, f in prm["nsp"]["hazard_levels"].items()}
-        p695 = PP.p695_factors(run, pkg.basis, nsp["BSE-1N"])
-        acc = {lvl: PF.augment(PP.acceptance(run, hinges, n["target_disp_in"], lvl), run, hinges) for lvl, n in nsp.items()}
-        runs[d] = run; results[d] = dict(nsp=nsp, p695=p695, acc=acc, hinges=hinges)
-        def _dc(v):
-            return "%.2f" % v if isinstance(v, (int, float)) else "n/a"
-        for lvl, n in nsp.items():
-            a = acc[lvl]
-            print("  [%s %s] Te=%.2fs Sa=%.3fg C0=%.2f C1=%.2f C2=%.2f -> dt=%.2f in (%.2f%% H) mu_str=%.2f mu_max=%.2f NSP=%s reached dt=%s reached1.5=%s | %s worst D/C IO %s LS %s CP %s (monitored %s)"
-                  % (d, lvl, n["Te"], n["Sa"], n["C0"], n["C1"], n["C2"], n["target_disp_in"], 100 * n["target_over_H"], n["mu_strength"],
-                     n["mu_max"], n["nsp_status"], n["reached_target"], n["reached_150pct"], a["status"].upper(),
-                     _dc(a["worst_DC"]["IO"]), _dc(a["worst_DC"]["LS"]), _dc(a["worst_DC"]["CP"]), a["monitored"]))
-            if a["status"] != PP.EVALUATED:
-                print("  !! [%s %s] %s" % (d, lvl, a["note"]))
-        hm = nsp["BSE-1N"]["higher_modes"]                         # NL-R2-12: same ratios at both hazard levels (same shape)
-        print("  [%s NSP 7.3.2.1] higher modes %s: %s; story shear ratio (90%%-mass CQC / mode 1) by story: %s -> %s"
-              % (d, hm["status"].upper(), hm.get("reason", ""), " ".join("%d:%.2f" % (r["story"], r["ratio"]) for r in hm["ratios"]) or "-",
-                 nsp["BSE-1N"]["nsp_status_text"]))
-        print("  [%s P-695] Vmax=%.0f kip Omega=%s (Om0=%s) mu_T=%.2f (%s)" % (d, p695["Vmax_kip"], "%.2f" % p695["Omega"] if p695["Omega"] else "n/a",
-                                                                          pkg.basis.Om0, p695["mu_T"], p695["delta_u_basis"]))
-        t = run["tail"]
-        print("  [%s TAIL] status=%s tried=%s max(theta_pl/a)=%.2f max(theta_pl/b)=%.2f -- %s" % (d, t["status"], [x["strategy"] for x in t["tried"]],
-              run["rec"]["a_ratio"][-1], run["rec"]["b_ratio"][-1], t["message"]))
-        if t["status"] in ("lower_bound", "max_drift"):
-            print("  >> ACTION FOR THE BOT: descending branch not captured. Ask the user before rung 3 "
-                  "(--post-cap-ratio 0.5 = modelling change) or a larger --max-drift; see the skill's descending-branch protocol.")
+    runs, results, stats = run_directions(pkg, prm, args.dirs, out, loads, gtable, PG, t0, max_drift=args.max_drift,
+                                          site_class=args.site_class, strategies=strategies,
+                                          params_src=args.params or os.path.join(os.path.dirname(__file__), "hinge_params.json"))
     if prm.get("_used_unverified"):
         from . import params_schema as PS
         print("!! component parameters NOT supplied/verified by the user (report banner): " + PS.unverified_text(prm))
-    html = RS.write(out, pkg, prm, runs, results, gtable, stats, time.time() - t0)
+    html = os.path.join(out, "pushover_report.html")             # NL-R2-14: written by run_directions after each direction
     try:
         from . import viewer3d as V3
         print("viewer", V3.write(out, pkg, prm, runs, results, stats))
     except Exception as ex:
         print("viewer failed:", ex)
-    _copy_params(args.params or os.path.join(os.path.dirname(__file__), "hinge_params.json"),
-                 os.path.join(out, "hinge_params_used.json"))
     print("wrote", html, "(%.0f s)" % (time.time() - t0))
+
+
+def _direction_results(pkg, prm, run, hinges, site_class):
+    from . import postprocess as PP, performance as PF
+    nsp = {lvl: PP.nsp_target(run, pkg.basis, prm, f, site_class) for lvl, f in prm["nsp"]["hazard_levels"].items()}
+    p695 = PP.p695_factors(run, pkg.basis, nsp["BSE-1N"])
+    acc = {lvl: PF.augment(PP.acceptance(run, hinges, n["target_disp_in"], lvl), run, hinges) for lvl, n in nsp.items()}
+    return dict(nsp=nsp, p695=p695, acc=acc, hinges=hinges)
+
+
+def _print_direction(pkg, d, run, R):
+    from . import postprocess as PP
+    nsp, p695, acc = R["nsp"], R["p695"], R["acc"]
+
+    def _dc(v):
+        return "%.2f" % v if isinstance(v, (int, float)) else "n/a"
+    for lvl, n in nsp.items():
+        a = acc[lvl]
+        print("  [%s %s] Te=%.2fs Sa=%.3fg C0=%.2f C1=%.2f C2=%.2f -> dt=%.2f in (%.2f%% H) mu_str=%.2f mu_max=%.2f NSP=%s reached dt=%s reached1.5=%s | %s worst D/C IO %s LS %s CP %s (monitored %s)"
+              % (d, lvl, n["Te"], n["Sa"], n["C0"], n["C1"], n["C2"], n["target_disp_in"], 100 * n["target_over_H"], n["mu_strength"],
+                 n["mu_max"], n["nsp_status"], n["reached_target"], n["reached_150pct"], a["status"].upper(),
+                 _dc(a["worst_DC"]["IO"]), _dc(a["worst_DC"]["LS"]), _dc(a["worst_DC"]["CP"]), a["monitored"]))
+        if a["status"] != PP.EVALUATED:
+            print("  !! [%s %s] %s" % (d, lvl, a["note"]))
+    hm = nsp["BSE-1N"]["higher_modes"]                             # NL-R2-12: same ratios at both hazard levels (same shape)
+    print("  [%s NSP 7.3.2.1] higher modes %s: %s; story shear ratio (90%%-mass CQC / mode 1) by story: %s -> %s"
+          % (d, hm["status"].upper(), hm.get("reason", ""), " ".join("%d:%.2f" % (r["story"], r["ratio"]) for r in hm["ratios"]) or "-",
+             nsp["BSE-1N"]["nsp_status_text"]))
+    print("  [%s P-695] Vmax=%.0f kip Omega=%s (Om0=%s) mu_T=%.2f (%s)" % (d, p695["Vmax_kip"], "%.2f" % p695["Omega"] if p695["Omega"] else "n/a",
+                                                                      pkg.basis.Om0, p695["mu_T"], p695["delta_u_basis"]))
+    t = run["tail"]
+    print("  [%s TAIL] status=%s tried=%s max(theta_pl/a)=%.2f max(theta_pl/b)=%.2f -- %s" % (d, t["status"], [x["strategy"] for x in t["tried"]],
+          run["rec"]["a_ratio"][-1], run["rec"]["b_ratio"][-1], t["message"]))
+    if t["status"] in ("lower_bound", "max_drift"):
+        print("  >> ACTION FOR THE BOT: descending branch not captured. Ask the user before rung 3 "
+              "(--post-cap-ratio 0.5 = modelling change) or a larger --max-drift; see the skill's descending-branch protocol.")
+
+
+def run_directions(pkg, prm, dirs, out, loads, gtable, PG, t0, max_drift=0.08, site_class="D", strategies=("fine_step", "arclength"),
+                   params_src=None, push=None):
+    """Push each direction in turn. NL-R2-14 (user decision: no time limit): as soon as a direction finishes, its
+    results are written (pushover_report.html, pushover_package.json, curve_<d>.csv) with the directions still to run
+    marked pending, so a long or stuck later direction never holds back -- or loses -- the finished ones."""
+    from . import nonlinear_model as NM, report_supplement as RS
+    push = push or NM.pushover
+    runs, results, stats = {}, {}, None
+    for i, d in enumerate(dirs):
+        hinges, stats = NM.build_nonlinear(pkg, prm, PG)
+        run = push(pkg, hinges, d, loads, prm, max_roof_drift=max_drift, gravity_table=gtable, tail_strategies=strategies)
+        runs[d] = run; results[d] = _direction_results(pkg, prm, run, hinges, site_class)
+        _print_direction(pkg, d, run, results[d])
+        pending = list(dirs[i + 1:])
+        html = RS.write(out, pkg, prm, runs, results, gtable, stats, time.time() - t0, pending=pending)
+        print(">> [%s] results written (%s, pushover_package.json, curve_%s.csv)%s -- %.0f s elapsed"
+              % (d, html, d, ("; still to run: %s" % ", ".join(pending)) if pending else "", time.time() - t0), flush=True)
+        if i == 0 and params_src:
+            _copy_params(params_src, os.path.join(out, "hinge_params_used.json"))
+    return runs, results, stats
 
 
 def _copy_params(src, dst):

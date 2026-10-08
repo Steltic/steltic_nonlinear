@@ -33,7 +33,7 @@ Scissors panel zones take HR's per-joint doubler plates (capacity_design.panel_z
 The push re-issues analysis objects only when they change (StaticAnalysis, NL-11).
 """
 from __future__ import annotations
-import math
+import math, time
 import openseespy.opensees as ops
 from . import hinge_models as HM
 from . import sections_db as SDB
@@ -1337,7 +1337,32 @@ def _try_analyze(an, dU, ctrl, dof, algos=ALGOS):
     return False
 
 
-def _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, verbose):
+class _Progress:
+    """NL-R2-14 (user decision: no time limit on the pushover): a progress line -- step, roof drift, V/Vmax, elapsed --
+    at most every `every_s` seconds of wall clock (0 = every step), so a long push is visibly alive."""
+
+    def __init__(self, direction, H, every_s=60.0, verbose=True):
+        import time as _t
+        self._time = _t.time
+        self.d, self.H, self.every, self.verbose = direction, H, float(every_s), verbose
+        self.t0 = self.last = self._time()
+        self.lines = 0
+
+    def elapsed(self):
+        e = int(self._time() - self.t0)
+        return "%dh%02dm%02ds" % (e // 3600, e % 3600 // 60, e % 60) if e >= 3600 else "%dm%02ds" % (e // 60, e % 60)
+
+    def __call__(self, phase, step, u, V, Vmax, extra="", force=False):
+        now = self._time()
+        if not self.verbose or (not force and now - self.last < self.every):
+            return
+        self.last = now; self.lines += 1
+        print("[pushover %s %s] step %d  roof u %.2f in (drift %.2f%% H)  V/Vmax %s  elapsed %s%s"
+              % (self.d, phase, step, u, 100.0 * u / self.H if self.H else 0.0,
+                 ("%.3f" % (V / Vmax)) if Vmax > 0 else "-", self.elapsed(), ("  " + extra) if extra else ""), flush=True)
+
+
+def _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, verbose, progress=None):
     """Descending-branch escalation ladder. Called only when the main push stopped on non-convergence
     BEFORE the curve fell to 0.8*Vmax. Each rung restarts from the last converged state:
       fine_step  -- displacement control with dU0/100 and a relaxed tolerance (1e-4, 200 iters)
@@ -1362,6 +1387,8 @@ def _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, ve
                     if ops.analyze(1) != 0:
                         fails += 1; dU /= 2.0; continue
                 fails = 0; steps += 1; snapshot()
+                if progress:
+                    progress("tail fine_step", steps, rec["u"][-1], rec["V"][-1], Vmax)
         elif strat == "arclength":
             s_arc = dU0 / 20.0; back = 0
             while not reached() and fails < 6 and steps < 4000 and back < 20:
@@ -1373,6 +1400,8 @@ def _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, ve
                         fails += 1; s_arc /= 2.0; continue
                 fails = 0; steps += 1
                 u_prev = rec["u"][-1]; snapshot()
+                if progress:
+                    progress("tail arclength", steps, rec["u"][-1], rec["V"][-1], Vmax)
                 back = back + 1 if rec["u"][-1] < u_prev else 0      # arc-length may walk backwards: give up if it keeps doing so
         else:
             continue
@@ -1388,7 +1417,7 @@ def _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, strategies, ve
 
 
 def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, verbose=True, gravity_table=None,
-             tail_strategies=("fine_step", "arclength")):
+             tail_strategies=("fine_step", "arclength"), progress_s=None):
     """Gravity (load control) then displacement-controlled push at the roof master in `direction`
     with the first-mode force pattern. Records the capacity curve, story displacements and every
     hinge's plastic rotation at each step. Stops at max_roof_drift*H, at 20% strength loss past the
@@ -1397,7 +1426,11 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
 
     The analysis objects are created once and changed only when the step or algorithm changes
     (StaticAnalysis, NL-11). `run["n_moment_frame_members"]` and `run["monitored"]` let the acceptance
-    check refuse to call a frame acceptable when none of its moment-frame members was evaluated (NL-01)."""
+    check refuse to call a frame acceptable when none of its moment-frame members was evaluated (NL-01).
+
+    NL-R2-14: no time limit (user decision); a progress line (step, roof drift, V/Vmax, elapsed) is printed at most
+    every `progress_s` seconds (default numerics.progress_interval_s, else 60 s; 0 = every step) when verbose."""
+    t_entry = time.time()
     ok = _apply_gravity(loads)
     if ok != 0:
         raise RuntimeError("gravity stage failed in nonlinear model (%d)" % ok)
@@ -1437,10 +1470,15 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
         rec["col_N"].append([ops.eleResponse(c, "localForce")[0] for c in cols])
     snapshot()
     dU, umax, Vmax, halvings, step = dU0, max_roof_drift * H, 0.0, 0, 0
+    if progress_s is None:
+        progress_s = float((prm.get("numerics") or {}).get("progress_interval_s", 60.0))
+    progress = _Progress(direction, H, progress_s, verbose)
+    progress.t0 = t_entry                                       # elapsed counts gravity + eigen too
     stop_reason = "reached max roof drift %.1f%% of H" % (100 * max_roof_drift)
     while rec["u"][-1] < umax:
         if not _try_analyze(an, dU, roof, dof):
             halvings += 1; dU /= 2.0
+            progress("push", step, rec["u"][-1], rec["V"][-1], Vmax, "not converged: step halved (%d), dU %.3g in" % (halvings, dU))
             if halvings > 8:
                 stop_reason = "solver non-convergence at roof u=%.2f in (after %d step halvings)" % (rec["u"][-1], halvings)
                 break
@@ -1448,13 +1486,15 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
         step += 1
         snapshot()
         Vmax = max(Vmax, rec["V"][-1])
+        progress("push", step, rec["u"][-1], rec["V"][-1], Vmax)
         if rec["V"][-1] < 0.2 * Vmax and rec["u"][-1] > 0.3 * umax:
             stop_reason = "strength dropped below 20%% of Vmax at u=%.2f in" % rec["u"][-1]; break
         if halvings and step % 20 == 0 and dU < dU0:
             dU *= 2.0                                        # try to speed back up
     if verbose:
-        print("[pushover %s] T1=%.3fs (mode %d, %.0f%% mass) steps=%d Vmax=%.0f kip u_end=%.2f in  -- %s  [analysis objects: %s]"
-              % (direction, pat["T1"], pat["mode"], 100 * pat["meff_frac"], step, Vmax, rec["u"][-1], stop_reason, an.issued))
+        print("[pushover %s] T1=%.3fs (mode %d, %.0f%% mass) steps=%d Vmax=%.0f kip u_end=%.2f in  -- %s  [analysis objects: %s] elapsed %s"
+              % (direction, pat["T1"], pat["mode"], 100 * pat["meff_frac"], step, Vmax, rec["u"][-1], stop_reason, an.issued,
+                 progress.elapsed()), flush=True)
     captured_main = rec["V"][-1] <= 0.8 * Vmax
     # NL-22: "captured" only when the main push itself fell to 0.8 Vmax; a stop above 0.8 Vmax is never "captured"
     tail = dict(needed=not captured_main, tried=[], captured=captured_main,
@@ -1471,7 +1511,7 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
         stop_reason += "; component rotation limit b reached (max theta_pl/b = %.2f)" % rec["b_ratio"][-1]
     elif stop_reason.startswith("solver") and not captured_main:
         if tail_strategies:
-            tail = _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, tail_strategies, verbose)
+            tail = _tail_recovery(an, rec, snapshot, roof, dof, dU0, umax, Vmax, tail_strategies, verbose, progress)
             Vmax = max(Vmax, max(rec["V"]))
             if tail["captured"]:
                 stop_reason += "; descending branch recovered by %s" % "+".join(t["strategy"] for t in tail["tried"])
@@ -1485,7 +1525,9 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
     for t in hz:
         kinds[hinges[t]["kind"]] = kinds.get(hinges[t]["kind"], 0) + 1
     ops.wipeAnalysis()
-    return dict(direction=direction, H=H, col_tags=cols, tail=tail,
+    if verbose:
+        print("[pushover %s] done: %d steps, roof u %.2f in, elapsed %s" % (direction, len(rec["u"]) - 1, rec["u"][-1], progress.elapsed()), flush=True)
+    return dict(direction=direction, H=H, col_tags=cols, tail=tail, elapsed_s=round(time.time() - progress.t0, 1),
                 gravity_table_QG=[r["QG_kip"] for r in (gravity_table or [])], heights=[lv[0][1]] + [lv[i][1] - lv[i - 1][1] for i in range(1, len(lv))],
                 pattern=pat, rec=rec, hinge_tags=hz, stop_reason=stop_reason, Vmax=Vmax, roof_node=roof,
                 n_moment_frame_members=moment_frame_members(pkg), monitored=kinds, analysis_objects=dict(an.issued))
