@@ -28,6 +28,14 @@ def _load(args):
     return pkg, prm, ch16, TL
 
 
+def _refuse_unsupported(pkg):
+    """NL-R2-13: a system the nonlinear builder has no model for (STMF) is refused before any analysis."""
+    from pushover import hinge_models as HM
+    why = HM.unsupported_system(pkg.basis)
+    if why:
+        sys.exit("NLRHA NOT EVALUATED -- " + why)
+
+
 def _library(args):
     """The record library: the shipped set, or the sets / user folders named by --records-set (several allowed)."""
     dirs = getattr(args, "records_set", None) or []
@@ -157,6 +165,7 @@ def _modal_and_range(pkg, prm, ch16, loads):
 def cmd_scale(args):
     from . import ground_motions as GM, model as MD
     pkg, prm, ch16, TL = _load(args)
+    _refuse_unsupported(pkg)
     loads, gtab, split = MD.ch16_gravity(pkg, ch16)
     PG, modal, lo, hi = _modal_and_range(pkg, prm, ch16, loads)
     sets, recs = _library(args)
@@ -300,6 +309,7 @@ def cmd_run(args):
     if getattr(args, "plasticity", None):
         os.environ["SNL_PLASTICITY"] = str(args.plasticity)
     pkg, prm, ch16, TL = _load(args)
+    _refuse_unsupported(pkg)
     if getattr(args, "plasticity", None):
         prm.setdefault("numerics", {})["plasticity"] = args.plasticity
     if getattr(args, "member_nseg", None) is not None:

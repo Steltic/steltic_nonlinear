@@ -238,7 +238,7 @@ class GMNIAModel:
         from pushover import hinge_models as HM
         prm = self._hm_params()
         mem = [dict(tag=m.tag, kind=m.kind, section=m.section, n1=m.n1, n2=m.n2, released=bool(m.relz)) for m in self.nm.members]
-        system = (self.cfg or {}).get("system")
+        system = " / ".join(str(v) for v in dict.fromkeys((self.cfg or {}).get(k) for k in ("system", "system_X", "system_Y")) if v)   # NL-R2-13
         try:
             self.links = {t: v for t, v in HM.find_links(self.nm.nodes, mem, prm, system).items() if not v.get("skipped")}
         except Exception as ex:                                   # never silent: a census failure is logged and links stay beams

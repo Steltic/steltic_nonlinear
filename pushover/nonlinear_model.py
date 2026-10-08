@@ -555,10 +555,11 @@ def package_cfg(pkg):
 
 def element_context(pkg, prm):
     """Per-build data for the special elements: BRB package data (NL-02; NL-R2-10: also the HR engine's cfg['brb'] and
-    capacity_design.BRB_adjusted_strengths) and the EBF link census (NL-03)."""
-    links = HM.find_links_pkg(pkg, prm, member_kind)
+    capacity_design.BRB_adjusted_strengths) and the EBF link census (NL-03; NL-R2-13: links only in a declared EBF)."""
+    notes = []
+    links = HM.find_links_pkg(pkg, prm, member_kind, notes=notes)
     cfg = package_cfg(pkg)[0] if any(SDB.is_brb(str(v.get("section") or "")) for v in (pkg.schedule or {}).values()) else None
-    return dict(brb=HM.brb_package_data(pkg.calc, cfg), links=links, pt_secs={}, pt_builder=None, pt_count=0)
+    return dict(brb=HM.brb_package_data(pkg.calc, cfg), links=links, link_notes=notes, pt_secs={}, pt_builder=None, pt_count=0)
 
 
 def _note(stats, msg):
@@ -941,6 +942,8 @@ def finish_stats(stats, ctx, prm, plasticity):
     """Census + degradation disclosure common to both builders (NL-02 / NL-03 / NL-10)."""
     links = ctx.get("links") or {}
     stats["link_census"] = HM.link_census_summary(links)
+    for n in ctx.get("link_notes") or []:                       # NL-R2-13: brace-point beam segments kept as beams
+        _note(stats, n)
     for v in links.values():
         if v.get("skipped"):
             _note(stats, "link %s (%s): %s" % (v["tag"], v["section"], v["skipped"]))
@@ -982,6 +985,9 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     member_nseg: fibre/IMK member subdivisions (default 4 for fibre, 1 for imk). SNL_MEMBER_NSEG.
     """
     import os
+    why = HM.unsupported_system(pkg.basis)                       # NL-R2-13: refuse, never model an STMF as an EBF
+    if why:
+        raise HM.UnsupportedSystem("NOT EVALUATED -- " + why)
     prm.setdefault("_system", getattr(pkg.basis, "system", None) or "")   # web case of AISC 341-22 Table D1.1b (params_schema)
     num = prm.get("numerics") or {}
     if plasticity is None:

@@ -18,6 +18,9 @@ def _run(args):
     print(PR.summary(pkg))
     if args.system:
         pkg.basis.system = args.system; pkg.basis.sources["system"] = "--system override"
+    why = HM.unsupported_system(pkg.basis)                       # NL-R2-13: refuse up front, never model it wrong
+    if why:
+        sys.exit("pushover NOT EVALUATED -- " + why)
     missing = [k for k in ("SDS", "SD1", "W_kip") if getattr(pkg.basis, k) is None]
     if missing:
         sys.exit("design basis incomplete (%s) -- add cfg.py to the package or pass --sds/--sd1" % missing)

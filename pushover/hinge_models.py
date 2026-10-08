@@ -951,12 +951,54 @@ def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
     return "Hysteretic+MinMax"
 
 
-def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dict:
+# NL-R2-13: lateral systems this module has no element model for. A package declaring one is REFUSED (NOT EVALUATED)
+# instead of being modelled with the wrong mechanism: an STMF's truss chords between web joints otherwise look exactly
+# like EBF links (both ends are brace work points), and Ex28 ran as an EBF with 1248 chord "links" and a complete-looking
+# verdict. The special segment of an STMF (AISC 341-22 E4: chord flexure/shear + X-diagonal yielding/buckling within
+# the segment) has no nonlinear model here.
+import re as _re
+UNSUPPORTED_SYSTEMS = (
+    (_re.compile(r"\bSTMF\b|SPECIAL\s+TRUSS\s+MOMENT", _re.I),
+     "special truss moment frame (STMF): the special segment (AISC 341-22 E4) has no nonlinear element model in this "
+     "module, and its truss chords would otherwise be taken as EBF links -- the analysis is NOT EVALUATED"),
+)
+
+
+def declared_systems(basis) -> list:
+    """Every system string the design basis declares: system, and system_X / system_Y where the reader carries them."""
+    out = []
+    for k in ("system", "system_X", "system_Y"):
+        v = getattr(basis, k, None) if basis is not None else None
+        if v and str(v) not in out:
+            out.append(str(v))
+    return out
+
+
+def unsupported_system(basis) -> str | None:
+    """NL-R2-13: the refusal message when the declared system is one this module cannot model, else None."""
+    for s in declared_systems(basis):
+        for rx, why in UNSUPPORTED_SYSTEMS:
+            if rx.search(s):
+                return "system %r not supported: %s." % (s, why)
+    return None
+
+
+class UnsupportedSystem(RuntimeError):
+    """Raised by the model builder for a system in UNSUPPORTED_SYSTEMS (NL-R2-13)."""
+
+
+def is_ebf_system(system) -> bool:
+    return bool(system) and any(t in str(system).upper() for t in ("EBF", "ECCENTRIC"))
+
+
+def find_links(nodes: dict, members: list, prm: dict, system: str = None, notes: list = None) -> dict:
     """EBF link census (NL-03). members: iterable of dicts {tag, kind ('col'|'beam'|'brace'|...), section, n1, n2,
     released (bool: major-axis end release present)}. Returns {tag: info} for the beam segments taken as links:
 
-      split-K / V EBF (centre link): an unreleased beam segment whose BOTH end nodes are brace work points and neither
-        end is a column node -- 'the component between these points' of AISC 342-22 E2.1;
+      split-K / V EBF (centre link, only when the system is declared eccentrically braced -- NL-R2-13): an unreleased
+        beam segment whose BOTH end nodes are brace work points and neither end is a column node -- 'the component
+        between these points' of AISC 342-22 E2.1. In any other system (truss chords, stacked chevrons) such a segment
+        is a beam; it is counted in `notes` and never turned into a link silently;
       D / column-adjacent EBF (only when the system is declared eccentrically braced): an unreleased beam segment from a
         column node to a node where exactly one brace lands and no column, with e <= 2.6 Mp/Vp (a longer segment is a
         flexure-controlled beam and is modelled as one);
@@ -973,7 +1015,8 @@ def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dic
             braces_at[m["n1"]] += 1; braces_at[m["n2"]] += 1
         elif m["kind"] == "col":
             col_nodes.update((m["n1"], m["n2"]))
-    ebf = bool(system) and any(t in str(system).upper() for t in ("EBF", "ECCENTRIC"))
+    ebf = is_ebf_system(system)
+    n_not_ebf = 0
     mt = prm.get("material") or {}
     Fye = float(mt.get("Fy_ksi", 50.0)) * float(mt.get("Ry_expected", 1.1))
     out = {}
@@ -992,7 +1035,11 @@ def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dic
             b1, b2 = braces_at[m["n1"]], braces_at[m["n2"]]
             c1, c2 = m["n1"] in col_nodes, m["n2"] in col_nodes
             if b1 and b2 and not c1 and not c2:
-                rule = "between brace work points"
+                if ebf:
+                    rule = "between brace work points"
+                else:                                   # NL-R2-13: not an EBF -> a beam, never a silent link
+                    n_not_ebf += 1
+                    continue
             elif ebf and ((c1 and not c2 and b2 == 1) or (c2 and not c1 and b1 == 1)):
                 try:
                     lp = SDB.link_shear_props(sec, Fye)
@@ -1012,10 +1059,14 @@ def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dic
         rho = e / (lp["Mp"] / lp["Vp"])
         out[m["tag"]] = dict(tag=m["tag"], section=sec, e_in=round(e, 2), rule=rule, rho=round(rho, 3),
                              link_class="shear" if rho <= 1.6 else ("flexure" if rho >= 2.6 else "intermediate"))
+    if n_not_ebf and notes is not None:
+        notes.append("%d beam segments between two brace work points modelled as BEAMS, not EBF links: the system (%s) is not "
+                     "declared eccentrically braced (NL-R2-13); list real links in hinge_params ebf_link.element_tags"
+                     % (n_not_ebf, system or "not declared"))
     return out
 
 
-def find_links_pkg(pkg, prm: dict, member_kind) -> dict:
+def find_links_pkg(pkg, prm: dict, member_kind, notes: list = None) -> dict:
     """find_links on a pushover Package (elasticBeamColumn beams; braces may be raw trusses)."""
     mem = []
     for e in pkg.model.elements:
@@ -1023,7 +1074,8 @@ def find_links_pkg(pkg, prm: dict, member_kind) -> dict:
         rel = e.get("release") or []
         mem.append(dict(tag=e["tag"], kind=k, section=pkg.schedule.get(e["tag"], {}).get("section"), n1=e["n1"], n2=e["n2"],
                         released=("-releasey" in rel and int(rel[rel.index("-releasey") + 1]) != 0)))
-    return find_links(pkg.model.nodes, mem, prm, pkg.basis.system)
+    sysd = " / ".join(declared_systems(pkg.basis))                 # NL-R2-13: system, system_X, system_Y
+    return find_links(pkg.model.nodes, mem, prm, sysd, notes=notes)
 
 
 def link_census_summary(links: dict) -> dict:
