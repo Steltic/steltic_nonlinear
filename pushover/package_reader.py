@@ -5,7 +5,8 @@ What we read (all produced by steltic's pipeline.design_and_report / bundle.make
   <building>/model_opensees.py        the EXACT elastic OpenSeesPy model (replayed ops.* calls)
   <building>/design/member_schedule.csv   ele_tag -> member kind (col/beam/brace) + AISC section
   <building>/design/calc_package.json     roles, demands, agent capacities, capacity_design block
-  <building>/cfg.py                   the agent's cfg (seis params, system, heights, loads) -- optional
+  <building>/cfg.py                   the agent's cfg (seis params, system, heights, loads) -- optional; scalars are
+                                      regexed, `heights` comes from the EXECUTED cfg (NL-R2-06, steltic_ddm.ingest.load_cfg)
   <building>/report.html              fallback source for SDS/SD1/R/Cd/Om0/Ie, W, V, T (regex on text)
 
 Nothing here runs the model: model_opensees.py is PARSED (regex on `ops.<cmd>(...)` lines), never
@@ -196,12 +197,36 @@ def _basis_from_cfg(cfg_py: Path, b: DesignBasis):
     if mo: b.system = mo.group(1); b.sources["system"] = "cfg.py"
     mo = re.search(r"['\"]?L_floor['\"]?\s*[:=]\s*" + _NUM, src)
     if mo: b.L_floor_psf = float(mo.group(1)); b.sources["L_floor_psf"] = "cfg.py"
-    mo = re.search(r"heights\s*[:=]\s*(\[[^\]]*\])", src)
-    if mo:
+    # NL-R2-06: `heights` is NOT regexed here -- the first `heights = [...]` in the text can be a docstring/comment
+    # (Ex13: "heights = [14,6,6,10,2,12] ft" -> feet read as inches, h_n 4 ft instead of 50). See _heights().
+
+
+def _heights(root: Path, model: Optional["ElasticModel"]) -> tuple:
+    """NL-R2-06: inter-level heights (in) and where they came from -- the EXECUTED cfg value cfg['heights'] (the
+    steltic_ddm loader runs cfg.py with the HR engine importable, as brace_geometry does), never a comment; when
+    cfg.py cannot be executed or carries no heights, the elevations of the replayed model's diaphragm masters
+    (else of its mass nodes). (None, reason) when neither exists."""
+    why = "no cfg.py"
+    if (root / "cfg.py").exists():
         try:
-            b.heights_in = [float(v) for v in ast.literal_eval(mo.group(1))]; b.sources["heights_in"] = "cfg.py"
-        except Exception:
-            pass
+            from steltic_ddm.ingest import load_cfg
+            h = load_cfg(str(root)).get("heights")
+            if isinstance(h, (list, tuple)) and h and all(isinstance(v, (int, float)) and v > 0 for v in h):
+                return [float(v) for v in h], "cfg.py (executed cfg['heights'])"
+            why = "cfg['heights'] absent or not a list of positive numbers"
+        except Exception as ex:                                       # noqa: BLE001 -- engine missing, cfg error, ...
+            why = "cfg.py not executable (%s)" % str(ex)[:80]
+    if model is not None and model.nodes:
+        zs = sorted({round(model.nodes[ma][2], 3) for _p, ma, _s in model.diaphragms if ma in model.nodes})
+        src = "diaphragm master elevations"
+        if not zs:
+            zs = sorted({round(model.nodes[t][2], 3) for t, mv in model.masses.items() if t in model.nodes and mv and mv[0] > 0})
+            src = "mass node elevations"
+        z0 = min(min(v[2] for v in model.nodes.values()), 0.0)
+        zs = [z for z in zs if z > z0 + 1e-6]
+        if zs:
+            return [b - a for a, b in zip([z0] + zs[:-1], zs)], "model_opensees.py %s (%s)" % (src, why)
+    return None, why
 
 
 def _basis_from_report(report_html: Path, b: DesignBasis):
@@ -228,10 +253,13 @@ def _basis_from_report(report_html: Path, b: DesignBasis):
     grab("T_design_s", r"design period T\s*=\s*min\([^)]*\)\s*=\s*" + _NUM)
 
 
-def read_basis(root: Path, calc: dict) -> DesignBasis:
+def read_basis(root: Path, calc: dict, model: Optional[ElasticModel] = None) -> DesignBasis:
     b = DesignBasis()
     if (root / "cfg.py").exists():
         _basis_from_cfg(root / "cfg.py", b)
+    b.heights_in, src = _heights(root, model)                         # NL-R2-06
+    if b.heights_in:
+        b.sources["heights_in"] = src
     if (root / "report.html").exists():
         _basis_from_report(root / "report.html", b)
     dr = root / "design" / "design_report.md"
@@ -469,7 +497,7 @@ def load(path: str | os.PathLike) -> Package:
     model = parse_model_script(files["model"])
     schedule = read_schedule(files["schedule"]) if files["schedule"].exists() else {}
     calc = json.load(open(files["calc"])) if files["calc"].exists() else {}
-    basis = read_basis(root, calc)
+    basis = read_basis(root, calc, model)
     name = calc.get("building") or root.name
     return Package(root=root, name=name, model=model, schedule=schedule, calc=calc, basis=basis,
                    files={k: str(v) for k, v in files.items() if v.exists()})
