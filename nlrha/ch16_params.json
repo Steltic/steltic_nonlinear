@@ -43,5 +43,5 @@
   "gravity_system": {"clause": "16.4.2.3", "pdf_page": 251, "rule": "elements not in the SFRS shown to carry gravity at the mean building displacements"},
   "linear_analysis": {"clause": "16.1.2", "pdf_page": 248, "rule": "a Chapter 12 linear analysis is ALSO required (the Steltic package is that analysis); rho may be 1.0, Omega0 may be 1.0, drift limits of 12.12.1 need not apply for RC I-III"},
   "design_review": {"clause": "16.5", "pdf_page": 251, "rule": "independent structural design review; at least one reviewer a registered design professional"},
-  "component_models": {"verified": false, "note": "hinge / brace backbones come from steltic_pushover/hinge_params.json (ASCE 41 -> AISC 342 placeholders, UNVERIFIED). Cyclic deterioration is OFF (Lambda = 0) in this prototype -- 16.3.1 requires degradation unless shown not to govern; flagged in the report."}
+  "component_models": {"verified": false, "note": "component models (backbones, cyclic deterioration) are those of the run's hinge-parameter file; the 16.3.1 degradation statement of each NLRHA is written to nlrha_package.json (degradation_16_3_1) and the 16.1.4 criteria document reports it (NL-R2-05)"}
 }

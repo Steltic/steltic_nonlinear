@@ -187,3 +187,77 @@ def test_mesh_converge_dry_run_is_labelled_and_kept_apart(tmp_path, capsys):
     summ = json.loads((d / "mesh_convergence_DRYRUN_summary.json").read_text())
     assert summ["dry_run"] and summ["analyses"]["nsp"]["ladder"]["status"] == "dry-run"
     assert "DRY RUN" in (d / "mesh_convergence_DRYRUN_summary.md").read_text()
+
+
+# --------------------------------------------------------------------------- NL-R2-05: the 16.1.4 document states the run
+def _rows(S, title):
+    s = next(x for x in S if x.title.startswith(title))
+    return [r for kind, t, _ in s.items if kind == "t" for r in t], [t for kind, t, _ in s.items if kind == "b"]
+
+
+def _ocbf_like_g(with_nlrha=True):
+    """Ex22 package re-labelled as a braced building with a verified-library-like parameter file and (optionally) an
+    NLRHA that built 44 physical-theory braces with cyclic deterioration ON."""
+    from nlrha import design_criteria as DC
+    g = DC.gather(EX22)
+    sched = g["pkg"].schedule
+    for t in sorted(t for t, v in sched.items() if v.get("member") == "col")[:44]:
+        sched[t] = dict(sched[t], member="brace", section="HSS6X6X3/8")
+    prm = json.loads(json.dumps(g["prm"]))
+    prm["material"] = dict(Fy_ksi=50.0, Ry_expected=1.1, note="ACTIVE grade ... very long library/kit note ...", active_grade="A992")
+    prm["beam_flexure"] = dict(mode="member", table="AISC 342-22 Table C2.2 (beams subjected to flexure)")
+    prm["column_flexure"] = dict(table="AISC 342-22 Table C3.6 (columns)")
+    prm["brace_axial"] = dict(mode="table_C3_4", table="AISC 342-22 Table C3.4 (buckling braces)", nlrha_element="physical_theory", Fy_ksi=50.0, Ry_expected=1.3)
+    prm["cyclic_deterioration"] = dict(mode="expressions", source="Lignos & Krawinkler 2011 / Lignos et al. 2019")
+    g["prm"] = prm
+    if with_nlrha:
+        g["nl"] = dict(g["nl"], degradation_16_3_1=dict(demonstrated=True, items=[
+            dict(component="Beams / columns (IMK hinges)", modelled="IMK hinges: cyclic (energy-based) deterioration ON (cyclic_deterioration.mode=expressions)", ok=True),
+            dict(component="Buckling braces", modelled="physical-theory fibre braces with Steel02 + Fatigue (44 braces)", ok=True)]),
+            model_stats=dict(col=166, beam=348, brace=44, brace_nonlinear=44, brb=0, brace_physical_theory=44, links=0, panel_zone_mode="rigid",
+                             degradation=dict(plasticity="imk"), lambda_summary=dict(beam=dict(n=348, n_zero=0, min=0.9, max=1.4), col=dict(n=166, n_zero=0, min=1.2, max=3.0))))
+    else:
+        g["nl"] = None; g["po"] = None; g["gm"] = None
+    return g
+
+
+def test_criteria_document_states_the_run_not_fixed_strings():
+    from nlrha import design_criteria as DC
+    S = DC.content(_ocbf_like_g(True))
+    rows, _ = _rows(S, "5.")
+    r = {x[0]: x for x in rows}
+    cyc = " ".join(r["Cyclic deterioration"])
+    assert "Lambda = 0" not in cyc and "UNVERIFIED" not in cyc and "placeholders" not in cyc
+    assert "modelled for every component family" in cyc and "beams 0.9-1.4 rad" in cyc and "degradation_16_3_1" in cyc
+    br = r["Braces"][1]
+    assert "44 buckling braces" in br and "44 physical-theory" in br and "n/a" not in br
+    assert "Table C2.2" in r["Beam hinges"][1] and "348 beam hinges, imk" in r["Beam hinges"][1] and "[beam hinge model]" not in r["Beam hinges"][1]
+    assert "Table C3.6" in r["Column hinges"][1] and "[column hinge model]" not in r["Column hinges"][1]
+    assert "long library" not in " ".join(r["Expected material"]) and "1.1 x 50.0 ksi (grade A992)" in r["Expected material"][1]
+    assert "NOT applied" in r["Torsion"][1]
+    _, items = _rows(S, "9.")
+    assert not any("Lambda = 0" in i or "not modelled" in i.lower() and "deterioration" in i.lower() for i in items)
+    _, bullets = _rows(S, "6.")
+    assert any("buckling-brace axial deformation" in b for b in bullets) and not any("SMF beam hinges at the RBS" in b for b in bullets)
+
+
+def test_criteria_document_says_not_run_when_nothing_ran():
+    from nlrha import design_criteria as DC
+    S = DC.content(_ocbf_like_g(False))
+    rows, _ = _rows(S, "5.")
+    r = {x[0]: x for x in rows}
+    assert r["Cyclic deterioration"][1].startswith("NLRHA not run yet") and "mode = expressions" in r["Cyclic deterioration"][1]
+    assert "not run" in r["Braces"][1] and "not run" in r["Beam hinges"][1]
+    _, items = _rows(S, "9.")
+    assert any("the NLRHA has not been run" in i for i in items)
+
+
+def test_nlrha_package_carries_the_model_census_and_lambda():
+    from nlrha import model as NMD, report as RP
+    from types import SimpleNamespace
+    mk = lambda lam: SimpleNamespace(Lambda=lam)                    # duck-types HingeSpec.Lambda
+    hz = {1: dict(kind="beam", spec=mk(0.9)), 2: dict(kind="beam", spec=mk(1.4)), 3: dict(kind="brace", spec=None), 4: dict(kind="col", spec=mk(0.0))}
+    ls = NMD.lambda_summary(hz)
+    assert ls == {"beam": dict(n=2, n_zero=0, min=0.9, max=1.4), "col": dict(n=1, n_zero=1, min=0.0, max=0.0)}
+    ms = RP._model_stats([{"stats": {}}, {"stats": dict(col=3, brace_physical_theory=44, lambda_summary=ls, elastic_ele_tags=[1, 2, 3])}])
+    assert ms["brace_physical_theory"] == 44 and ms["lambda_summary"] == ls and "elastic_ele_tags" not in ms

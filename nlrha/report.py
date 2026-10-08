@@ -121,6 +121,16 @@ def _alg_damping_text(results, ch16):
                "(≤ 2.5%)" if tot <= 100 * ch16["damping"]["xi_max"] + 1e-9 else '<span class="warn">exceeds the 2.5% of 16.3.5 — reduce dt or use Newmark</span>'))
 
 
+_MODEL_STAT_KEYS = ("plasticity", "member_nseg", "col", "beam", "brace", "brace_nonlinear", "brb", "brace_physical_theory", "links",
+                    "force_controlled", "released_ends", "panel_zone_mode", "panel_zones", "rbs_remesh_beams", "degradation", "lambda_summary")
+
+
+def _model_stats(results):
+    """NL-R2-05: the element census of the model the records ran on (what the 16.1.4 criteria document reports)."""
+    st = next((r.get("stats") for r in results if isinstance(r.get("stats"), dict) and r["stats"]), None) or {}
+    return {k: st[k] for k in _MODEL_STAT_KEYS if k in st}
+
+
 def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, modal, elapsed_s, pushover_pkg=None):
     os.makedirs(outdir, exist_ok=True); b = pkg.basis; ts = datetime.datetime.now().isoformat(timespec="seconds")
     v = acc["verdict"]; H = []
@@ -302,6 +312,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
               gravity=dict(table=grav_table, split=grav_split), per_record=acc["per_record"], story=acc["story"], deformation_groups=acc["deformation_groups"],
               force_controlled_columns=acc["force_controlled_columns"], verdict=acc["verdict"], limits=acc["limits"],
               acceptance=acc, meta=acc.get("meta") or {}, degradation_16_3_1=deg,
+              model_stats=_model_stats(results),
               per_record_fc=acc.get("per_record_fc") or [],
               governing_fc_records=acc.get("governing_fc_records") or [],
               records_not_run=acc.get("records_not_run") or [], no_live_case=acc.get("no_live_case") or {},

@@ -85,6 +85,7 @@ def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
         prm["verified"] = False                                      # value on the NLRHA copy -> the run's effective flag drops
         prm["_used_unverified"] = prm_b.get("_used_unverified") or prm.get("_used_unverified") or {}
     stats["degradation_16_3_1"] = degradation_statement(prm, stats)
+    stats["lambda_summary"] = lambda_summary(hinges)                 # NL-R2-05: the Lambda values the run built
     # Fibre: all forceBeamColumn tags for Rayleigh region. IMK: elastic_ele_tags (RBS extras) or pack tags.
     if stats.get("plasticity") == "fibre" and stats.get("fibre_eles"):
         elastic_eles = list(stats["fibre_eles"])
@@ -101,6 +102,18 @@ def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
                 for si in range(1, nseg):
                     elastic_eles.append(SEG_ELE_BASE + e["tag"] * 100 + si)
     return hinges, stats, elastic_eles
+
+
+def lambda_summary(hinges):
+    """NL-R2-05: the IMK cyclic-deterioration Lambda the model actually carries, per member kind:
+    {kind: {n, n_zero, min, max}} over the beam / column hinges (fibre models carry none -> {})."""
+    out = {}
+    for h in hinges.values():
+        sp = h.get("spec")
+        if h.get("kind") not in ("beam", "col") or sp is None or not hasattr(sp, "Lambda"):
+            continue
+        out.setdefault(h["kind"], []).append(float(getattr(sp, "Lambda") or 0.0))
+    return {k: dict(n=len(v), n_zero=sum(1 for x in v if x <= 0.0), min=round(min(v), 4), max=round(max(v), 4)) for k, v in out.items()}
 
 
 def degradation_statement(prm, stats):
