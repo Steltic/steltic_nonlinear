@@ -76,13 +76,14 @@ ul{padding-left:1.2em}li{margin:3px 0}
 """
 
 
-def verdict(runs):
-    """Overall DDM verdict (NL-R2-02): FAIL if any phi_s check fails; INCOMPLETE if any combination is NOT EVALUATED
-    (solver/control stop); PASS only when every checked combination passes and none is missing."""
+def verdict(runs, not_evaluated=()):
+    """Overall DDM verdict (NL-R2-02 / NL-R2-11): FAIL if any phi_s check fails; INCOMPLETE if any combination is NOT
+    EVALUATED (solver/control stop, or a sweep that failed); PASS only when every checked combination passes and
+    none is missing."""
     marks = [(r.get("check") or (None, "n/a"))[1] for r in runs]
     if "FAIL" in marks:
         return "FAIL"
-    if "NOT EVALUATED" in marks:
+    if "NOT EVALUATED" in marks or not_evaluated:
         return "INCOMPLETE"
     return "PASS" if "PASS" in marks else "n/a"
 
@@ -159,8 +160,9 @@ def member_equivalence_html(eq):
             'the GMNIA result above governs.</div>' % (PHI_MEMBER, rows, worst))
 
 
-def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, notes):
-    """runs: list of dict(combo=..., summary=..., res=..., cls=..., phi=...)."""
+def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, notes, not_evaluated=None):
+    """runs: list of dict(combo=..., summary=..., res=..., cls=..., phi=...); not_evaluated: NL-R2-11 failed combinations."""
+    nev = list(not_evaluated or [])
     name = nm.name
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     prov = {f: _sha(os.path.join(nm.job_dir, f)) for f in ("cfg.py", "model_opensees.py", "design/calc_package.json")}
@@ -168,8 +170,8 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     evaluated = [r for r in strength if r["check"][0] is not None]         # NL-R2-02: numerical stops are NOT EVALUATED
     worst = min(evaluated, key=lambda r: r["phi"]["phi_s"] * r["res"]["lambda_u"]) if evaluated else None
     n_pass = sum(1 for r in strength if r["check"][1] == "PASS")
-    n_ne = sum(1 for r in runs if r["check"][1] == "NOT EVALUATED")
-    overall = verdict(runs)
+    n_ne = sum(1 for r in runs if r["check"][1] == "NOT EVALUATED") + len(nev)
+    overall = verdict(runs, nev)
     R = cfg.get("seis", {}).get("R")
 
     parts = []
@@ -267,7 +269,16 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
             ph["cls"], ("%.2f" % ph["phi_s"]) if ph["phi_s"] is not None else "—",
             ("%.3f" % r["check"][0]) if r["check"][0] is not None else "—", r["check"][1], r["check"][1],
             _h(r["cls"]["mechanism"]), drift, res["steps"], res["seconds"]))
+    for n in nev:                                                       # NL-R2-11: failed sweeps, with the reason
+        done = ", ".join("%s λ<sub>u</sub> %.3f" % (_h(k), v) for k, v in n.get("completed", {}).items())
+        parts.append('<tr><td>%s</td><td>%s</td><td>%s</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td class="FAIL">NOT EVALUATED</td>'
+                     '<td colspan="3">sweep failed: %s%s</td></tr>' % (
+                         _h(n["label"]), _h(n.get("kind", "")), _h(",".join(n.get("failed", [])) or "—"),
+                         _h("; ".join(n.get("reasons", []))), (" — completed: " + done) if done else ""))
     parts.append('</table></div>')
+    if nev:
+        parts.append('<p class="FAIL">%d combination%s NOT EVALUATED (a sweep failed). The DDM verdict cannot be PASS until %s analysed.</p>'
+                     % (len(nev), "s" if len(nev) > 1 else "", "they are" if len(nev) > 1 else "it is"))
     parts.append('<p class="cap">Design check: φ<sub>s</sub>·λ<sub>u</sub> ≥ 1.0 (Zhang, Shayan, Rasmussen &amp; Ellingwood 2016). λ<sub>u</sub> is the load factor on the WHOLE factored combination at the peak of the load–deformation curve of the nominal (imperfect, residual-stressed) structure. '
                  'Seismic-pattern combinations on an R = %s system: %s.</p>' % (R, "treated as ordinary strength combinations (R ≤ 3, no ductile detailing assumed), φ<sub>s</sub> per the hot-rolled class" if (R is None or R <= 3) else "reported as a seismic supplement without a φ<sub>s</sub> pass/fail (outside the calibrations)"))
 
@@ -294,6 +305,9 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     if sensitivity:
         parts.append('<div class="tw"><table><tr><th>case</th><th>combination</th><th>λ<sub>u</sub></th><th>Δ vs nominal</th><th>mechanism</th></tr>')
         for s in sensitivity:
+            if s.get("lambda_u") is None:                              # NL-R2-11: failed sensitivity sweep
+                parts.append('<tr><td>%s</td><td>%s</td><td>—</td><td>—</td><td>%s</td></tr>' % (_h(s["case"]), _h(s["combo"]), _h(s["mechanism"])))
+                continue
             parts.append('<tr><td>%s</td><td>%s</td><td>%.3f</td><td>%+.1f %%</td><td>%s</td></tr>' % (_h(s["case"]), _h(s["combo"]), s["lambda_u"], 100 * (s["lambda_u"] / s["ref"] - 1), _h(s["mechanism"])))
         parts.append('</table></div>')
     else:
@@ -327,13 +341,15 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     return path
 
 
-def ddm_block(nm, gate, runs, sensitivity, options, member_table):
+def ddm_block(nm, gate, runs, sensitivity, options, member_table, not_evaluated=None):
+    nev = list(not_evaluated or [])
     return {
         "method": "Direct Design Method (system-based design by advanced analysis) -- steltic_ddm 0.1",
         "basis": ["Zhang, Shayan, Rasmussen & Ellingwood, JCSR 123 (2016) I & II",
                   "AISC 360-22 Appendix 1 (design by advanced analysis) -- cite via Query file manager"]
                  + [phi_s.SOURCES[k] for k in sorted({src for r in runs if r["phi"]["cls"] in phi_s.TABLE for src in phi_s.TABLE[r["phi"]["cls"]]["sources"]})],
-        "verdict": verdict(runs),
+        "verdict": verdict(runs, nev),
+        "not_evaluated": nev,
         "phi_s_provisional": phi_s_provisional(runs),
         "phi_s_status": phi_s_status_text(runs, as_html=False),
         "phi_s_classes": {r["phi"]["cls"]: dict(phi_s=r["phi"]["phi_s"], beta_T=r["phi"]["beta_T"], status=r["phi"]["status"]) for r in runs},

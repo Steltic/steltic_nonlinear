@@ -183,3 +183,56 @@ def test_nl_r2_23_singular_gate_refuses_dense_eigen(tmp_path):
     finally:
         del os.environ[TG.DENSE_EIGEN_ENV]
     assert TG._dense_limit_gb() == TG.DENSE_EIGEN_MAX_GB
+
+
+PKG18 = os.path.join(os.path.dirname(HERE), "examples", "Ex18_R3")
+
+
+def _fake_ok(label, imp, lam):
+    res = dict(lambda_u=lam, first_yield=None, lam_at_1p25d=None, hist=[(0.05, 0.01), (lam, 0.2)], steps=2, fails=0, log=[],
+               seconds=1.0, snapshot=dict(drifts=None, step=1, disp={}, member_ratio={}, braces={}), control=(1, 1),
+               lateral=(None, 0), d_at_max=0.2, frames=[], step_at_max=1)
+    cls = dict(mechanism="beam yielding (1 beam member at hinge level)", cls="ductile", hinge_members=[], yielded_members=[],
+               hinges_by_role={}, buckled_braces=[], ductile_post_peak=True)
+    return dict(label=label, imp=imp, res=res, cls=cls, state={}, section_log=[])
+
+
+@needs_engine
+def test_nl_r2_11_failed_sweep_is_recorded_not_fatal(tmp_path, monkeypatch):
+    """Ex30: the 1.4D sweep raised 'elastic probe failed' inside a worker and the whole run ended rc 1 with no
+    results. Now that combination is NOT EVALUATED with its reason, the others are kept, and the verdict is never PASS."""
+    import json, shutil
+    from steltic_ddm import cli, transfer_gate, model_gmnia
+    if ENGINE not in sys.path:
+        sys.path.insert(0, ENGINE)
+    # the worker itself never raises: a broken task comes back as failed=True with the reason
+    bad = cli._worker((str(tmp_path / "missing_job"), ENGINE, "1.4D", dict(tag="+X"), {}))
+    assert bad["failed"] and "model_opensees.py missing" in bad["error"]
+    job = tmp_path / "Ex18_R3"
+    shutil.copytree(PKG18, job, ignore=shutil.ignore_patterns("__pycache__", "*.pkl", "nlrha", "pushover", "*_viewer_3d.html",
+                                                              "steltic_viewer_bundle.html", "four_analyses.html", "ddm_*"))
+
+    def fake_worker(t):
+        label, imp = t[2], t[3]["tag"]
+        if label == "1.4D":
+            return dict(label=label, imp=imp, failed=True, error="RuntimeError: elastic probe failed for 1.4D", seconds=0.5)
+        return _fake_ok(label, imp, 1.5)
+    monkeypatch.setattr(cli, "_worker", fake_worker)
+    monkeypatch.setattr(transfer_gate, "run", lambda *a, **k: dict(ok=True, rows=[], tol=0.05, hint=None, elements_steltic=1, elements_gmnia=1))
+    monkeypatch.setattr(model_gmnia.GMNIAModel, "export_py", lambda self, *a, **k: None)
+    monkeypatch.setattr(cli, "_viewer", lambda *a, **k: None)
+    rep = cli.main(["run", str(job), "--workers", "1", "--no-block", "--only", "1.4D", "1.2D+1.6L"])
+    d = json.load(open(job / "ddm_results.json"))
+    assert [n["label"] for n in d["not_evaluated"]] == ["1.4D"] and "elastic probe failed" in d["not_evaluated"][0]["reasons"][0]
+    assert d["runs"] and all(r["label"] != "1.4D" for r in d["runs"])            # the other sweeps were kept
+    assert all(r["check"][1] == "PASS" for r in d["runs"]) and d["verdict"] == "INCOMPLETE"
+    html = open(rep).read()
+    assert "NOT EVALUATED" in html and "elastic probe failed" in html and "INCOMPLETE" in html
+    # `report` (phi_s re-application) keeps the failed combination and the verdict
+    cli.main(["report", str(job), "--no-block"])
+    d = json.load(open(job / "ddm_results.json"))
+    assert d["verdict"] == "INCOMPLETE" and d["not_evaluated"][0]["label"] == "1.4D"
+    # one imperfection case failing is enough: the combination is NOT EVALUATED (the failed case may govern)
+    nev = cli.not_evaluated([("X", 1.2, 1.6, 0.0, {}, False)], [_fake_ok("X", "+X", 1.4),
+                                                                  dict(label="X", imp="+Y", failed=True, error="E: boom", seconds=1)])
+    assert nev[0]["failed"] == ["+Y"] and nev[0]["completed"] == {"+X": 1.4}
