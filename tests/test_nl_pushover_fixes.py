@@ -160,12 +160,41 @@ def test_acceptance_at_first_step_reaching_target_and_target_not_reached():
     a = PP.acceptance(run, hinges, 1.5, "BSE-1N")                  # first u >= 1.5 is step 2
     assert a["step"] == 2 and a["roof_disp_in"] == 2.0 and abs(a["worst_DC"]["IO"] - 1.2) < 1e-12
     assert PP.level_verdict(a, "IO") is False and PP.level_verdict(a, "LS") is True
+    run["rec"]["V"] = [0.0, 100.0, 90.0, 70.0]                    # NL-R2-24: strength loss (V <= 0.8 Vmax) before delta_t
     b = PP.acceptance(run, hinges, 3.5, "BSE-2N")                  # never reached
-    assert b["status"] == PP.TARGET_NOT_REACHED and b["acceptable"] is False
+    assert b["status"] == PP.TARGET_NOT_REACHED and b["acceptable"] is False and b["shortfall"]["kind"] == PP.SHORT_STRENGTH
     assert b["worst_DC"]["CP"] is None and b["max_story_drift"] is None and b["roof_disp_in"] is None
     assert b["at_last_converged"]["roof_disp_in"] == 3.0          # diagnostic only, labelled
     assert PP.level_verdict(b, "CP") is False
     assert PP.step_at(run, 3.5) is None and PP.step_at(run, 0.0) == 0
+
+
+def test_numerical_stop_at_peak_before_target_is_not_evaluated_not_unacceptable():
+    """NL-R2-24 (Ex8 EBF: solver stop at 12.18 in, V/Vmax = 1.000, delta_t 12.98 in): NOT EVALUATED, never NOT ACCEPTABLE.
+    NOT ACCEPTABLE stays for a genuine strength loss (V <= 0.8 Vmax) or rotation b before the target."""
+    from pushover import postprocess as PP
+    run, hinges = _run([(1, "beam"), (2, "col")], [0.0, 4.0, 8.0, 12.18], [0.02, 0.005])
+    run["rec"]["V"] = [0.0, 900.0, 990.0, 1000.0]                 # still rising / at peak when the solver gave up
+    run["stop_reason"] = "solver non-convergence at roof u=12.18 in (after 9 step halvings)"
+    run["tail"] = dict(status="lower_bound", tried=[dict(strategy="fine_step"), dict(strategy="arclength")])
+    a = PP.acceptance(run, hinges, 12.98, "BSE-2N")
+    assert a["status"] == PP.NOT_EVALUATED and a["acceptable"] is None and a["reason"] == "stopped_before_target"
+    assert a["shortfall"]["kind"] == PP.SHORT_NUMERICAL and a["shortfall"]["V_end_over_Vmax"] == 1.0
+    assert "NOT EVALUATED -- analysis stopped numerically at V/Vmax = 1.000 before the target displacement" in a["note"]
+    assert "NOT ACCEPTABLE" not in a["note"] and a["worst_DC"]["CP"] is None and a["max_story_drift"] is None
+    assert PP.level_verdict(a, "CP") is None                       # not a pass, not a fail
+    run["rec"]["V"] = [0.0, 900.0, 1000.0, 850.0]                  # descending but still above 0.8 Vmax: numerical
+    assert PP.target_shortfall(run, 12.98)["kind"] == PP.SHORT_NUMERICAL
+    run["tail"] = dict(status="component_limit", u_component_limit=8.0)   # rotation b before delta_t: a mechanism
+    b = PP.acceptance(run, hinges, 12.98, "BSE-2N")
+    assert b["status"] == PP.TARGET_NOT_REACHED and b["acceptable"] is False and PP.level_verdict(b, "CP") is False
+    run["tail"] = dict(status="max_drift"); run["stop_reason"] = "reached max roof drift 8.0% of H"
+    assert PP.target_shortfall(run, 12.98)["kind"] == PP.SHORT_DRIFT_CAP
+    assert PP.acceptance(run, hinges, 12.98, "BSE-2N")["status"] == PP.NOT_EVALUATED
+    assert PP.target_shortfall(run, 12.0) is None
+    from pushover import report_supplement as RS
+    txt = RS._reached_txt(dict(reached_target=False, target_shortfall=PP.target_shortfall(run, 12.98)))
+    assert "NOT EVALUATED" in txt and "NOT ACCEPTABLE" not in txt
 
 
 def _example_job():
@@ -175,7 +204,7 @@ def _example_job():
     return job
 
 
-@pytest.mark.parametrize("mode", ["not_evaluated", "legacy_empty", "target_not_reached", "evaluated"])
+@pytest.mark.parametrize("mode", ["not_evaluated", "legacy_empty", "target_not_reached", "evaluated", "stopped_numerically"])
 def test_compare_bpon_never_turns_missing_into_pass(mode):
     from snl import compare
     job = _example_job()
@@ -190,6 +219,9 @@ def test_compare_bpon_never_turns_missing_into_pass(mode):
             elif mode == "target_not_reached" and lvl == "BSE-2N":
                 a.update(status="target_not_reached", groups=[], worst_DC=dict(IO=None, LS=None, CP=None),
                          max_story_drift=None, story_drifts=[], census=[], roof_disp_in=None)
+            elif mode == "stopped_numerically" and lvl == "BSE-2N":      # NL-R2-24
+                a.update(status="not_evaluated", reason="stopped_before_target", shortfall=dict(kind="numerical", V_end_over_Vmax=1.0),
+                         groups=[], worst_DC=dict(IO=None, LS=None, CP=None), max_story_drift=None, story_drifts=[], census=[], roof_disp_in=None)
             elif mode == "evaluated":
                 a.update(worst_DC=dict(IO=0.5, LS=0.2, CP=0.1))
     json.dump(po, open(pj, "w"))
@@ -200,6 +232,9 @@ def test_compare_bpon_never_turns_missing_into_pass(mode):
         assert s["bpon_ok"] is None and "NOT EVALUATED" in t and "both pass" not in t
     elif mode == "target_not_reached":
         assert s["bpon_ok"] is False and "target displacement not reached" in t
+    elif mode == "stopped_numerically":
+        assert s["bpon_ok"] is None and s["bpon_stopped_before_target"] and "stopped numerically" in t
+        assert "target displacement not reached" not in t and "both pass" not in t
     else:
         assert s["bpon_ok"] is True and "both pass" in t
 

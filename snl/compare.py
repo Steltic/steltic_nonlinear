@@ -239,6 +239,8 @@ def build(job, out_name="four_analyses.html", title=None):
             st = a.get("status")
             if st == "target_not_reached":
                 return "target not reached"
+            if a.get("reason") == "stopped_before_target":           # NL-R2-24: numerical stop, not a collapse
+                return "not evaluated (stopped numerically at V/Vmax %.2f before δ<sub>t</sub>)" % ((a.get("shortfall") or {}).get("V_end_over_Vmax") or float("nan"))
             v = level_verdict(a, key)
             if v is None:
                 return "not evaluated"
@@ -249,8 +251,11 @@ def build(job, out_name="four_analyses.html", title=None):
                    [level_verdict(d["acceptance"].get("BSE-2N"), lv2) for d in dirs.values()]
         reached = not any((d["acceptance"].get(l) or {}).get("status") == "target_not_reached" for d in dirs.values() for l in ("BSE-1N", "BSE-2N"))
         bpon_ok = False if any(v is False for v in verdicts) else (None if any(v is None for v in verdicts) else True)
-        bpon_word = {True: "both pass", False: ("NOT satisfied" if reached else "NOT ACCEPTABLE — target displacement not reached (ASCE 41-23 7.4.3.3.1)"),
-                     None: "NOT EVALUATED (no monitored beam/column components at δ<sub>t</sub>; no pass can be claimed)"}[bpon_ok]
+        stopped = any((d["acceptance"].get(l) or {}).get("reason") == "stopped_before_target" for d in dirs.values() for l in ("BSE-1N", "BSE-2N"))
+        bpon_word = {True: "both pass", False: ("NOT satisfied" if reached else "NOT ACCEPTABLE — target displacement not reached after strength loss (ASCE 41-23 7.4.3.3.1)"),
+                     None: ("NOT EVALUATED — analysis stopped numerically before the target displacement (V still above 0.8 V<sub>max</sub>; "
+                            "not evidence of collapse); no pass can be claimed" if stopped else
+                            "NOT EVALUATED (no monitored beam/column components at δ<sub>t</sub>; no pass can be claimed)")}[bpon_ok]
         nsp_ok = all(n.get("nsp_permitted", True) for d in dirs.values() for n in d["nsp"].values())
         tails = {k: d.get("tail", {}).get("status", "") for k, d in dirs.items()}
         stats = po.get("hinge_stats", {})
@@ -268,6 +273,7 @@ def build(job, out_name="four_analyses.html", title=None):
                                    max_story_drift_BSE2N={k: d["acceptance"]["BSE-2N"]["max_story_drift"] for k, d in dirs.items()}, tail=tails, params_verified=po.get("params_verified"),
                                    bpon_status={k: {l: (d["acceptance"].get(l) or {}).get("status", "evaluated" if (d["acceptance"].get(l) or {}).get("groups") else "not_evaluated")
                                                     for l in ("BSE-1N", "BSE-2N")} for k, d in dirs.items()},
+                                   bpon_stopped_before_target=stopped,
                                    monitored=mon)
     else:
         po_v, po_vl, po_foot = "not run", "", "pushover/pushover_package.json not found in the job folder."

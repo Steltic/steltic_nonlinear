@@ -114,7 +114,7 @@ def test_dc_ltds_none_when_not_evaluated_or_target_not_reached():
     from pushover import postprocess as PP
     from pushover import performance as PF
     u = [0, 1, 2]
-    run = dict(rec=dict(u=u, V=[0, 50, 60], story_u=[[x] for x in u], hinge_pl=[[0.0]] * 3, col_N=[]),
+    run = dict(rec=dict(u=u, V=[0, 60, 40], story_u=[[x] for x in u], hinge_pl=[[0.0]] * 3, col_N=[]),   # strength loss (NL-R2-24)
                hinge_tags=[1], heights=[120.0], n_moment_frame_members=1)
     hinges = {1: dict(kind="beam", section="W", z=120.0, spec=_spec("beam"))}
     a = PF.augment(PP.acceptance(run, hinges, 5.0, "BSE-2N"), run, hinges)          # push ends at 2 in < 5 in

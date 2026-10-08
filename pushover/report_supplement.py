@@ -94,6 +94,17 @@ def _f(x, nd=2):
     return ("%%.%df" % nd) % x if isinstance(x, (int, float)) else str(x)
 
 
+def _reached_txt(n):
+    """NL-R2-24: a push short of delta_t is NOT ACCEPTABLE only after a genuine strength loss / rotation b; a numerical
+    stop (or the drift cap) above 0.8 Vmax is NOT EVALUATED."""
+    if n.get("reached_target", True):
+        return _tag(True, "yes")
+    sf = n.get("target_shortfall") or {}
+    if sf and sf.get("kind") in ("numerical", "drift_cap"):
+        return '<span class="warn">NO — NOT EVALUATED</span> %s' % sf.get("text", "")
+    return _tag(False, txt_ng="NO — TARGET NOT REACHED: NOT ACCEPTABLE") + (" %s" % sf["text"] if sf.get("text") else "")
+
+
 def _tag(ok, txt_ok="PASS", txt_ng="NG"):
     return '<span class="ok">%s</span>' % txt_ok if ok else '<span class="ng">%s</span>' % txt_ng
 
@@ -179,7 +190,7 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                 ("Strength ratio μ<sub>strength</sub> = S<sub>a</sub>C<sub>m</sub>/(V<sub>y</sub>/W), Eq. (7-32)", lambda n: "%s (C<sub>m</sub> %s, %s)" % (_f(n["mu_strength"], 3), _f(n.get("Cm"), 2), n.get("Cm_basis", ""))),
                 ("μ<sub>max</sub> (Eq. 7-33, α<sub>e</sub> Eq. 7-34) → NSP permitted (§7.3.2.1)?", lambda n: "%s → %s" % (_f(n["mu_max"], 2), _tag(n["nsp_permitted"], "yes", "NO — use NDP"))),
                 ("<b>Target displacement δ<sub>t</sub> (in) · /H</b>, Eq. (7-29)", lambda n: "<b>%.2f</b> · %.2f%%" % (n["target_disp_in"], 100 * n["target_over_H"])),
-                ("Push reached δ<sub>t</sub>? (§7.4.3.3.1)", lambda n: _tag(n.get("reached_target", True), "yes", "NO — TARGET NOT REACHED: NOT ACCEPTABLE")),
+                ("Push reached δ<sub>t</sub>? (§7.4.3.3.1)", _reached_txt),
                 ("Curve pushed to ≥ 1.5 δ<sub>t</sub>?", lambda n: _tag(n["reached_150pct"], "yes", "NO — extend push")))
         for lab, fn in rows:
             H.append("<tr><td>%s</td>%s</tr>" % (lab, "".join("<td>%s</td>" % fn(n) for n in R["nsp"].values())))

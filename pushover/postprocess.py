@@ -11,9 +11,12 @@ What is evaluated where (NL-09):
   * delta_t is iterated with the idealisation it depends on; the idealisation runs to
     Delta_d = min(delta_t, displacement at V_max) -- always a point ON the recorded curve.
   * component acceptance, storey drifts and the mechanism census are read at the first recorded step whose
-    roof displacement equals or exceeds delta_t (7.4.3.3.1). When the push never got there (collapse,
-    non-convergence, drift cap) the level is reported as TARGET NOT REACHED: no D/C, no drift and
-    `acceptable = False` -- never the last converged point presented as if it were delta_t.
+    roof displacement equals or exceeds delta_t (7.4.3.3.1). When the push never got there, no D/C and no
+    drift are reported -- never the last converged point presented as if it were delta_t -- and the reason
+    decides the verdict (NL-R2-24, `target_shortfall`): a genuine strength loss / mechanism before delta_t
+    (V fell to 0.8 Vmax, the P-695 tail criterion, or gravity hinges reached rotation b) is TARGET NOT
+    REACHED, `acceptable = False`; a numerical stop (solver non-convergence or the drift cap) with V still
+    above 0.8 Vmax is NOT EVALUATED, `acceptable = None` -- not evidence of collapse.
   * a level with no monitored component (or no monitored beam/column in a frame that has moment-frame
     members) is NOT EVALUATED: worst D/C None, never 0.00 (NL-01).
 """
@@ -28,6 +31,49 @@ G_IN = 386.4
 EVALUATED = "evaluated"
 NOT_EVALUATED = "not_evaluated"
 TARGET_NOT_REACHED = "target_not_reached"
+
+
+# NL-R2-24: why a push ended short of delta_t (acceptance[level]["shortfall"]["kind"])
+SHORT_STRENGTH = "strength_loss"            # V fell to 0.8 Vmax before delta_t -> TARGET NOT REACHED, NOT ACCEPTABLE
+SHORT_COMPONENT = "component_limit"         # gravity hinges at rotation b before delta_t -> TARGET NOT REACHED, NOT ACCEPTABLE
+SHORT_NUMERICAL = "numerical"               # solver stopped with V > 0.8 Vmax -> NOT EVALUATED
+SHORT_DRIFT_CAP = "drift_cap"               # --max-drift reached first -> NOT EVALUATED
+
+
+def target_shortfall(run, disp):
+    """None when the recorded push reached `disp`; otherwise why it did not (NL-R2-24). A stop before delta_t is a
+    genuine strength loss / mechanism only when the curve shows it: V at or below 0.8 Vmax after the peak (the
+    FEMA P-695 / tail criterion used for delta_u) or gravity hinges at rotation b (tail status component_limit) at a
+    roof displacement short of delta_t. A solver stop while V is still above 0.8 Vmax (Ex8: V/Vmax = 1.000) is a
+    NUMERICAL stop and says nothing about collapse."""
+    u = np.asarray(run["rec"]["u"], dtype=float); V = np.asarray(run["rec"]["V"], dtype=float)
+    if len(u) and u.max() >= disp - 1e-9:
+        return None
+    Vmax = float(V.max()) if len(V) else 0.0
+    i_max = int(np.argmax(V)) if len(V) else 0
+    r_end = float(V[-1] / Vmax) if Vmax > 0 else float("nan")
+    base = dict(u_end_in=float(u[-1]) if len(u) else 0.0, target_disp_in=float(disp), V_end_over_Vmax=r_end, Vmax_kip=Vmax)
+    post = np.where((np.arange(len(V)) > i_max) & (V <= 0.8 * Vmax))[0]
+    if len(post):
+        return dict(base, kind=SHORT_STRENGTH, u_event_in=float(u[post[0]]),
+                    text="strength loss before the target: V fell to 0.8 Vmax at roof u = %.2f in < delta_t %.2f in"
+                         % (float(u[post[0]]), disp))
+    tail = run.get("tail") or {}
+    if tail.get("status") == "component_limit" and float(tail.get("u_component_limit", float("inf"))) < disp:
+        return dict(base, kind=SHORT_COMPONENT, u_event_in=float(tail["u_component_limit"]),
+                    text="gravity-carrying hinges reached rotation b (loss of gravity capacity) at roof u = %.2f in < delta_t %.2f in"
+                         % (float(tail["u_component_limit"]), disp))
+    if str(run.get("stop_reason", "")).startswith("reached max"):
+        return dict(base, kind=SHORT_DRIFT_CAP,
+                    text="analysis stopped at the drift cap (--max-drift) at V/Vmax = %.3f before the target displacement "
+                         "(roof u = %.2f in < delta_t %.2f in)" % (r_end, base["u_end_in"], disp))
+    return dict(base, kind=SHORT_NUMERICAL,
+                text="analysis stopped numerically at V/Vmax = %.3f before the target displacement (roof u = %.2f in < "
+                     "delta_t %.2f in); a numerical stop above 0.8 Vmax is not evidence of collapse" % (r_end, base["u_end_in"], disp))
+
+
+def shortfall_is_failure(sf) -> bool:
+    return bool(sf) and sf.get("kind") in (SHORT_STRENGTH, SHORT_COMPONENT)
 
 
 # --------------------------------------------------------------------------- spectra
@@ -184,12 +230,16 @@ def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
     h = 1.0 + 0.15 * math.log(max(out["Te"], 0.05))
     mu_max = (ide["ud"] / max(ide["uy"], 1e-9)) + (abs(alpha_e) ** (-h)) / 4.0 if alpha_e != 0 else float("inf")
     permitted = out["mu_strength"] < mu_max
+    sf = target_shortfall(run, out["target_disp_in"])              # NL-R2-24: failure vs numerical stop
+    if sf is None:
+        tstat = "reached"
+    elif shortfall_is_failure(sf):
+        tstat = "TARGET NOT REACHED: %s -- NOT ACCEPTABLE (ASCE 41-23 7.4.3.3.1)" % sf["text"]
+    else:
+        tstat = "NOT EVALUATED -- %s (ASCE 41-23 7.4.3.3.1)" % sf["text"]
     out.update(alpha2=alpha2, alpha2_basis=a2_basis, alpha_PDelta=alpha_pd, alpha_e=alpha_e, lambda_nf=lam,
                SX1_BSE2N=SX1_bse2n, mu_max=mu_max, nsp_permitted=permitted, theta_story1_elastic=theta1,
-               nsp_ok=bool(permitted and out["reached_target"]),
-               target_status=("reached" if out["reached_target"] else
-                              "TARGET NOT REACHED: the push ended at %.2f in < delta_t %.2f in (collapse / non-convergence / drift cap) "
-                              "-- NOT ACCEPTABLE (ASCE 41-23 7.4.3.3.1)" % (u_end, out["target_disp_in"])))
+               nsp_ok=bool(permitted and out["reached_target"]), target_shortfall=sf, target_status=tstat)
     return out
 
 
@@ -294,8 +344,9 @@ def acceptance(run, hinges, disp, level_name):
     exceeding delta_t shall satisfy 7.5.3.
 
     `status`: "evaluated" | "not_evaluated" (no monitored component, or no monitored beam/column although the
-    frame has moment-frame members: worst_DC None, NEVER 0.00) | "target_not_reached" (the push never got to
-    delta_t: worst_DC None, drifts None, acceptable False). `acceptable` is None unless evaluated or the target
+    frame has moment-frame members: worst_DC None, NEVER 0.00; or, NL-R2-24, reason "stopped_before_target": the push
+    stopped numerically / at the drift cap short of delta_t with V > 0.8 Vmax) | "target_not_reached" (strength loss or
+    rotation b before delta_t: worst_DC None, drifts None, acceptable False). `shortfall` (target_shortfall) says why. `acceptable` is None unless evaluated or the target
     was not reached (False); the performance level a Risk Category needs is applied by the consumer.
     `at_last_converged` (diagnostic only, when the target was not reached) carries the numbers at the last
     converged step, labelled as such."""
@@ -313,10 +364,16 @@ def acceptance(run, hinges, disp, level_name):
     if i is None:
         j = len(run["rec"]["u"]) - 1
         table, worst, census, drifts, colN = _census_drifts(run, hinges, j)
-        return dict(base, status=TARGET_NOT_REACHED, evaluated=False, acceptable=False,
-                    note="TARGET NOT REACHED: the push ended at roof u = %.2f in, short of delta_t = %.2f in "
-                         "(collapse, non-convergence or drift cap) -- NOT ACCEPTABLE; component acceptance and drift at "
-                         "delta_t NOT EVALUATED (ASCE 41-23 7.4.3.3.1)." % (float(run["rec"]["u"][j]), disp),
+        sf = target_shortfall(run, disp)
+        if shortfall_is_failure(sf):                 # genuine strength loss / mechanism before delta_t
+            verdict = dict(status=TARGET_NOT_REACHED, acceptable=False,
+                           note="TARGET NOT REACHED: %s -- NOT ACCEPTABLE; component acceptance and drift at delta_t "
+                                "not evaluated (ASCE 41-23 7.4.3.3.1)." % sf["text"])
+        else:                                        # NL-R2-24: numerical stop / drift cap, still above 0.8 Vmax
+            verdict = dict(status=NOT_EVALUATED, acceptable=None, reason="stopped_before_target",
+                           note="NOT EVALUATED -- %s; component acceptance and drift at delta_t not evaluated "
+                                "(ASCE 41-23 7.4.3.3.1)." % sf["text"])
+        return dict(base, evaluated=False, shortfall=sf, **verdict,
                     roof_disp_in=None, step=None, groups=[], worst_DC=dict(IO=None, LS=None, CP=None), census=[],
                     story_drifts=[], max_story_drift=None, col_N_max_kip=None,
                     at_last_converged=dict(roof_disp_in=float(run["rec"]["u"][j]), step=j, worst_DC=worst,
@@ -344,7 +401,8 @@ def acceptance(run, hinges, disp, level_name):
 
 def level_verdict(acc, perf):
     """True / False / None for one acceptance block against performance level `perf` ("IO"|"LS"|"CP"):
-    False when the target was not reached, None when not evaluated, else worst D/C <= 1.0."""
+    False when the target was not reached through strength loss, None when not evaluated (including a numerical
+    stop before the target, NL-R2-24), else worst D/C <= 1.0."""
     if not acc:
         return None
     st = acc.get("status")
