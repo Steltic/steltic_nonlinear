@@ -68,7 +68,7 @@ function update(){
   const drifts = []; let prev = 0; D.story_u[step].forEach((uk,i)=>{ drifts.push((uk-prev)/P.heights[i]); prev=uk; });
   const cnt = {}; st.forEach((k,i)=>{ const key = HZ[i].kind+':'+k; cnt[key]=(cnt[key]||0)+1; });
   const nb = k => HZ.filter((h,i)=>h.kind==='brace'&&st[i]===k).length, nc = k => HZ.filter((h,i)=>h.kind==='col'&&RANK[st[i]]>=RANK[k]).length, nbm = k => HZ.filter((h,i)=>h.kind==='beam'&&RANK[st[i]]>=RANK[k]).length;
-  document.getElementById('stepStats').innerHTML = rows([['Roof displacement', `${u.toFixed(2)} in`], ['Base shear', `${V.toFixed(0)} kip`], ['V / design V (R-reduced)', P.V_design?(V/P.V_design).toFixed(2):'—'], ['Max story drift', `${(100*Math.max(...drifts)).toFixed(2)}%`], ['Worst component', (()=>{let w='elastic';st.forEach(k=>{if(RANK[k]>RANK[w])w=k;});return STATE_LABEL[w];})()]]);
+  document.getElementById('stepStats').innerHTML = rows([['Roof displacement', `${u.toFixed(2)} in`], ['Base shear', `${V.toFixed(0)} kip`], ['V / design V (R-reduced)', (D.V_design??P.V_design)?(V/(D.V_design??P.V_design)).toFixed(2):'—'], ['Max story drift', `${(100*Math.max(...drifts)).toFixed(2)}%`], ['Worst component', (()=>{let w='elastic';st.forEach(k=>{if(RANK[k]>RANK[w])w=k;});return STATE_LABEL[w];})()]]);
   const dmax = Math.max(0.005, ...drifts);
   document.getElementById('driftBars').innerHTML = drifts.map((d,i)=>`<div class="stat"><span>story ${i+1}</span><span style="flex:1;margin:0 8px;height:7px;background:#1d222b;border-radius:3px;position:relative;top:5px"><span style="display:block;height:7px;width:${(100*d/dmax).toFixed(0)}%;background:var(--acc);border-radius:3px"></span></span><b>${(100*d).toFixed(2)}%</b></div>`).join('');
   const nbIO = HZ.filter((h,i)=>h.kind==='brace' && pl_now[i]<0 && -pl_now[i]>h.IO).length;
@@ -76,9 +76,9 @@ function update(){
   redrawChart();
 }
 function redrawChart(){
-  const D = P.dirs[dir]; const pts = D.u.map((x,i)=>[x, D.V[i]]); const umax = Math.max(...D.u)*1.05, vmax = Math.max(...D.V, P.V_design||0)*1.12;
+  const D = P.dirs[dir]; const pts = D.u.map((x,i)=>[x, D.V[i]]); const umax = Math.max(...D.u)*1.05, vmax = Math.max(...D.V, (D.V_design??P.V_design)||0)*1.12;
   const vl = []; for (const [lvl,n] of Object.entries(D.nsp)) vl.push({x:n.target_disp_in, color: lvl==='BSE-1N'?'#3fc1a0':'#e8742c', label:`δt ${lvl} ${n.target_disp_in.toFixed(1)} in`, dy: lvl==='BSE-1N'?0:12});
-  const hl = []; if (P.V_design) hl.push({y:P.V_design, color:'#8b95a3', label:`design V ${P.V_design.toFixed(0)} kip (R = ${P.R})`}); if (P.V_wind) hl.push({y:P.V_wind[dir], color:'#5b8dd9', label:`wind ${P.V_wind[dir].toFixed(0)} kip`});
+  const hl = []; const Vd = D.V_design??P.V_design, Rd = D.R??P.R; if (Vd) hl.push({y:Vd, color:'#8b95a3', label:`design V ${Vd.toFixed(0)} kip (R = ${Rd})`}); if (P.V_wind) hl.push({y:P.V_wind[dir], color:'#5b8dd9', label:`wind ${P.V_wind[dir].toFixed(0)} kip`});
   const ser = [{pts, color:'#ffb454', width:2}]; const n2 = D.nsp['BSE-2N']; if (n2) ser.push({pts:[[0,0],[n2.uy,n2.Vy],[n2.target_disp_in, n2.Vy+n2.alpha1*n2.Ke*(n2.target_disp_in-n2.uy)]], color:'#9fb4cc', width:1.2, dash:[5,4]});
   drawChart({xmin:0, xmax:umax, ymin:0, ymax:vmax, series:ser, vlines:vl, hlines:hl, cursor:[D.u[step], D.V[step]], cursorColor:'#ffb454', title:`Capacity curve — push ${dir} (first-mode pattern, P-Δ)`, xlabel:'roof displacement (in)', ylabel:'base shear (kip)', yfmt:v=>v.toFixed(0), xfmt:v=>v.toFixed(0)});
 }
@@ -141,6 +141,7 @@ def write(outdir, pkg, prm, runs, results, hinge_stats):
                            hinge_pl=[[round(x, 5) for x in s] for s in run["rec"]["hinge_pl"]],
                            nsp={k: {kk: (None if (isinstance(vv, float) and vv != vv) else vv) for kk, vv in n.items() if kk in ("Te", "Sa", "target_disp_in", "mu_strength", "mu_max", "nsp_permitted", "nsp_strength_ok", "nsp_status", "Vy", "uy", "Ke", "alpha1")} for k, n in R["nsp"].items()},
                            Vmax=R["p695"]["Vmax_kip"], Omega=R["p695"]["Omega"], mu_T=R["p695"]["mu_T"], tail=run.get("tail", {}).get("status", ""),
+                           V_design=R["p695"].get("V_design_kip", b.V_design_kip), R=R["p695"].get("R_design", b.R),     # NL-R2-17: per direction
                            acc={k: a["worst_DC"] for k, a in R["acc"].items()})
     heights = first["heights"]
     sched = {t: dict(combo=r.get("governing_combo", ""), P=round(r.get("P_comp_kip", 0)), Mx=round(r.get("Mx_kipft", 0))) for t, r in pkg.schedule.items()}

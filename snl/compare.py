@@ -125,17 +125,20 @@ def pill(cls, txt):
 
 # --------------------------------------------------------------------------------------------- figures
 def svg_curves(po, V_design):
+    """V_design: one design base shear, or {direction: V} for a mixed-system building (NL-R2-17)."""
     dirs = po["directions"]
+    Vd = V_design if isinstance(V_design, dict) else ({"": V_design} if V_design else {})
     W, H = 560, 270; ml, mr, mt, mb = 54, 16, 16, 34; pw, ph = W - ml - mr, H - mt - mb
-    umax = max(max(d["curve_u_in"]) for d in dirs.values()) * 1.05; vmax = max(max(max(d["curve_V_kip"]) for d in dirs.values()), V_design or 0) * 1.12
+    umax = max(max(d["curve_u_in"]) for d in dirs.values()) * 1.05; vmax = max(max(max(d["curve_V_kip"]) for d in dirs.values()), max([v or 0 for v in Vd.values()] or [0])) * 1.12
     X = lambda u: ml + u / umax * pw; Y = lambda v: mt + ph - v / vmax * ph
     o = [f'<svg viewBox="0 0 {W} {H}" width="100%" style="max-width:{W}px;display:block">']
     for i in range(5):
         v = vmax * i / 4; o.append(f'<line x1="{ml}" y1="{Y(v):.1f}" x2="{ml+pw}" y2="{Y(v):.1f}" stroke="var(--grid)"/><text class="ax" x="{ml-6}" y="{Y(v)+4:.1f}" text-anchor="end">{v:,.0f}</text>')
         u = umax * i / 4; o.append(f'<text class="ax" x="{X(u):.1f}" y="{H-14}" text-anchor="middle">{u:.0f}</text>')
     o.append(f'<text class="lab" x="{ml+pw}" y="{H-2}" text-anchor="end">roof displacement (in)</text><text class="lab" x="{ml}" y="{mt-4}">base shear (kip)</text>')
-    if V_design:
-        o.append(f'<line x1="{ml}" y1="{Y(V_design):.1f}" x2="{ml+pw}" y2="{Y(V_design):.1f}" stroke="var(--muted)" stroke-dasharray="2,4"/><text class="lab" x="{ml+pw-2}" y="{Y(V_design)-4:.1f}" text-anchor="end">design V = {V_design:,.0f} kip (R-reduced)</text>')
+    for dn, v in Vd.items():
+        if v:
+            o.append(f'<line x1="{ml}" y1="{Y(v):.1f}" x2="{ml+pw}" y2="{Y(v):.1f}" stroke="var(--muted)" stroke-dasharray="2,4"/><text class="lab" x="{ml+pw-2}" y="{Y(v)-4:.1f}" text-anchor="end">design V{(" " + dn) if dn else ""} = {v:,.0f} kip (R-reduced)</text>')
     cols = {"X": "var(--hot)", "Y": "var(--steel)"}
     for k, (name, d) in enumerate(dirs.items()):
         col = cols.get(name, "var(--teal)")
@@ -278,7 +281,8 @@ def build(job, out_name="four_analyses.html", title=None):
                     "not_evaluated": "applicability NOT EVALUATED (higher-mode test of ASCE 41-23 7.3.2.1 not completed)"}[nsp_st]
         tails = {k: d.get("tail", {}).get("status", "") for k, d in dirs.items()}
         stats = po.get("hinge_stats", {})
-        po_v = f"Ω {om}"; po_vl = f"V<sub>max</sub> {vmx} kip vs V = {fmt(po['basis'].get('V_design_kip'), 0)} kip ({' / '.join(dirs)})"
+        vdes = " / ".join(fmt(d["p695"].get("V_design_kip", po["basis"].get("V_design_kip")), 0) for d in dirs.values())   # NL-R2-17: per direction
+        po_v = f"Ω {om}"; po_vl = f"V<sub>max</sub> {vmx} kip vs V = {vdes} kip ({' / '.join(dirs)})"
         mon = {k: (d["acceptance"].get("BSE-2N") or {}).get("monitored") for k, d in dirs.items()}
         mon_txt = "; ".join(f"{k}: " + ", ".join(f"{n} {kind}" for kind, n in (m or {}).items() if n) for k, m in mon.items() if m)
         po_foot = (f"BPON for Risk Category {rc.replace('_', '/')}: {lv1} at BSE-1N D/C {bpon1}; {lv2} at BSE-2N D/C {bpon2} — {bpon_word}. "
@@ -353,9 +357,13 @@ def build(job, out_name="four_analyses.html", title=None):
     Q.append(row("Fundamental periods (s)", T_st or "—", (" / ".join(f"{d['T1']:.2f}" for d in po["directions"].values()) if po else "—"), (f"{nl['modal']['T1x']:.2f} / {nl['modal']['T1y']:.2f}" if nl else "—"),
                  (f"gate {'ok' if dd.get('gate', {}).get('ok') else 'FAIL'}" if dd else "—"), "Independent model builds of the same package; the hinge model is the design model with springs added."))
     if st["V_kip"]:
-        Q.append(row("Design lateral force (kip)", f"{st['V_kip']:,.0f} seismic" + (f" · {st['wind_X']:,.0f} / {st['wind_Y']:,.0f} wind" if st["wind_X"] else ""),
+        # NL-R2-17: a mixed-system building has its own design V per direction (from the pushover package's per-direction basis)
+        _pd = {k: d["p695"].get("V_design_kip") for k, d in po["directions"].items()} if (po and any(d["p695"].get("per_direction_basis") for d in po["directions"].values())) else None
+        _vd = lambda k: (_pd or {}).get(k) or st["V_kip"]
+        Q.append(row("Design lateral force (kip)", (f"{st['V_kip']:,.0f} seismic" if not _pd else " / ".join(f"{v:,.0f}" for v in _pd.values()) + " seismic (" + " / ".join(_pd) + ", per direction)")
+                     + (f" · {st['wind_X']:,.0f} / {st['wind_Y']:,.0f} wind" if st["wind_X"] else ""),
                      (" / ".join(f"V<sub>y</sub> {d['nsp']['BSE-2N']['Vy']:,.0f}" for d in po["directions"].values()) if po else "—"), "—", "λ = 1.0 on each combination" if dd else "—",
-                     ("Effective yield strength is " + " / ".join(f"{d['nsp']['BSE-2N']['Vy']/st['V_kip']:.1f}" for d in po["directions"].values()) + " × the R-reduced design shear.") if po else ""))
+                     ("Effective yield strength is " + " / ".join(f"{d['nsp']['BSE-2N']['Vy']/_vd(k):.1f}" for k, d in po["directions"].items()) + " × the R-reduced design shear.") if po else ""))
     if po:
         Q.append(row("System strength / overstrength", f"Ω<sub>0</sub> = {fmt(po['basis'].get('Om0'), 1)}", f"V<sub>max</sub> {vmx} kip · Ω {om}", "—",
                      (f"λ<sub>u</sub> {min(r['lambda_u'] for r in dd['runs'] if r['kind'] != 'gravity'):.2f}–{max(r['lambda_u'] for r in dd['runs'] if r['kind'] != 'gravity'):.2f} (lateral cases)" if dd and any(r['kind'] != 'gravity' for r in dd['runs']) else "—"),
@@ -386,7 +394,8 @@ def build(job, out_name="four_analyses.html", title=None):
     # ---------------- figures
     figs = []
     if po:
-        figs.append(f"<figure>{svg_curves(po, st['V_kip'] or po['basis'].get('V_design_kip'))}<figcaption>Capacity curves with the ASCE 41 target displacements and the R-reduced design base shear.</figcaption></figure>")
+        _vd = {k: d["p695"].get("V_design_kip") for k, d in po["directions"].items()} if any(d["p695"].get("per_direction_basis") for d in po["directions"].values()) else None
+        figs.append(f"<figure>{svg_curves(po, _vd or st['V_kip'] or po['basis'].get('V_design_kip'))}<figcaption>Capacity curves with the ASCE 41 target displacements and the R-reduced design base shear.</figcaption></figure>")
     if po or nl or st["drift_X"]:
         # direction with the larger NLRHA mean drift (else pushover, else Y)
         dirn = "Y"

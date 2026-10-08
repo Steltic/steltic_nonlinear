@@ -342,9 +342,11 @@ def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
 
 # --------------------------------------------------------------------------- FEMA P-695 factors
 def p695_factors(run, basis, nsp_bse1):
+    from .package_reader import dir_basis
     u = np.asarray(run["rec"]["u"]); V = np.asarray(run["rec"]["V"])
     Vmax = float(V.max()); i_max = int(np.argmax(V))
-    Vdes = basis.V_design_kip
+    db = dir_basis(basis, run.get("direction"))                   # NL-R2-17: the push direction's own V / T / Om0 (mixed systems)
+    Vdes = db["V_design_kip"]
     Omega = Vmax / Vdes if Vdes else None
     post = np.where((np.arange(len(V)) > i_max) & (V <= 0.8 * Vmax))[0]
     tail = run.get("tail", {})
@@ -354,9 +356,10 @@ def p695_factors(run, basis, nsp_bse1):
         du = float(np.interp(0.8 * Vmax, V[post[0] - 1:post[0] + 1][::-1], u[post[0] - 1:post[0] + 1][::-1])); du_bound = "captured"
     else:
         du = float(u[-1]); du_bound = "LOWER BOUND (curve did not lose 20% of Vmax before the run stopped)"
-    W = nsp_bse1["W_kip"]; T = max(basis.T_design_s or 0.0, run["pattern"]["T1"])
+    W = nsp_bse1["W_kip"]; T = max(db["T_design_s"] or 0.0, run["pattern"]["T1"])
     dy_eff = nsp_bse1["C0"] * (Vmax / W) * (G_IN / (4 * math.pi ** 2)) * T ** 2
-    return dict(Vmax_kip=Vmax, u_at_Vmax_in=float(u[i_max]), V_design_kip=Vdes, Omega=Omega, Omega0_design=basis.Om0,
+    return dict(Vmax_kip=Vmax, u_at_Vmax_in=float(u[i_max]), V_design_kip=Vdes, Omega=Omega, Omega0_design=db["Om0"],
+                R_design=db["R"], Cd_design=db["Cd"], system_design=db["system"], per_direction_basis=db["per_direction"],
                 delta_u_in=du, delta_u_basis=du_bound, delta_y_eff_in=dy_eff, mu_T=du / dy_eff, T_used_s=T,
                 Vmax_over_W=Vmax / W)
 

@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from pushover import package_reader as PR
 
 CSS = """
 body{font-family:Georgia,'Times New Roman',serif;max-width:1080px;margin:32px auto;padding:0 20px;color:#1b1b1b;line-height:1.45}
@@ -150,7 +151,14 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
              % (v["n_records"], v.get("n_suite", v["n_records"]), v.get("n_completed", v["n_records"]), v.get("n_nonconvergence", 0), v.get("n_incomplete", 0), v.get("n_not_run", 0),
                 _tag(not (v.get("n_incomplete") or v.get("n_not_run") or v.get("n_suite", 11) < ch16["n_motions"]["min"]), "complete", "incomplete")))
     H.append("<tr><td>Unacceptable responses (16.4.1.1)</td><td>%d of %d records · allowed %d %s</td><td>16.4.1.1 · 250</td></tr>" % (v["n_unacceptable"], v["n_records"], v["unacceptable_allowed"], _tag(v["unacceptable_ok"])))
-    H.append("<tr><td>Mean transient story drift ≤ limit (vertically aligned points)</td><td>max mean %s vs limit %s %s</td><td>16.4.1.2 · 250</td></tr>" % (_pct(v.get("mean_drift_max")), _pct(acc["limits"]["mean_limit"]), _tag(v["mean_drift_ok"])))
+    bdl = acc["limits"].get("by_dir") or {}
+    if bdl:                                                         # NL-R2-17: mixed systems -- each direction against its own limit
+        mx = {d: max([st["mean_%s" % d] for st in acc["story"] if st.get("mean_%s" % d) is not None], default=None) for d in ("X", "Y")}
+        H.append("<tr><td>Mean transient story drift ≤ limit (vertically aligned points), per direction (mixed systems, 12.2.2)</td><td>%s %s</td><td>16.4.1.2 · 250</td></tr>"
+                 % (" · ".join("%s (%s): max mean %s vs limit %s (2 × Table 12.12-1 '%s')" % (d, x.get("system"), _pct(mx.get(d)), _pct(x["mean_limit"]), x.get("table_row"))
+                               for d, x in sorted(bdl.items())), _tag(v["mean_drift_ok"])))
+    else:
+        H.append("<tr><td>Mean transient story drift ≤ limit (vertically aligned points)</td><td>max mean %s vs limit %s %s</td><td>16.4.1.2 · 250</td></tr>" % (_pct(v.get("mean_drift_max")), _pct(acc["limits"]["mean_limit"]), _tag(v["mean_drift_ok"])))
     H.append("<tr><td>Deformation-controlled elements (mean vs CP · vs valid range b)</td><td>%s · %s</td><td>16.4.2.2 · 251</td></tr>" % (_tag(v["deformation_ok"], "CP ok", "CP exceeded"), _tag(v["valid_range_ok"], "within b", "beyond b")))
     x2 = v.get("FC_exception_2") or {}
     H.append("<tr><td>Force-controlled columns: axial + concurrent flexure (H1-1), Eqs. (1.2+0.12S<sub>MS</sub>)D+0.5L+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and (0.9−0.12S<sub>MS</sub>)D+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) ≤ φBR<sub>n</sub>%s</td><td>worst D/C %s %s%s</td><td>16.4.2.1%s · 251</td></tr>"
@@ -185,9 +193,13 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
 
     H.append("<h2>2. Design basis and Chapter 16 inputs</h2><table><tr><th>Item</th><th>Value</th><th>Basis</th></tr>")
     SMS, SM1 = 1.5 * b.SDS, 1.5 * b.SD1
-    for lab, val, src in (("System", b.system, "cfg.py"), ("S<sub>DS</sub> / S<sub>D1</sub> (g)", "%.2f / %.3f" % (b.SDS, b.SD1), "cfg.py"),
+    bd = getattr(b, "by_dir", None) or {}                            # NL-R2-17: mixed systems -- the factors of each direction
+    for lab, val, src in (("System", b.system if not bd else " · ".join("%s: %s" % (d, x.get("system")) for d, x in sorted(bd.items())), "cfg.py" if not bd else "per direction (12.2.2): " + b.sources.get("by_dir", "")),
+                          ("S<sub>DS</sub> / S<sub>D1</sub> (g)", "%.2f / %.3f" % (b.SDS, b.SD1), "cfg.py"),
                           ("S<sub>MS</sub> / S<sub>M1</sub> (g) = 1.5 × design", "%.2f / %.3f" % (SMS, SM1), "16.2.1.1 → 11.4.6 (pdf 248, 107)"),
-                          ("R / C<sub>d</sub> / Ω<sub>0</sub> / I<sub>e</sub>", "%s / %s / %s / %s" % (b.R, b.Cd, b.Om0, b.Ie), "Table 12.2-1 row of the package"),
+                          ("R / C<sub>d</sub> / Ω<sub>0</sub> / I<sub>e</sub>", ("%s / %s / %s / %s" % (b.R, b.Cd, b.Om0, b.Ie)) if not bd else
+                           " · ".join("%s: %s / %s / %s / %s" % (d, x.get("R"), x.get("Cd"), x.get("Om0"), b.Ie) for d, x in sorted(bd.items())),
+                           "Table 12.2-1 row of the package" + (" for each direction (not used by the Chapter 16 analysis itself)" if bd else "")),
                           ("T<sub>1X</sub> / T<sub>1Y</sub> of hinge model (s)", "%.3f / %.3f" % (modal["T1x"], modal["T1y"]), "eigen, 16.2.3.1"),
                           ("Period range for scaling (s)", "%.2f – %.2f" % (gm["T_lower"], gm["T_upper"]), "16.2.3.1: ≤0.2 T<sub>min</sub> & 90% mass … ≥ 2 T<sub>max</sub>"),
                           ("Viscous damping", "%.1f%% Rayleigh at T<sub>1</sub> and 0.2 T<sub>1</sub> (elastic elements + mass)" % (100 * ch16["damping"]["xi_used"]), "16.3.5 (≤ 2.5%)"),
@@ -327,8 +339,9 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
             H.append("<tr><td>MCE<sub>R</sub>-level roof displacement — %s</td><td>C<sub>d</sub>δ<sub>e</sub>: see Ch. 8 of report.html</td><td>δ<sub>t</sub> BSE-2N = %s in</td><td>mean of peaks = %s in</td></tr>"
                      % (d, _num(n2.get("target_disp_in"), "%.1f", "not computed"), _num(float(np.mean(roofs)) if roofs else None, "%.1f", "not computed")))
             H.append("<tr><td>Max story drift at MCE<sub>R</sub> — %s</td><td>—</td><td>%s</td><td>%s (suite statistic)</td></tr>" % (d, _pct(a2.get("max_story_drift")), _pct(mean_d)))
-            H.append("<tr><td>Overstrength / demand — %s</td><td>V = %s kip (R = %s)</td><td>Ω = %.1f, V<sub>max</sub> = %.0f kip</td><td>direct MCE<sub>R</sub> demand; no R, Ω<sub>0</sub>, C<sub>d</sub></td></tr>"
-                     % (d, b.V_design_kip, b.R, P.get("p695", {}).get("Omega", float("nan")), P.get("p695", {}).get("Vmax_kip", float("nan"))))
+            db = PR.dir_basis(b, d)                                   # NL-R2-17: the direction's own V and R (mixed systems)
+            H.append("<tr><td>Overstrength / demand — %s</td><td>V = %s kip (R = %s%s)</td><td>Ω = %.1f, V<sub>max</sub> = %.0f kip</td><td>direct MCE<sub>R</sub> demand; no R, Ω<sub>0</sub>, C<sub>d</sub></td></tr>"
+                     % (d, db["V_design_kip"], db["R"], (", %s" % db["system"]) if db["per_direction"] else "", P.get("p695", {}).get("Omega", float("nan")), P.get("p695", {}).get("Vmax_kip", float("nan"))))
         H.append("</table>")
     H.append("<h2>7. Open items before this supplement is issued</h2><ol>")
     for it in ("Component backbones are unverified placeholders (steltic_pushover/hinge_params.json) — retrieve ASCE 41-23 / AISC 342-22 through Query file manager; confirm the cyclic-deterioration parameters (16.3.1).",

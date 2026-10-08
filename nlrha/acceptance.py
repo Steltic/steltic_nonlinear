@@ -23,9 +23,12 @@ def risk_category(pkg, override=None):
     return "IV" if Ie >= 1.5 - 1e-9 else ("III" if Ie >= 1.25 - 1e-9 else "I_II")
 
 
-def drift_limits(ch16, hn_in, H_story_in, rc="I_II"):
+def drift_limits(ch16, hn_in, H_story_in, rc="I_II", systems=None):
     """16.4.1.2: mean limit = 2 x Table 12.12-1 ('all other structures' row for the Risk Category); for hn > 100 ft also the
-    tall-building cap hsx(4.71e-2 - 7.14e-5 hn) >= 0.03 hn (as a ratio: 0.0471 - 7.14e-5*hn_ft, floor 0.03). Ratio limits."""
+    tall-building cap hsx(4.71e-2 - 7.14e-5 hn) >= 0.03 hn (as a ratio: 0.0471 - 7.14e-5*hn_ft, floor 0.03). Ratio limits.
+    systems (NL-R2-17): {"X": system, "Y": system} of a mixed-system building -> the limits are also given per direction
+    (`by_dir`), each from the Table 12.12-1 row of that direction's system. 16.4.1.2 sends masonry shear-wall systems to
+    the 'other structures' row too, so every system in this tool's scope takes the 'all other structures' row."""
     d = ch16["transient_drift"]
     tab = d.get("table_12_12_1_all_other", {}).get(rc, d["table_12_12_1_all_other_RC_I_II"])
     lim = d["factor_on_table_12_12_1"] * tab
@@ -34,8 +37,18 @@ def drift_limits(ch16, hn_in, H_story_in, rc="I_II"):
     if hn_ft > d["tall_height_ft"]:
         tall = max(d["tall_a"] - d["tall_b"] * hn_ft, d["tall_floor"])
         lim = min(lim, tall)
-    return dict(mean_limit=lim, tall_limit=tall, table_12_12_1=tab, risk_category=rc,
-                unacceptable_peak=ch16["unacceptable_response"]["peak_drift_factor_of_mean_limit"] * lim)
+    out = dict(mean_limit=lim, tall_limit=tall, table_12_12_1=tab, risk_category=rc,
+               unacceptable_peak=ch16["unacceptable_response"]["peak_drift_factor_of_mean_limit"] * lim)
+    if systems:
+        out["by_dir"] = {d: dict(system=sy, table_row="all other structures", table_12_12_1=tab, mean_limit=lim,
+                                 unacceptable_peak=out["unacceptable_peak"]) for d, sy in systems.items()}
+    return out
+
+
+def _dir_limit(lim, j, key="mean_limit"):
+    """NL-R2-17: the limit for direction index j (0 = X, 1 = Y) -- per direction for a mixed-system building."""
+    bd = lim.get("by_dir") or {}
+    return (bd.get("XY"[j]) or {}).get(key, lim[key])
 
 
 def record_status(r):
@@ -470,7 +483,8 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         zs = [z for k, z, m, sl in NM.levels(pkg)]
         heights = [b - a for a, b in zip([0.0] + zs[:-1], zs)]
     hn = sum(heights)
-    lim = drift_limits(ch16, hn, heights, rc)
+    by_dir = getattr(getattr(pkg, "basis", None), "by_dir", None) or {}          # NL-R2-17: mixed systems (12.2.2)
+    lim = drift_limits(ch16, hn, heights, rc, systems=({d: v.get("system") for d, v in by_dir.items()} if by_dir else None))
     n_story = len(heights)
     # ---- per-record unacceptable-response screen (16.4.1.1)
     per = []
@@ -482,8 +496,15 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         if st == "nonconvergence":
             flags.append("non-convergence (%s)" % r.get("reason"))
         pk = _f(np.max(r["peak_story_drift"])) if (has_peaks and st in ("completed", "incomplete")) else None
-        if pk is not None and pk > lim["unacceptable_peak"]:
+        if pk is not None and not lim.get("by_dir") and pk > lim["unacceptable_peak"]:
             flags.append("peak story drift %.2f%% > 150%% of mean limit (%.2f%%)%s" % (100 * pk, 100 * lim["unacceptable_peak"], " -- lower bound, record incomplete" if lower else ""))
+        elif pk is not None and lim.get("by_dir"):                  # NL-R2-17: each direction against its own limit
+            pkd = np.asarray(r["peak_story_drift"], float).reshape(len(r["peak_story_drift"]), -1)
+            for j in range(min(2, pkd.shape[1])):
+                pj = _f(np.max(pkd[:, j])); uj = _dir_limit(lim, j, "unacceptable_peak")
+                if pj is not None and pj > uj:
+                    flags.append("peak story drift %.2f%% (%s, %s) > 150%% of mean limit (%.2f%%)%s" % (100 * pj, "XY"[j], lim["by_dir"]["XY"[j]].get("system"), 100 * uj,
+                                                                                               " -- lower bound, record incomplete" if lower else ""))
         beyond = []
         if st in ("completed", "incomplete") and r.get("peak_def"):
             for t, v in r["peak_def"].items():
@@ -523,7 +544,8 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
     story_rows = [dict(story=i + 1, h_in=heights[i],
                        mean_X=(_f(mean_drift[i, 0]) if acc_runs else None), mean_Y=(_f(mean_drift[i, 1]) if acc_runs else None),
                        max_X=(_f(drifts[:, i, 0].max()) if acc_runs else None), max_Y=(_f(drifts[:, i, 1].max()) if acc_runs else None),
-                       ok=(bool(max(mean_drift[i]) <= lim["mean_limit"]) if acc_runs else None)) for i in range(n_story)]
+                       ok=((bool(all(mean_drift[i][j] <= _dir_limit(lim, j) for j in range(len(mean_drift[i])))) if lim.get("by_dir") else
+                            bool(max(mean_drift[i]) <= lim["mean_limit"])) if acc_runs else None)) for i in range(n_story)]
     resid_ok_runs = [r for r in acc_runs if all(_f(x) is not None for x in r.get("residual_drift", []))]
     resid = np.array([r["residual_drift"] for r in resid_ok_runs]); mean_resid = suite_stat(resid) if len(resid_ok_runs) else None
     tall240 = hn / 12.0 > ch16["residual_drift"]["height_ft"]

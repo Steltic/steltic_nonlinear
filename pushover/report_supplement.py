@@ -182,7 +182,13 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                    ("Cd", "C<sub>d</sub>"), ("Om0", "Ω<sub>0</sub>"), ("Ie", "I<sub>e</sub>"), ("W_kip", "Effective seismic weight W (kip)"),
                    ("V_design_kip", "ELF design base shear V (kip)"), ("T_design_s", "Design period T (s)"), ("L_floor_psf", "Floor live load (psf)")):
         H.append("<tr><td>%s</td><td>%s</td><td>%s</td></tr>" % (lab, _f(getattr(b, k)), b.sources.get(k, "—")))
+    for d, x in sorted((getattr(b, "by_dir", None) or {}).items()):     # NL-R2-17: mixed systems (12.2.2) -- the factors of each direction
+        H.append("<tr><td><b>Direction %s</b> (mixed systems, ASCE 7-22 12.2.2): system · R / C<sub>d</sub> / Ω<sub>0</sub> · V · T</td><td>%s · %s / %s / %s · %s kip · %s s</td><td>%s</td></tr>"
+                 % (d, x.get("system"), _f(x.get("R")), _f(x.get("Cd")), _f(x.get("Om0")), _f(x.get("V_design_kip")), _f(x.get("T_design_s")),
+                    "; ".join(sorted(set((x.get("source") or {}).values())))))
     H.append("</table>")
+    if getattr(b, "by_dir", None):
+        H.append('<p class="note">Mixed systems: Ω = V<sub>max</sub>/V, Ω<sub>0</sub>, R and C<sub>d</sub> below use the push direction\'s own design (the rows above), not the building headline.</p>')
     _pz = (prm.get("panel_zones") or {}).get("mode", "rigid")
     _npz = hinge_stats.get("panel_zones", 0) if hinge_stats else 0
     if (hinge_stats or {}).get("plasticity") == "fibre":
@@ -246,11 +252,11 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
         p = R["p695"]
         H.append("<h3>FEMA P-695-style factors from this curve</h3><table><tr><th>Factor</th><th>Value</th><th>Design basis</th><th>Reading</th></tr>")
         H.append("<tr><td>Overstrength Ω = V<sub>max</sub>/V</td><td>%s (V<sub>max</sub> = %.0f kip, V<sub>max</sub>/W = %.2f)</td><td>Ω<sub>0</sub> = %s</td><td>%s</td></tr>"
-                 % (_f(p["Omega"]), p["Vmax_kip"], p["Vmax_over_W"], _f(b.Om0, 1),
+                 % (_f(p["Omega"]), p["Vmax_kip"], p["Vmax_over_W"], _f(p.get("Omega0_design", b.Om0), 1),
                     "system overstrength far exceeds the tabulated Ω<sub>0</sub> — heavy drift/serviceability-governed sections; capacity-design forces bounded by Ω<sub>0</sub>Q<sub>E</sub> are not an upper bound here"
-                    if (p["Omega"] or 0) > 1.5 * (b.Om0 or 3) else "within the usual range of the tabulated Ω<sub>0</sub>"))
+                    if (p["Omega"] or 0) > 1.5 * (p.get("Omega0_design", b.Om0) or 3) else "within the usual range of the tabulated Ω<sub>0</sub>"))
         H.append("<tr><td>Period-based ductility μ<sub>T</sub> = δ<sub>u</sub>/δ<sub>y,eff</sub></td><td>%s (δ<sub>u</sub> = %.1f in %s; δ<sub>y,eff</sub> = %.2f in, T = %.2f s)</td><td>R = %s, C<sub>d</sub> = %s</td><td>%s</td></tr>"
-                 % (_f(p["mu_T"]), p["delta_u_in"], p["delta_u_basis"], p["delta_y_eff_in"], p["T_used_s"], _f(b.R, 0), _f(b.Cd, 1),
+                 % (_f(p["mu_T"]), p["delta_u_in"], p["delta_u_basis"], p["delta_y_eff_in"], p["T_used_s"], _f(p.get("R_design", b.R), 0), _f(p.get("Cd_design", b.Cd), 1),
                     "μ<sub>T</sub> ≥ 3 is the P-695 threshold for full spectral-shape credit" if p["mu_T"] >= 3 else "limited ductility — review hinge parameters and mechanism"))
         t = run.get("tail", {})
         _st = t.get("status")
@@ -313,7 +319,7 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
     for d, run in runs.items():
         R = results[d]; n1 = R["nsp"]["BSE-1N"]; n2 = R["nsp"]["BSE-2N"]; p = R["p695"]
         H.append("<tr><td>Actual overstrength vs Ω<sub>0</sub> = %s (%s)</td><td>Ω = %s</td><td>Ch. 9 capacity design — Ω<sub>0</sub>Q<sub>E</sub> column/collector forces</td></tr>"
-                 % (_f(b.Om0, 1), d, _f(p["Omega"])))
+                 % (_f(p.get("Omega0_design", b.Om0), 1), d, _f(p["Omega"])))
         H.append("<tr><td>Does a ductile (beam-hinging) mechanism form? (%s)</td><td>%d beam / %d column hinges yielded at δ<sub>t</sub> BSE-2N</td><td>Ch. 9 SCWB ratio</td></tr>"
                  % (d, sum(c["beam_yielded"] for c in R["acc"]["BSE-2N"]["census"]), sum(c["col_yielded"] for c in R["acc"]["BSE-2N"]["census"])))
         _md = R["acc"]["BSE-2N"].get("max_story_drift")

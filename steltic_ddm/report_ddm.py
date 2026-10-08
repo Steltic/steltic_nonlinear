@@ -208,7 +208,10 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     parts.append('<p>Source package: <code>%s</code>. Steltic design: <b>%s</b>; system <b>%s</b>; R = %s, C<sub>d</sub> = %s, Ω<sub>0</sub> = %s; '
                  'bases <b>%s</b>, joints <b>%s</b>, gravity framing <b>%s</b>; %s. The DDM agent analysed the '
                  'building exactly as designed — no member was resized.</p>' % (
-                     _h(nm.job_dir), _h(cfg.get("arch", "")), _h(cfg.get("system", "")), R, cfg.get("seis", {}).get("Cd"), cfg.get("seis", {}).get("Om0"),
+                     _h(nm.job_dir), _h(cfg.get("arch", "")), _h(cfg.get("system", "")),
+                     (R if phi_s.system_R(cfg, "X") == phi_s.system_R(cfg, "Y") else       # NL-R2-17: mixed systems, per direction
+                      "%s (X, %s) / %s (Y, %s)" % (phi_s.system_R(cfg, "X"), _h((cfg.get("seis_X") or {}).get("system", "")), phi_s.system_R(cfg, "Y"), _h((cfg.get("seis_Y") or {}).get("system", cfg.get("seis", {}).get("system", ""))))),
+                     cfg.get("seis", {}).get("Cd"), cfg.get("seis", {}).get("Om0"),
                      cfg.get("model", {}).get("bases") or cfg.get("base"), cfg.get("model", {}).get("joints") or "—", cfg.get("model", {}).get("gravity") or "—",
                      geo))
     secs = sorted({(m.role, m.section) for m in nm.members})

@@ -197,7 +197,7 @@ def run(args):
         summ = loads.combo_summary(c)
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
         mat = "CFS-P" if portal else "HR"
-        ph = phi_s.choose(summ["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)
+        ph = phi_s.choose(summ["kind"], phi_s.system_R(cfg, summ.get("lateral_dir")), r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)   # NL-R2-17
         runs.append(dict(combo=c, summary=summ, res=r["res"], cls=r["cls"], phi=ph, check=phi_s.check(ph["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"]),
                          imp=r["imp"], state=r["state"]))
     # member table from the governing strength combination per group
@@ -337,7 +337,7 @@ def report(args):
     for r in runs:
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
         mat = "CFS-P" if PA.is_portal(cfg) else "HR"
-        r["phi"] = phi_s.choose(r["summary"]["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)
+        r["phi"] = phi_s.choose(r["summary"]["kind"], phi_s.system_R(cfg, r["summary"].get("lateral_dir")), r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)   # NL-R2-17
         r["check"] = phi_s.check(r["phi"]["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"])
         print("   %-40s lambda_u %.3f  %-7s phi_s %s  -> %s" % (r["combo"][0][:40], r["res"]["lambda_u"], r["phi"]["cls"], r["phi"]["phi_s"], r["check"][1]))
     opts_rep = dict(d.get("options", {}))

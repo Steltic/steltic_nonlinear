@@ -220,7 +220,10 @@ def content(g, project=None, engineer=None, reviewer=None):
     s.t([["Item", "Value", "Source"],
          ["Project", project or "[project name / address]", "input"],
          ["Building", "%s · %s · %s levels%s" % (pkg.name, b.system or cd.get("system") or "[SFRS]", len(b.heights_in) if b.heights_in else (len(g["po"]["gravity"]) if g["po"] else "?"), (" · h_n = %.0f ft" % hn_ft) if hn_ft else ""), "cfg.py / calc_package.json"],
-         ["Seismic force-resisting system", str(cd.get("system") or b.system or "[system]"), "calc_package.json capacity_design.system"],
+         ["Seismic force-resisting system", str(cd.get("system") or b.system or "[system]"), "calc_package.json capacity_design.system"]]
+        + [["Direction %s system (mixed, ASCE 7-22 12.2.2)" % d, "%s -- R %s, C_d %s, Omega_0 %s" % (x.get("system"), x.get("R"), x.get("Cd"), x.get("Om0")),
+            "; ".join(sorted(set((x.get("source") or {}).values())))] for d, x in sorted((getattr(b, "by_dir", None) or {}).items())]      # NL-R2-17
+        + [
          ["Risk Category / I_e", "%s / %s" % (rcs, b.Ie), "cfg.py (Ie) · nlrha acceptance rule"],
          ["Engineer of record", engineer or "[name, licence]", "input"], ["Independent reviewer (16.5)", reviewer or "[name, licence, firm]", "input"],
          ["Design of record", ("promoted from loop %s on %s" % (g["dor"].get("loop"), g["dor"].get("promoted_at"))) if g["dor"] else "the Steltic package in this job folder", "design/design_of_record.json"]])
@@ -331,7 +334,9 @@ def content(g, project=None, engineer=None, reviewer=None):
     s.t([["Criterion", "Rule adopted for Risk Category %s" % rcs, "Clause"],
          ["Suite statistic", ch16["results_basis"]["rule"], ch16["results_basis"]["clause"]],
          ["Unacceptable response", ch16["unacceptable_response"]["rule"] + " -- permitted here: %d" % ch16["unacceptable_response"]["max_unacceptable"].get(rc, 0), ch16["unacceptable_response"]["clause"]],
-         ["Mean transient story drift", "<= %.1f%% of h_sx (2 x the Table 12.12-1 value %.3f)%s; peak per record <= %.1f%%" % (100 * mean_lim, tab, (" and <= %.2f%% by the height formula" % (100 * tall)) if tall else "", 150 * mean_lim), ch16["transient_drift"]["clause"]],
+         ["Mean transient story drift", "<= %.1f%% of h_sx (2 x the Table 12.12-1 value %.3f)%s; peak per record <= %.1f%%" % (100 * mean_lim, tab, (" and <= %.2f%% by the height formula" % (100 * tall)) if tall else "", 150 * mean_lim)
+          + ((" -- per direction (mixed systems, 12.2.2): %s; each takes the 'all other structures' row of Table 12.12-1 (16.4.1.2), so the limit is the same in both directions"
+              % ", ".join("%s %s" % (d, x.get("system")) for d, x in sorted((getattr(b, "by_dir", None) or {}).items()))) if getattr(b, "by_dir", None) else ""), ch16["transient_drift"]["clause"]],
          ["Residual drift", ("<= %.1f%% of h_sx (h_n > %d ft)" % (100 * ch16["residual_drift"]["limit"], ch16["residual_drift"]["height_ft"])) if (hn_ft and hn_ft > ch16["residual_drift"]["height_ft"]) else "not applicable (h_n <= %d ft)" % ch16["residual_drift"]["height_ft"], ch16["residual_drift"]["clause"]],
          ["Deformation-controlled elements", "mean of the per-record peak deformations <= CP of the component model and within the valid modelling range b; " + ch16["deformation_controlled"]["rule"], ch16["deformation_controlled"]["clause"]],
          ["Force-controlled elements", ch16["force_controlled"]["rule"] + " -- gamma = %.1f, phi = %s (critical) / %.1f (ordinary), B = %.1f" % (ch16["force_controlled"]["gamma"], ch16["force_controlled"]["phi_critical"], ch16["force_controlled"]["phi_ordinary"], ch16["force_controlled"]["B"]), ch16["force_controlled"]["clause"]],
@@ -355,13 +360,19 @@ def content(g, project=None, engineer=None, reviewer=None):
     s.b("[The engineer of record designates any further critical / ordinary / noncritical actions and the B factor where expected strength is used.]", "To complete --")
 
     s = Section("7. The linear analysis the design rests on (16.1.2)"); S.append(s)
+    bdir = getattr(b, "by_dir", None) or {}                          # NL-R2-17: mixed systems (12.2.2)
     rel = g["relief"]
     s.t([["Item", "Value", "Source"],
          ["Design procedure", "ASCE 7-22 Chapter 12 %s; AISC 360/341 LRFD member and connection design (HR Steel package)" % ("ELF + MRSA" if "RS" in g["cfg_text"] else "ELF"), "cfg.py analyses"],
-         ["R / C_d / Omega_0 / I_e", "%s / %s / %s / %s" % (b.R, b.Cd, b.Om0, b.Ie), "cfg.py"],
-         ["Redundancy rho", str(g["rho"] if g["rho"] is not None else "[rho]") + " (16.1.2 permits rho = 1.0 with a Chapter 16 analysis)", "cfg.py"],
-         ["Design base shear / seismic weight", "%s / %s kip" % (b.V_design_kip, b.W_kip), "report.html"],
-         ["Story drift limit of the linear design", ("%.3f h_sx" % g["drift_limit"]) if g["drift_limit"] else "[Table 12.12-1]", "cfg.py drift_limit"],
+         ["R / C_d / Omega_0 / I_e", ("%s / %s / %s / %s" % (b.R, b.Cd, b.Om0, b.Ie)) if not bdir else
+          " · ".join("%s (%s): %s / %s / %s / %s" % (d, x.get("system"), x.get("R"), x.get("Cd"), x.get("Om0"), b.Ie) for d, x in sorted(bdir.items())),
+          "cfg.py" if not bdir else "per direction (12.2.2): " + b.sources.get("by_dir", "")],
+         ["Redundancy rho", (str(g["rho"] if g["rho"] is not None else "[rho]") if not bdir else " · ".join("%s: %s" % (d, x.get("rho", "[rho]")) for d, x in sorted(bdir.items())))
+          + " (16.1.2 permits rho = 1.0 with a Chapter 16 analysis)", "cfg.py" if not bdir else "per direction"],
+         ["Design base shear / seismic weight", ("%s / %s kip" % (b.V_design_kip, b.W_kip)) if not bdir else
+          " · ".join("V_%s %s" % (d, x.get("V_design_kip")) for d, x in sorted(bdir.items())) + " / W %s kip" % b.W_kip, "report.html" if not bdir else "per direction (12.2.2): " + b.sources.get("by_dir", "")],
+         ["Story drift limit of the linear design", (("%.3f h_sx" % g["drift_limit"]) if g["drift_limit"] else "[Table 12.12-1]") if not (bdir and all(x.get("drift_limit") for x in bdir.values())) else
+          " · ".join("%s %.3f h_sx" % (d, x["drift_limit"]) for d, x in sorted(bdir.items())), "cfg.py drift_limit" if not bdir else "per direction"],
          ["16.1.2 drift relief", ("IN FORCE: linear target %s from the Chapter 16 result of job %s (mean drift %s vs %s); the relaxed design is provisional until the Chapter 16 analysis is re-run on it" % (rel.get("linear_target"), rel.get("nlrha_job"), rel.get("nlrha_mean_drift"), rel.get("nlrha_limit"))) if rel else ("not applicable (Risk Category IV keeps the 12.12.1 limits)" if rc == "IV" else "not applied -- the 12.12.1 limits govern the linear design"), "cfg.py drift_relief_16_1_2"],
          ["Capacity design", "; ".join("%s: %s" % (k, _readable(v, 160)) for k, v in cd.items() if k in ("SCWB", "panel_zone", "redundancy")) or "[per AISC 341]", "calc_package.json capacity_design"]])
 

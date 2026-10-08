@@ -88,7 +88,7 @@ def _print_direction(pkg, d, run, R):
           % (d, hm["status"].upper(), hm.get("reason", ""), " ".join("%d:%.2f" % (r["story"], r["ratio"]) for r in hm["ratios"]) or "-",
              nsp["BSE-1N"]["nsp_status_text"]))
     print("  [%s P-695] Vmax=%.0f kip Omega=%s (Om0=%s) mu_T=%.2f (%s)" % (d, p695["Vmax_kip"], "%.2f" % p695["Omega"] if p695["Omega"] else "n/a",
-                                                                      pkg.basis.Om0, p695["mu_T"], p695["delta_u_basis"]))
+                                                                      p695.get("Omega0_design", pkg.basis.Om0), p695["mu_T"], p695["delta_u_basis"]))     # NL-R2-17: per direction
     t = run["tail"]
     print("  [%s TAIL] status=%s tried=%s max(theta_pl/a)=%.2f max(theta_pl/b)=%.2f -- %s" % (d, t["status"], [x["strategy"] for x in t["tried"]],
           run["rec"]["a_ratio"][-1], run["rec"]["b_ratio"][-1], t["message"]))
