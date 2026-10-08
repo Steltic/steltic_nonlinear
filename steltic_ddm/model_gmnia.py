@@ -247,7 +247,7 @@ class GMNIAModel:
         if self.links:
             self.special_log.append("EBF links: %d shear springs (Vn = 0.6 Fy Alw, Ks = G d tw / e)%s" % (
                 len(self.links), " -- RIGID in this elastic build (Steltic model is shear-rigid)" if self.elastic else ""))
-        self._brb_pkg = HM.brb_package_data(self.nm.calc_package or {})
+        self._brb_pkg = HM.brb_package_data(self.nm.calc_package or {}, self.cfg)     # NL-R2-10: + cfg['brb'] / BRB_adjusted_strengths
 
     def _next_spring_mat(self):
         self._spring_mat += 1

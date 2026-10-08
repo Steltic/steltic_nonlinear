@@ -131,3 +131,41 @@ def test_every_ineligible_plan_has_a_brief_cli_and_loop_do_not_crash(capsys):
     lp.start(); lp.join(60)
     assert lp.state["status"] == "failed" and "not eligible" in lp.state["error"] and "KeyError" not in lp.state["error"]
     assert "NOT ELIGIBLE" in open(os.path.join(lp.dir, "brief.txt")).read()
+
+
+# --------------------------------------------------------------------------- NL-R2-10: BRB data in the HR engine's own fields
+_HR_CFG = dict(brb=dict(Asc={"BRBX-44": 44.0, "BRBY-40": 40.0}, Fysc=44.0, Fysc_min=38.0, Ry=1.0, beta=1.10, omega=1.45, KF=1.4))
+_HR_CALC = {"members": [{"id": "brace-BRB-X-g0", "inputs": {"kind": "brace", "section": "BRBX-44", "Asc_in2": 44.0}}],
+            "capacity_design": {"BRB_adjusted_strengths": {"omega": 1.45, "beta": 1.1, "KF": 1.4, "by_group": {
+                "X-g0": {"Asc_in2": 44.0, "label": "BRBX-44", "T_adj_kip": 2807.2, "C_adj_kip": 3087.9, "Fysc_ksi": [38.0, 44.0], "omega": 1.45, "beta": 1.1}}}}}
+
+
+def test_brb_reads_hr_cfg_brb():
+    from pushover import hinge_models as HM
+    prm = HM.load_params(None)
+    calc = {"members": _HR_CALC["members"]}                         # Ex23: members carry Asc only, no Fysc_ksi
+    with pytest.raises(ValueError, match="Fysc unknown"):
+        HM.brb_spec("BRBX-44", 387.0, prm, pkg_data=HM.brb_package_data(calc))          # genuinely absent -> still refused
+    d = HM.brb_package_data(calc, _HR_CFG)
+    s = HM.brb_spec("BRBY-40", 387.0, prm, pkg_data=d)              # a label only cfg['brb'] knows
+    assert (s.Asc, s.Fysc_ksi, s.Ry, s.omega, s.beta) == (40.0, 44.0, 1.0, 1.45, 1.1)
+    assert any("cfg['brb']['Fysc']" in f and "Fysc,max" in f and "38.0" in f for f in s.flags)
+    assert not any("FALLBACK" in f for f in s.flags)
+    assert abs(s.dT - s.Pye_kip * 387.0 / (29000.0 * 1.4 * 40.0)) < 1e-9          # Delta_y with cfg KF
+
+
+def test_brb_reads_brb_adjusted_strengths_range_at_fysc_max():
+    from pushover import hinge_models as HM
+    d = HM.brb_package_data(_HR_CALC)                               # no cfg: the calc package's HR block alone
+    s = HM.brb_spec("BRBX-44", 387.0, HM.load_params(None), pkg_data=d)
+    assert (s.Asc, s.Fysc_ksi, s.omega, s.beta) == (44.0, 44.0, 1.45, 1.1) and abs(s.Ry - 1.0) < 1e-3
+    assert abs(s.omega * s.Ry * s.Fysc_ksi * s.Asc - 2807.2) < 1.0                 # reproduces HR's T_adj
+    assert any("[38.0, 44.0]" in f and "Fysc,max" in f for f in s.flags)
+
+
+def test_brb_member_inputs_still_take_precedence():
+    from pushover import hinge_models as HM
+    calc = {"members": [{"id": "b", "inputs": {"kind": "brace", "section": "BRB-Asc10.5", "Asc_in2": 10.5, "Fysc_ksi": 42.0, "KF": 1.45}}]}
+    d = HM.brb_package_data(calc, dict(brb=dict(Asc={"BRB-Asc10.5": 10.5}, Fysc=44.0, Ry=1.0, beta=1.1, omega=1.45)))
+    s = HM.brb_spec("BRB-Asc10.5", 390.0, HM.load_params(None), pkg_data=d)
+    assert s.Fysc_ksi == 42.0 and s.omega == 1.45 and any("members[b].inputs.Fysc_ksi" in f for f in s.flags)

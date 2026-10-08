@@ -598,40 +598,95 @@ class BRBSpec(BraceSpec):
     sources: tuple = ()
 
 
-def brb_package_data(calc: dict) -> dict:
-    """Structured BRB data from the HR calc package (design/calc_package.json):
-      per label  -> {Asc, Fysc_ksi, KF, model_area}  from members[*].inputs (kind brace, section BRB-*)
-      "_global"  -> {omega, beta, Ry, basis} from capacity_design.adjusted_brace_strengths:
-                    beta = adjusted_C / adjusted_T (F4.2a: C = beta*omega*Ry*Pysc, T = omega*Ry*Pysc),
-                    omega*Ry = adjusted_T / Pysc, omega parsed from the basis text ("omega=1.36") -> Ry = (omega*Ry)/omega.
-    Missing items are simply absent (the caller falls back to hinge_params and says so)."""
+def brb_package_data(calc: dict, cfg: dict = None) -> dict:
+    """Structured BRB data from the HR package. Sources, most specific first (a value found earlier is kept):
+      1. calc_package members[*].inputs (kind brace, section BRB-*): Asc_in2, Fysc_ksi, KF, model_area_in2
+      2. NL-R2-10: cfg['brb'] -- the HR engine's own BRB input (static_model reads it for F4.2a): Asc (number or
+         {label: in2}), Fysc (the adjusted-strength value; Fysc_min the design value), Ry, omega, beta, KF
+      3. NL-R2-10: calc_package capacity_design.BRB_adjusted_strengths (HR engine output): by_group[*] {label, Asc_in2,
+         Fysc_ksi (number or the coupon range [min, max]), omega, beta, T_adj_kip}, top-level omega / beta / KF
+      4. capacity_design.adjusted_brace_strengths.by_story (older agent field names): beta = C/T, omega*Ry = T/Pysc,
+         omega from the basis text -> Ry.
+    A Fysc range is taken at its UPPER end (Fysc,max) -- the end HR's adjusted strengths (T = omega Ry Fysc,max Asc,
+    AISC 341-22 F4.2a) use, conservative for the capacity-designed / force-controlled actions -- and the source says so.
+      per label -> {Asc, Fysc_ksi, KF, model_area, omega, beta, Ry, src: {key: where}}; "_global" -> {omega, beta, Ry, KF, basis}
+    Missing items are simply absent (brb_spec falls back to hinge_params, or refuses, and says so)."""
     import re
     out = {}
+    norm = lambda lab: str(lab or "").strip().upper().replace(" ", "")
+
+    def put(lab, key, v, src):
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            d = out.setdefault(norm(lab), {})
+            if key not in d:
+                d[key] = float(v); d.setdefault("src", {})[key] = src
+
     for m in (calc or {}).get("members") or []:
         inp = m.get("inputs") or {}
         sec = str(inp.get("section") or "")
         if not SDB.is_brb(sec):
             continue
-        d = out.setdefault(sec.strip().upper().replace(" ", ""), {})
+        out.setdefault(norm(sec), {})
         for k_src, k in (("Asc_in2", "Asc"), ("Fysc_ksi", "Fysc_ksi"), ("KF", "KF"), ("model_area_in2", "model_area")):
-            if isinstance(inp.get(k_src), (int, float)):
-                d[k] = float(inp[k_src])
+            put(sec, k, inp.get(k_src), "calc_package members[%s].inputs.%s" % (m.get("id"), k_src))
     g = {}
-    adj = ((calc or {}).get("capacity_design") or {}).get("adjusted_brace_strengths") or {}
+    cb = (cfg or {}).get("brb") if isinstance(cfg, dict) else None
+    labels = set(out)
+    if isinstance(cb, dict):                                               # 2. cfg['brb'] (NL-R2-10)
+        asc = cb.get("Asc")
+        labels |= {norm(k) for k in asc} if isinstance(asc, dict) else set()
+        fy = cb.get("Fysc")
+        fy_txt = ("cfg['brb']['Fysc'] = %.1f ksi%s -- the HR adjusted-strength value" % (fy, (" (Fysc_min %.1f ksi = design phi Pysc; Fysc,max used)" % cb["Fysc_min"]) if isinstance(cb.get("Fysc_min"), (int, float)) else "")) if isinstance(fy, (int, float)) else None
+        for lab in labels:
+            put(lab, "Asc", asc.get(lab, {norm(k): v for k, v in asc.items()}.get(lab)) if isinstance(asc, dict) else asc, "cfg['brb']['Asc']")
+            put(lab, "Fysc_ksi", fy, fy_txt)
+            put(lab, "KF", cb.get("KF"), "cfg['brb']['KF']")
+        for k in ("omega", "beta", "Ry", "KF"):
+            if isinstance(cb.get(k), (int, float)) and cb[k] > 0:
+                g[k] = float(cb[k]); g.setdefault("src", {})[k] = "cfg['brb']['%s']" % k
+        if cb.get("basis"):
+            g["basis"] = str(cb["basis"])[:300]
+    cd = (calc or {}).get("capacity_design") or {}
+    bas = cd.get("BRB_adjusted_strengths") or {}
+    if isinstance(bas, dict):                                              # 3. BRB_adjusted_strengths (NL-R2-10)
+        for gid, r in (bas.get("by_group") or {}).items():
+            if not isinstance(r, dict) or not r.get("label"):
+                continue
+            lab = r["label"]; where = "capacity_design.BRB_adjusted_strengths.by_group[%s]" % gid
+            put(lab, "Asc", r.get("Asc_in2"), where + ".Asc_in2")
+            fy = r.get("Fysc_ksi"); fy_used = None
+            if isinstance(fy, (list, tuple)) and fy and all(isinstance(v, (int, float)) for v in fy):
+                fy_used = float(max(fy)); put(lab, "Fysc_ksi", fy_used, where + ".Fysc_ksi range %s ksi -> Fysc,max %.1f (the end the HR adjusted strengths use)" % (list(fy), fy_used))
+            elif isinstance(fy, (int, float)):
+                fy_used = float(fy); put(lab, "Fysc_ksi", fy_used, where + ".Fysc_ksi")
+            put(lab, "omega", r.get("omega"), where + ".omega"); put(lab, "beta", r.get("beta"), where + ".beta")
+            d = out.get(norm(lab)) or {}
+            om, fyl, a = d.get("omega") or bas.get("omega"), d.get("Fysc_ksi"), d.get("Asc")
+            if isinstance(r.get("T_adj_kip"), (int, float)) and om and fyl and a:     # T = omega Ry Fysc Asc -> Ry
+                put(lab, "Ry", round(r["T_adj_kip"] / (om * fyl * a), 3), where + ".T_adj_kip / (omega Fysc Asc)")
+        for k in ("omega", "beta", "KF"):
+            if k not in g and isinstance(bas.get(k), (int, float)) and bas[k] > 0:
+                g[k] = float(bas[k]); g.setdefault("src", {})[k] = "capacity_design.BRB_adjusted_strengths.%s" % k
+        if "basis" not in g and (bas.get("Fysc_range_ksi") or bas.get("note")):
+            g["basis"] = str(bas.get("Fysc_range_ksi") or bas.get("note"))[:300]
+        if "KF" in g:
+            for lab in list(out):
+                put(lab, "KF", g["KF"], g["src"]["KF"])
+    adj = cd.get("adjusted_brace_strengths") or {}                         # 4. older field names
     rows = [r for r in adj.get("by_story") or [] if all(isinstance(r.get(k), (int, float)) and r.get(k) for k in ("Pysc_kip", "adjusted_T_kip", "adjusted_C_kip"))]
     basis = str(adj.get("basis") or "")
     if rows:
         r = rows[0]
-        g["beta"] = r["adjusted_C_kip"] / r["adjusted_T_kip"]
+        g.setdefault("beta", r["adjusted_C_kip"] / r["adjusted_T_kip"])
         g["omega_Ry"] = r["adjusted_T_kip"] / r["Pysc_kip"]
         mo = re.search(r"omega\s*=\s*([0-9]+(?:\.[0-9]+)?)", basis, re.I)
         if mo:
-            g["omega"] = float(mo.group(1))
-            g["Ry"] = g["omega_Ry"] / g["omega"]
+            g.setdefault("omega", float(mo.group(1)))
+            g.setdefault("Ry", g["omega_Ry"] / float(mo.group(1)))
         mb = re.search(r"beta\s*=\s*([0-9]+(?:\.[0-9]+)?)", basis, re.I)
         if mb:
             g["beta_text"] = float(mb.group(1))
-        g["basis"] = basis[:300]
+        g.setdefault("basis", basis[:300])
     if g:
         out["_global"] = g
     return out
@@ -658,28 +713,30 @@ def brb_spec(section: str, L_in: float, prm: dict, A_model: float = None, pkg_da
     if tmpl:
         flags.append("brb_axial group not in this params file -> repository TEMPLATE values (AISC 342-22 Table C3.3 as transcribed; verify)")
 
-    def pick(key, pkg_val=None, what=""):
+    def pick(key, pkg_val=None, pkg_src=None):
         for src, v in (("hinge_params sections[%s]" % lab, per.get(key)), ("hinge_params brb_axial", g.get(key)),
-                       ("HR package", pkg_val)):
+                       ("HR package" + (": " + pkg_src if pkg_src else ""), pkg_val)):
             if v is not None:
                 return float(v), src
         return None, None
+    psrc = pkd.get("src") or {}; gsrc = glob.get("src") or {}             # NL-R2-10: where each package value came from
+    pk = lambda key: (pkd.get(key), psrc.get(key)) if pkd.get(key) is not None else (glob.get(key), gsrc.get(key))
 
-    Asc, src = pick("Asc", pkd.get("Asc"))
+    Asc, src = pick("Asc", *pk("Asc"))
     if Asc is None:
         Asc = SDB.parse_brb_label(lab); src = "label %s" % section if Asc else None
     if not Asc:
         raise ValueError("BRB %r: core area Asc unknown (no number in the label, no package Asc_in2, no "
                          "brb_axial.sections[%r].Asc) -- cannot build the BRB (NL-02)" % (section, section))
     flags.append("Asc=%.3f in2 (%s)" % (Asc, src))
-    Fysc, src = pick("Fysc_ksi", pkd.get("Fysc_ksi"))
+    Fysc, src = pick("Fysc_ksi", *pk("Fysc_ksi"))
     if Fysc is None:
-        raise ValueError("BRB %r: core yield stress Fysc unknown (set brb_axial.Fysc_ksi or a package Fysc_ksi) -- refusing to "
-                         "guess (NL-02)" % section)
+        raise ValueError("BRB %r: core yield stress Fysc unknown (set brb_axial.Fysc_ksi, or a package Fysc: members inputs "
+                         "Fysc_ksi, cfg['brb']['Fysc'] or capacity_design.BRB_adjusted_strengths) -- refusing to guess (NL-02)" % section)
     flags.append("Fysc=%.1f ksi (%s)" % (Fysc, src))
-    omega, s_om = pick("omega", glob.get("omega"))
-    beta, s_be = pick("beta", glob.get("beta"))
-    Ry, s_ry = pick("Ry", glob.get("Ry"))
+    omega, s_om = pick("omega", *pk("omega"))
+    beta, s_be = pick("beta", *pk("beta"))
+    Ry, s_ry = pick("Ry", *pk("Ry"))
     fb = g.get("omega_beta_fallback") or (template_params().get("brb_axial") or {}).get("omega_beta_fallback") or {}
     if omega is None:
         omega, s_om = float(fb.get("omega", 1.3)), "FALLBACK AISC 342-22 C3.3a.1 linear-analysis value (no test data supplied)"
@@ -697,7 +754,7 @@ def brb_spec(section: str, L_in: float, prm: dict, A_model: float = None, pkg_da
                  from_template=tmpl)
     Fye = Ry * Fysc
     Qce = Fye * Asc                                                       # C3.3a.1: P_CE = T_CE = A_core * Fye
-    KF, s_kf = pick("KF", pkd.get("KF"))
+    KF, s_kf = pick("KF", *pk("KF"))
     Lc_L = g.get("Lcore_over_L", per.get("Lcore_over_L")); Ac_r = g.get("Aconn_over_Acore", per.get("Aconn_over_Acore"))
     if Lc_L and Ac_r:
         Lcore = float(Lc_L) * L_in; Lconn = 0.5 * (L_in - Lcore); Aconn = float(Ac_r) * Asc

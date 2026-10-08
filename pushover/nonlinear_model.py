@@ -536,10 +536,29 @@ def _build_rbs7_beam(pkg, e, prm, sec, spec, slot, dof, p1, p2, L, geo, beam_sid
 
 
 # --------------------------------------------------------------------------- NL-02 / NL-03 / NL-10 element builders
+def package_cfg(pkg):
+    """The executed cfg of the package (steltic_ddm.ingest.load_cfg, HR engine importable), cached on the package;
+    (None, reason) when cfg.py is absent or cannot be executed."""
+    c = getattr(pkg, "_cfg_exec", None)
+    if c is None:
+        try:
+            from steltic_ddm.ingest import load_cfg
+            c = (load_cfg(str(pkg.root)), "cfg.py")
+        except Exception as ex:                                 # noqa: BLE001
+            c = (None, "cfg.py not executable (%s)" % str(ex)[:80])
+        try:
+            pkg._cfg_exec = c
+        except Exception:                                       # noqa: BLE001
+            pass
+    return c
+
+
 def element_context(pkg, prm):
-    """Per-build data for the special elements: BRB package data (NL-02) and the EBF link census (NL-03)."""
+    """Per-build data for the special elements: BRB package data (NL-02; NL-R2-10: also the HR engine's cfg['brb'] and
+    capacity_design.BRB_adjusted_strengths) and the EBF link census (NL-03)."""
     links = HM.find_links_pkg(pkg, prm, member_kind)
-    return dict(brb=HM.brb_package_data(pkg.calc), links=links, pt_secs={}, pt_builder=None, pt_count=0)
+    cfg = package_cfg(pkg)[0] if any(SDB.is_brb(str(v.get("section") or "")) for v in (pkg.schedule or {}).values()) else None
+    return dict(brb=HM.brb_package_data(pkg.calc, cfg), links=links, pt_secs={}, pt_builder=None, pt_count=0)
 
 
 def _note(stats, msg):
@@ -601,12 +620,7 @@ def brace_geometry(pkg, ctx):
     Cached in ctx['brace_geom']."""
     if ctx.get("brace_geom") is not None:
         return ctx["brace_geom"]
-    cfg, src_cfg = None, None
-    try:
-        from steltic_ddm.ingest import load_cfg
-        cfg = load_cfg(str(pkg.root)); src_cfg = "cfg.py"
-    except Exception as ex:                                     # noqa: BLE001
-        src_cfg = "cfg.py not executable (%s)" % str(ex)[:80]
+    cfg, src_cfg = package_cfg(pkg)
     if not hasattr(pkg.model, "elements"):                      # minimal test packages: no element list
         ctx["brace_geom"] = dict(lc={}, cross={}, cfg_source=src_cfg, factor=None)
         return ctx["brace_geom"]

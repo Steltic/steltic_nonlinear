@@ -155,7 +155,7 @@
     "material": "Steel4",
     "R0": 20.0,
     "sections": {},
-    "note": "null = take from the HR package (calc_package members[*].inputs Asc_in2/Fysc_ksi/KF and capacity_design.adjusted_brace_strengths for omega, beta, Ry). Values entered here (the user's manually verified, supplier/K3-test values) override the package; per-label overrides go in sections, e.g. {\"BRB-Asc22.5\": {\"Asc\": 22.5, \"Fysc_ksi\": 42.0, \"omega\": 1.36, \"beta\": 1.10, \"Ry\": 1.0}}. The HR truss area (KF*Asc) is the STIFFNESS area only; the yielding area is Asc. material: Steel4 (asymmetric kinematic hardening, MinMax loss at b) or Hysteretic (exact trilinear envelope with the E3.2b(c) descent). Deformations in the acceptance tables are reported as TOTAL axial deformation = Dy + plastic.",
+    "note": "null = take from the HR package (calc_package members[*].inputs Asc_in2/Fysc_ksi/KF; the HR engine's cfg['brb'] Asc/Fysc/Ry/omega/beta/KF and capacity_design.BRB_adjusted_strengths by_group -- a Fysc range is taken at Fysc,max (NL-R2-10); older capacity_design.adjusted_brace_strengths for omega, beta, Ry). Values entered here (the user's manually verified, supplier/K3-test values) override the package; per-label overrides go in sections, e.g. {\"BRB-Asc22.5\": {\"Asc\": 22.5, \"Fysc_ksi\": 42.0, \"omega\": 1.36, \"beta\": 1.10, \"Ry\": 1.0}}. The HR truss area (KF*Asc) is the STIFFNESS area only; the yielding area is Asc. material: Steel4 (asymmetric kinematic hardening, MinMax loss at b) or Hysteretic (exact trilinear envelope with the E3.2b(c) descent). Deformations in the acceptance tables are reported as TOTAL axial deformation = Dy + plastic.",
     "source": "",
     "unverified": [
       "*"
