@@ -124,7 +124,7 @@ def gather(job: str) -> dict:
             d[k] = {"T1": _r(x.get("T1")), "meff_frac": _r(x.get("meff_frac")), "stop_reason": x.get("stop_reason"),
                     "tail": {kk: (x.get("tail") or {}).get(kk) for kk in ("status", "captured", "message")},
                     "p695": {kk: _r((x.get("p695") or {}).get(kk)) for kk in ("Vmax_kip", "V_design_kip", "Omega", "Omega0_design", "delta_u_in", "delta_u_basis", "delta_y_eff_in", "mu_T", "Vmax_over_W")},
-                    "nsp": {lvl: {kk: _r(v.get(kk)) for kk in ("Te", "Vy", "Sa", "C0", "C1", "C2", "mu_strength", "mu_max", "nsp_permitted", "target_disp_in", "target_over_H", "reached_target")}
+                    "nsp": {lvl: {kk: _r(v.get(kk)) for kk in ("Te", "Vy", "Sa", "C0", "C1", "C2", "mu_strength", "mu_max", "nsp_permitted", "nsp_status", "target_disp_in", "target_over_H", "reached_target")}
                             for lvl, v in nsp.items() if isinstance(v, dict)},
                     "acceptance": {lvl: {"roof_disp_in": _r(a.get("roof_disp_in")), "max_story_drift": _r(a.get("max_story_drift")), "worst_DC": _r(a.get("worst_DC")),
                                          "groups": [{kk: _r(g.get(kk)) for kk in ("kind", "section", "z_in", "n", "n_yielded", "theta_pl_max", "IO", "LS", "CP", "DC_IO", "DC_LS", "DC_CP")}
@@ -220,8 +220,14 @@ def results_verdict(ev: dict) -> dict:
                          if sp.get("bpon_stopped_before_target") else "no component group was checked"))
         elif not sp.get("bpon_ok"):
             fails.append("pushover BPON %s NOT satisfied" % "/".join(sp.get("bpon_levels") or []))
-        if sp.get("nsp_permitted") is False:
+        nst = sp.get("nsp_status")                                    # NL-R2-12: both tests of ASCE 41-23 7.3.2.1
+        if nst == "not_permitted" or (nst is None and sp.get("nsp_permitted") is False):
             fails.append("NSP not permitted (mu_strength > mu_max): an NDP is required")
+        elif nst == "permitted_with_LDP":
+            notev.append("NSP not permitted alone: higher-mode effects significant (ASCE 41-23 7.3.2.1, story-shear ratio > 1.30) "
+                         "-- a supplementary LDP is required and is not in the run")
+        elif nst == "not_evaluated":
+            notev.append("NSP applicability not evaluated: the higher-mode test of ASCE 41-23 7.3.2.1 was not completed")
         if (po.get("params_verified") is False) or (sp.get("params_verified") is False):
             cav.append("component parameters are UNVERIFIED (not all user-supplied): no acceptance ratio can be relied on")
     else:
@@ -476,7 +482,9 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
         lines.append("Chapter 16: not in the run.")
     if sp:
         lines.append("Pushover: Ω = %s (Ω₀ = %s); BPON %s — %s; NSP %s." % ("/".join(_f(x, 1) for x in (sp.get("Omega") or {}).values()), _f((s.get("basis") or {}).get("Om0"), 1),
-                                                                            "/".join(sp.get("bpon_levels") or []), ("NOT EVALUATED" if any("BPON" in x for x in _rv["not_evaluated"]) else "both pass" if sp.get("bpon_ok") else "NOT satisfied"), "permitted" if sp.get("nsp_permitted") else "not permitted"))
+                                                                            "/".join(sp.get("bpon_levels") or []), ("NOT EVALUATED" if any("BPON" in x for x in _rv["not_evaluated"]) else "both pass" if sp.get("bpon_ok") else "NOT satisfied"), {"permitted": "permitted", "permitted_with_LDP": "not permitted alone (higher modes significant: supplementary LDP required)",
+                                                                             "not_permitted": "not permitted (NDP required)", "not_evaluated": "applicability not evaluated (higher-mode test)"}.get(
+                                                                                sp.get("nsp_status"), "permitted" if sp.get("nsp_permitted") else "not permitted")))
     if sd:
         lines.append("DDM: governing %s, λᵤ = %s, φₛλᵤ = %s, %s of %s combinations pass, transfer gate %s." % (sd.get("governing"), _f(sd.get("lambda_u")), _f(sd.get("phi_lambda")), sd.get("n_pass"), sd.get("n_checked"), "ok" if sd.get("gate_ok") else "FAILED"))
     lines += ["", "## 2. What the run measured", ""]

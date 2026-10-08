@@ -1213,36 +1213,74 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     return hinges, stats
 
 
-def modal_pattern(pkg, direction, nmodes=6):
+def modal_pattern(pkg, direction, nmodes=12, mass_target=0.90, max_modes=96):
     """First translational mode in `direction` ('X'|'Y') from the current (nonlinear, initial-stiffness) model:
-    returns (T1, {level_k: F_k normalised to sum 1}, {level_k: phi_k}) using the diaphragm masters."""
+    returns (T1, {level_k: F_k normalised to sum 1}, {level_k: phi_k}) using the diaphragm masters.
+
+    NL-R2-12: also returns `modes` -- every computed mode's period, participation factor Gamma_n = L_n / M_n in
+    `direction` and level ordinates at the level centres of mass -- for the ASCE 41-23 7.3.2.1 higher-mode test. L_n,
+    M_n and the effective mass come from the FULL lumped mass matrix of the model (as nlrha.model.modal, NL-R2-09):
+    the eigenvectors are orthogonal with respect to it, and a level-mass-only M_n gives the member-local modes of the
+    seeded node masses a spurious, unit participation (seen on a 1-storey portal once more than 3 modes are asked).
+    The mode count doubles from `nmodes` (capped by the mass DOFs) until the cumulative effective mass in `direction`
+    reaches `mass_target` (90 %) or `max_modes`."""
     dof = 1 if direction.upper() == "X" else 2
-    ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
-    w2 = ops.eigen("-genBandArpack", nmodes)
     lv = levels(pkg)
     LM = {k: level_mass(pkg, master, s) for k, z, master, s in lv}          # R2 patch (NL-R2-01)
+    md = []
+    for n in ops.getNodeTags():
+        try:
+            mv = list(ops.nodeMass(n))
+        except Exception:                                                   # noqa: BLE001
+            continue
+        if any(v > 0.0 for v in mv):
+            md.append((n, mv))
+    n_mass_dof = sum(1 for n, mv in md for v in mv[:6] if v > 0.0)
+    Mtot = sum(mv[dof - 1] for n, mv in md) or sum(LM[k]["m"] for k in LM)
+    n_try, modes, eig_err = max(1, min(nmodes, n_mass_dof - 1 if n_mass_dof > 1 else 1)), [], None
+    while True:
+        ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
+        try:
+            w2 = ops.eigen("-genBandArpack", n_try)
+        except Exception as ex:                                 # more modes than the solver can give: keep the last set
+            eig_err = str(ex)[:120]
+            if modes:
+                break
+            raise
+        if not w2:
+            if modes:
+                break
+            raise RuntimeError("eigen analysis returned no modes")
+        modes = []
+        for i, w in enumerate(w2):
+            T = 2 * math.pi / math.sqrt(max(w, 1e-12))
+            cv = {k: com_eigvec(LM[k], master, i + 1) for k, z, master, s in lv}
+            phi = {k: cv[k][dof - 1] for k in cv}
+            Mn = Ln = Lp = 0.0
+            for n, mv in md:                                    # full mass matrix (all mass-carrying nodes, 6 DOFs)
+                ev = ops.nodeEigenvector(n, i + 1)
+                Mn += sum(mv[d] * ev[d] * ev[d] for d in range(min(6, len(ev), len(mv))))
+                Ln += mv[dof - 1] * ev[dof - 1]; Lp += mv[2 - dof] * ev[2 - dof]
+            meff = Ln ** 2 / Mn if Mn > 0 else 0
+            modes.append(dict(mode=i + 1, T=T, gamma=(Ln / Mn if Mn > 0 else 0.0), meff=meff, Lp=Lp, Ln=Ln,
+                              meff_frac=(meff / Mtot if Mtot > 0 else 0.0), phi=phi))
+        cum = sum(m["meff_frac"] for m in modes)
+        if cum >= mass_target or n_try >= max_modes or n_try >= n_mass_dof - 1:
+            break
+        n_try = min(2 * n_try, max_modes, max(1, n_mass_dof - 1))
     best = None
-    for i, w in enumerate(w2):
-        T = 2 * math.pi / math.sqrt(max(w, 1e-12))
-        cv = {k: com_eigvec(LM[k], master, i + 1) for k, z, master, s in lv}
-        phi = {k: cv[k][dof - 1] for k in cv}
-        perp = {k: cv[k][2 - dof] for k in cv}
-        rot = {k: cv[k][2] for k in cv}
-        mk = {k: LM[k]["m"] for k in LM}; Jk = {k: LM[k]["J"] for k in LM}
-        Ln = sum(mk[k] * phi[k] for k in phi)
-        Mn = sum(mk[k] * (phi[k] ** 2 + perp[k] ** 2) + Jk[k] * rot[k] ** 2 for k in phi)     # full generalised mass
-        Lp = sum(mk[k] * perp[k] for k in perp)
-        meff = Ln ** 2 / Mn if Mn > 0 else 0
-        if best is None or (meff > best[0] and abs(Ln) > abs(Lp)):
-            best = (meff, T, phi, i + 1)
+    for m in modes:
+        if best is None or (m["meff"] > best[0] and abs(m["Ln"]) > abs(m["Lp"])):
+            best = (m["meff"], m["T"], m["phi"], m["mode"])
     meff, T, phi, mode = best
     sgn = 1.0 if phi[max(phi)] >= 0 else -1.0
     phi = {k: sgn * v / abs(phi[max(phi)]) for k, v in phi.items()}         # roof ordinate = +1
     F = {k: LM[k]["m"] * phi[k] for k in LM}
     s = sum(F.values()); F = {k: v / s for k, v in F.items()}
-    Mtot = sum(LM[k]["m"] for k in LM)
     return dict(T1=T, mode=mode, meff_frac=meff / Mtot, phi=phi, F=F,
-                masses={k: LM[k]["m"] for k in LM}, load_node={k: LM[k]["node"] for k in LM})
+                masses={k: LM[k]["m"] for k in LM}, load_node={k: LM[k]["node"] for k in LM},
+                modes=[dict(mode=m["mode"], T=m["T"], gamma=m["gamma"], meff_frac=m["meff_frac"], phi=m["phi"]) for m in modes],
+                modes_cum_frac=sum(m["meff_frac"] for m in modes), modes_eigen_note=eig_err)
 
 
 class StaticAnalysis:

@@ -106,6 +106,11 @@ def test_fibre_registers_beam_and_column_hinges_and_acceptance_evaluates():
     assert beams and beams[0]["n_yielded"] >= 1 and beams[0]["theta_pl_max"] > 0.005
     # the P-695 component limit can now fire on fibre beams / columns (grav list is no longer empty)
     assert max(run["rec"]["b_ratio"]) > 0.0
+    # NL-R2-12: the eigen solve carries the modes for the 7.3.2.1 higher-mode test (1 storey: ratio 1.0)
+    pat = run["pattern"]
+    assert pat["modes"] and pat["modes_cum_frac"] >= 0.9 and any(m["mode"] == pat["mode"] for m in pat["modes"])
+    hm = PP.higher_mode_check(pat, 1.0, 0.6)
+    assert hm["status"] == "not_significant" and abs(hm["max_ratio"] - 1.0) < 1e-6
 
 
 def test_ex22_example_fibre_monitors_every_fr_end():
@@ -237,6 +242,8 @@ def test_compare_bpon_never_turns_missing_into_pass(mode):
         assert "target displacement not reached" not in t and "both pass" not in t
     else:
         assert s["bpon_ok"] is True and "both pass" in t
+        # NL-R2-12: the example package predates the 7.3.2.1 higher-mode test -> never "NSP permitted"
+        assert s["nsp_status"] == "not_evaluated" and not s["nsp_permitted"] and "applicability NOT EVALUATED" in t
 
 
 # --------------------------------------------------------------------------- NL-16: idealisation and coefficients
@@ -286,6 +293,111 @@ def test_nsp_coefficients_asce41_23():
     assert PP._cm(b, prm, 3, 0.8)[0] == 0.9
     assert PP._cm(PR.DesignBasis(system="BRBF"), prm, 3, 0.8)[0] == 1.0
     assert PP._cm(b, prm, 3, 1.2)[0] == 1.0
+
+
+# --------------------------------------------------------------------------- NL-R2-12: 7.3.2.1 higher-mode test
+def _shear_building(n, T1, m=1.0):
+    """Uniform n-storey shear building (level masses m, equal storey stiffness) scaled to period T1; returns the
+    pattern dict modal_pattern would produce (modes in ascending-frequency order, phi in the push direction)."""
+    K = np.zeros((n, n)); k = 1.0
+    for i in range(n):
+        K[i, i] += k
+        if i + 1 < n:
+            K[i, i] += k; K[i, i + 1] -= k; K[i + 1, i] -= k
+    w2, V = np.linalg.eigh(K / m)
+    w2 = w2 * (2 * math.pi / T1) ** 2 / w2[0]
+    modes = []
+    for j in range(n):
+        phi = {i + 1: float(V[i, j]) for i in range(n)}
+        Ln = sum(m * phi[i] for i in phi); Mn = sum(m * phi[i] ** 2 for i in phi)
+        modes.append(dict(mode=j + 1, T=2 * math.pi / math.sqrt(w2[j]), gamma=Ln / Mn, meff_frac=Ln ** 2 / Mn / (n * m), phi=phi))
+    return dict(T1=T1, mode=1, modes=modes, masses={i + 1: m for i in range(n)}, phi=modes[0]["phi"])
+
+
+def test_higher_mode_check_asce41_7321():
+    from pushover import postprocess as PP
+    # closed form, 4 storeys (mode 1 = 88 % < 90 % -> modes 1+2): CQC story shears from the modal level forces,
+    # recomputed here independently of the module
+    pat = _shear_building(4, 0.6)
+    SXS, SX1 = 1.0, 0.6
+    hm = PP.higher_mode_check(pat, SXS, SX1)
+    assert pat["modes"][0]["meff_frac"] < 0.9 <= pat["modes"][0]["meff_frac"] + pat["modes"][1]["meff_frac"]
+    assert hm["n_modes_used"] == 2 and hm["cum_mass_frac"] >= 0.9
+    vs = []
+    for md in pat["modes"][:2]:
+        sa = PP.spectrum_sa(md["T"], SXS, SX1) * 386.4
+        F = [md["gamma"] * md["phi"][k] * sa for k in (1, 2, 3, 4)]
+        vs.append([sum(F[i:]) for i in range(4)])
+    T1, T2 = pat["modes"][0]["T"], pat["modes"][1]["T"]
+    r = T2 / T1; xi = 0.05
+    rho = 8 * xi ** 2 * (1 + r) * r ** 1.5 / ((1 - r * r) ** 2 + 4 * xi ** 2 * r * (1 + r) ** 2)
+    for i in range(4):
+        exp = math.sqrt(vs[0][i] ** 2 + vs[1][i] ** 2 + 2 * rho * vs[0][i] * vs[1][i]) / abs(vs[0][i])
+        assert hm["ratios"][i]["ratio"] == pytest.approx(exp, rel=1e-9)
+        assert hm["ratios"][i]["V_mode1_kip"] == pytest.approx(abs(vs[0][i]), rel=1e-9)
+    assert hm["status"] == "not_significant" and hm["max_ratio"] <= 1.30                  # stiff 4-storey: first mode governs
+    hm1 = PP.higher_mode_check(_shear_building(2, 0.5), SXS, SX1)                         # mode 1 alone >= 90 %: ratio 1
+    assert hm1["n_modes_used"] == 1 and hm1["max_ratio"] == pytest.approx(1.0) and hm1["status"] == "not_significant"
+    # 20 storeys, T1 = 3.5 s (Ex29-like): the 2nd and 3rd modes sit on a higher spectral ordinate -> significant
+    hm = PP.higher_mode_check(_shear_building(20, 3.5), 1.0, 0.6)
+    assert hm["status"] == "significant" and hm["max_ratio"] > 1.30 and hm["story_max"] > 10 and hm["cum_mass_frac"] >= 0.9
+    assert PP.nsp_status(True, hm) == "permitted_with_LDP" and PP.nsp_status(False, hm) == "not_permitted"
+    # too few modes for 90 % mass, or no modal data: NOT EVALUATED, never "permitted"
+    p = _shear_building(20, 3.5); p["modes"] = p["modes"][:1]
+    hm = PP.higher_mode_check(p, 1.0, 0.6)
+    assert hm["status"] == "not_evaluated" and "90%" in hm["reason"]
+    assert PP.higher_mode_check(dict(T1=1.0, phi={1: 1.0}, masses={1: 1.0}), 1.0, 0.6)["status"] == "not_evaluated"
+    assert PP.nsp_status(True, hm) == "not_evaluated" and PP.nsp_status(True, None) == "not_evaluated"
+    assert PP.nsp_status(True, dict(status="not_significant")) == "permitted"
+
+
+def test_nsp_target_gates_permitted_on_both_7321_tests():
+    from pushover import postprocess as PP, package_reader as PR, hinge_models as HM
+    import copy
+    u, V = _curve(Ke=200.0, Vy=500.0, a1=0.02, umax=40.0)
+    prm = copy.deepcopy(HM.load_params())
+    b = PR.DesignBasis(SDS=1.0, SD1=0.45, W_kip=1000.0, system="SMF")
+    def run_for(pat):
+        return dict(rec=dict(u=list(u), V=list(V), story_u=[[x * 0.5, x] for x in u]), pattern=pat, H=240.0,
+                    heights=[120.0, 120.0], gravity_table_QG=[100.0, 100.0])
+    pat = _shear_building(2, 0.5)
+    n = PP.nsp_target(run_for(pat), b, prm, 1.0)
+    assert n["nsp_strength_ok"] and n["higher_modes"]["status"] == "not_significant"
+    assert n["nsp_status"] == "permitted" and n["nsp_permitted"] is True
+    n = PP.nsp_target(run_for(dict(T1=0.5, phi=pat["phi"], masses=pat["masses"])), b, prm, 1.0)   # pre-NL-R2-12 pattern
+    assert n["nsp_strength_ok"] and n["nsp_status"] == "not_evaluated" and n["nsp_permitted"] is False
+    assert "NOT EVALUATED" in n["nsp_status_text"]
+    # Ex29-like: the 20-storey modes on the same curve -> not permitted alone
+    p20 = _shear_building(20, 3.5)
+    r = run_for(p20); r["pattern"]["T1"] = 0.5
+    n = PP.nsp_target(r, b, prm, 1.0)
+    assert n["nsp_status"] == "permitted_with_LDP" and n["nsp_permitted"] is False and "supplementary LDP" in n["nsp_status_text"]
+
+
+def _portal_results(d="X"):
+    """A short real push of the portal and the per-direction results the CLI builds (nsp / p695 / acceptance)."""
+    from pushover import nonlinear_model as NM, postprocess as PP, performance as PF
+    pkg = _portal(); prm = _fr_params()
+    loads, table = NM.gravity_loads(pkg, prm, verbose=False)
+    PG = NM.column_gravity_axials(pkg, loads)
+    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False, plasticity="fibre", member_nseg=2)
+    run = NM.pushover(pkg, hinges, d, loads, prm, max_roof_drift=0.03, verbose=False, gravity_table=table, tail_strategies=())
+    nsp = {lvl: PP.nsp_target(run, pkg.basis, prm, f) for lvl, f in prm["nsp"]["hazard_levels"].items()}
+    acc = {lvl: PF.augment(PP.acceptance(run, hinges, n["target_disp_in"], lvl), run, hinges) for lvl, n in nsp.items()}
+    return pkg, prm, table, stats, run, dict(nsp=nsp, p695=PP.p695_factors(run, pkg.basis, nsp["BSE-1N"]), acc=acc, hinges=hinges)
+
+
+def test_report_states_both_7321_tests(tmp_path):
+    from pushover import report_supplement as RS
+    pkg, prm, table, stats, run, R = _portal_results()
+    n = R["nsp"]["BSE-1N"]
+    assert n["higher_modes"]["status"] == "not_significant" and n["nsp_status"] in ("permitted", "not_permitted")
+    html = open(RS.write(str(tmp_path), pkg, prm, {"X": run}, {"X": R}, table, stats, 1.0), encoding="utf-8").read()
+    assert "Higher-mode significance — ASCE 41-23 §7.3.2.1 item 2" in html and "NSP applicability (§7.3.2.1)" in html
+    assert "perform with the linear package's RS results" not in html                  # no longer left as a to-do note
+    po = json.load(open(tmp_path / "pushover_package.json"))
+    hm = po["directions"]["X"]["nsp"]["BSE-1N"]["higher_modes"]
+    assert hm["ratios"] and hm["clause"] == "ASCE 41-23 7.3.2.1 item 2"
 
 
 # --------------------------------------------------------------------------- NL-11: memory stays flat

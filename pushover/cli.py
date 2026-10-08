@@ -58,12 +58,16 @@ def _run(args):
             return "%.2f" % v if isinstance(v, (int, float)) else "n/a"
         for lvl, n in nsp.items():
             a = acc[lvl]
-            print("  [%s %s] Te=%.2fs Sa=%.3fg C0=%.2f C1=%.2f C2=%.2f -> dt=%.2f in (%.2f%% H) mu_str=%.2f mu_max=%.2f NSP permitted=%s reached dt=%s reached1.5=%s | %s worst D/C IO %s LS %s CP %s (monitored %s)"
+            print("  [%s %s] Te=%.2fs Sa=%.3fg C0=%.2f C1=%.2f C2=%.2f -> dt=%.2f in (%.2f%% H) mu_str=%.2f mu_max=%.2f NSP=%s reached dt=%s reached1.5=%s | %s worst D/C IO %s LS %s CP %s (monitored %s)"
                   % (d, lvl, n["Te"], n["Sa"], n["C0"], n["C1"], n["C2"], n["target_disp_in"], 100 * n["target_over_H"], n["mu_strength"],
-                     n["mu_max"], n["nsp_permitted"], n["reached_target"], n["reached_150pct"], a["status"].upper(),
+                     n["mu_max"], n["nsp_status"], n["reached_target"], n["reached_150pct"], a["status"].upper(),
                      _dc(a["worst_DC"]["IO"]), _dc(a["worst_DC"]["LS"]), _dc(a["worst_DC"]["CP"]), a["monitored"]))
             if a["status"] != PP.EVALUATED:
                 print("  !! [%s %s] %s" % (d, lvl, a["note"]))
+        hm = nsp["BSE-1N"]["higher_modes"]                         # NL-R2-12: same ratios at both hazard levels (same shape)
+        print("  [%s NSP 7.3.2.1] higher modes %s: %s; story shear ratio (90%%-mass CQC / mode 1) by story: %s -> %s"
+              % (d, hm["status"].upper(), hm.get("reason", ""), " ".join("%d:%.2f" % (r["story"], r["ratio"]) for r in hm["ratios"]) or "-",
+                 nsp["BSE-1N"]["nsp_status_text"]))
         print("  [%s P-695] Vmax=%.0f kip Omega=%s (Om0=%s) mu_T=%.2f (%s)" % (d, p695["Vmax_kip"], "%.2f" % p695["Omega"] if p695["Omega"] else "n/a",
                                                                           pkg.basis.Om0, p695["mu_T"], p695["delta_u_basis"]))
         t = run["tail"]

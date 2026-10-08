@@ -256,7 +256,18 @@ def build(job, out_name="four_analyses.html", title=None):
                      None: ("NOT EVALUATED — analysis stopped numerically before the target displacement (V still above 0.8 V<sub>max</sub>; "
                             "not evidence of collapse); no pass can be claimed" if stopped else
                             "NOT EVALUATED (no monitored beam/column components at δ<sub>t</sub>; no pass can be claimed)")}[bpon_ok]
-        nsp_ok = all(n.get("nsp_permitted", True) for d in dirs.values() for n in d["nsp"].values())
+        # NL-R2-12: both tests of ASCE 41-23 7.3.2.1; a package without the higher-mode test is never "permitted"
+        def _nst(n):
+            return n.get("nsp_status") or ("not_permitted" if n.get("nsp_permitted") is False else "not_evaluated")
+        _sts = [_nst(n) for d in dirs.values() for n in d["nsp"].values()]
+        nsp_st = next((x for x in ("not_permitted", "not_evaluated", "permitted_with_LDP") if x in _sts), "permitted")
+        nsp_ok = nsp_st == "permitted"
+        _hm = {k: (d["nsp"].get("BSE-1N") or {}).get("higher_modes") or {} for k, d in dirs.items()}
+        _hm_txt = ", ".join(f"{k} {h['max_ratio']:.2f}" for k, h in _hm.items() if isinstance(h.get("max_ratio"), (int, float)))
+        nsp_word = {"permitted": "permitted (μ<sub>strength</sub> &lt; μ<sub>max</sub>; higher modes not significant, max story-shear ratio %s ≤ 1.30)" % _hm_txt,
+                    "permitted_with_LDP": "NOT permitted alone — higher-mode effects significant (story-shear ratio %s > 1.30, ASCE 41-23 7.3.2.1): a supplementary LDP is required" % _hm_txt,
+                    "not_permitted": "NOT permitted (μstrength > μmax) — NDP required",
+                    "not_evaluated": "applicability NOT EVALUATED (higher-mode test of ASCE 41-23 7.3.2.1 not completed)"}[nsp_st]
         tails = {k: d.get("tail", {}).get("status", "") for k, d in dirs.items()}
         stats = po.get("hinge_stats", {})
         po_v = f"Ω {om}"; po_vl = f"V<sub>max</sub> {vmx} kip vs V = {fmt(po['basis'].get('V_design_kip'), 0)} kip ({' / '.join(dirs)})"
@@ -264,12 +275,13 @@ def build(job, out_name="four_analyses.html", title=None):
         mon_txt = "; ".join(f"{k}: " + ", ".join(f"{n} {kind}" for kind, n in (m or {}).items() if n) for k, m in mon.items() if m)
         po_foot = (f"BPON for Risk Category {rc.replace('_', '/')}: {lv1} at BSE-1N D/C {bpon1}; {lv2} at BSE-2N D/C {bpon2} — {bpon_word}. "
                    + (f"Monitored components ({mon_txt}). " if mon_txt else "")
-                   + f"δ<sub>t</sub> BSE-2N {dt2} in. NSP {'permitted' if nsp_ok else 'NOT permitted (μstrength > μmax) — NDP required'}; "
+                   + f"δ<sub>t</sub> BSE-2N {dt2} in. NSP {nsp_word}; "
                    f"{'members' if stats.get('plasticity') == 'fibre' else 'hinges'}: {stats.get('col', 0)} column, {stats.get('beam', 0)} beam, {stats.get('brace_nonlinear', 0) - stats.get('brb', 0)} brace"
                    f"{(', %d BRB' % stats['brb']) if stats.get('brb') else ''}{(', %d EBF link' % stats['links']) if stats.get('links') else ''}; descending branch {', '.join(f'{k} {v}' for k, v in tails.items())}. "
                    f"Component parameters {'verified' if po.get('params_verified') else 'UNVERIFIED placeholders'}.")
         summary["pushover"] = dict(Omega={k: d["p695"].get("Omega") for k, d in dirs.items()}, Vmax={k: d["p695"]["Vmax_kip"] for k, d in dirs.items()},
-                                   target_disp_BSE2N={k: d["nsp"]["BSE-2N"]["target_disp_in"] for k, d in dirs.items()}, bpon_levels=[lv1, lv2], bpon_ok=bpon_ok, nsp_permitted=nsp_ok,
+                                   target_disp_BSE2N={k: d["nsp"]["BSE-2N"]["target_disp_in"] for k, d in dirs.items()}, bpon_levels=[lv1, lv2], bpon_ok=bpon_ok, nsp_permitted=nsp_ok, nsp_status=nsp_st,
+                                   higher_mode_ratio={k: h.get("max_ratio") for k, h in _hm.items()},
                                    max_story_drift_BSE2N={k: d["acceptance"]["BSE-2N"]["max_story_drift"] for k, d in dirs.items()}, tail=tails, params_verified=po.get("params_verified"),
                                    bpon_status={k: {l: (d["acceptance"].get(l) or {}).get("status", "evaluated" if (d["acceptance"].get(l) or {}).get("groups") else "not_evaluated")
                                                     for l in ("BSE-1N", "BSE-2N")} for k, d in dirs.items()},

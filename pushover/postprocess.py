@@ -87,6 +87,98 @@ def spectrum_sa(T, SXS, SX1):
     return SX1 / T
 
 
+# --------------------------------------------------------------------------- NSP applicability, higher modes
+HM_RATIO_LIMIT = 1.30            # ASCE 41-23 7.3.2.1 item 2: "exceeds 130% of the corresponding story shear"
+HM_MASS_TARGET = 0.90            # "using sufficient modes to produce 90% mass participation"
+HM_DAMPING = 0.05                # CQC cross-modal coefficients at the 5 % damping of the spectrum
+
+
+def _cqc_rho(Ti, Tj, xi=HM_DAMPING):
+    """CQC cross-modal coefficient (Der Kiureghian 1981, equal damping), r = w_j / w_i = T_i / T_j."""
+    r = Ti / Tj if Tj > 0 else 0.0
+    den = (1 - r * r) ** 2 + 4 * xi * xi * r * (1 + r) ** 2
+    return 8 * xi * xi * (1 + r) * r ** 1.5 / den if den > 0 else 1.0
+
+
+def higher_mode_check(pattern, SXS, SX1, limit=HM_RATIO_LIMIT, mass_target=HM_MASS_TARGET):
+    """ASCE 41-23 7.3.2.1 item 2 (NL-R2-12): "a modal response spectrum analysis shall be performed for the structure
+    using sufficient modes to produce 90% mass participation. A second response spectrum analysis shall also be
+    performed, considering only the first mode participation. Higher mode effects shall be considered significant if
+    the shear in any story resulting from the modal analysis considering modes required to obtain 90% mass
+    participation exceeds 130% of the corresponding story shear considering only the first mode response."
+
+    Implemented from the eigen solve of the pushover model (initial stiffness, after gravity) in `pattern`
+    (nonlinear_model.modal_pattern): modes in eigen order up to and including the one where the cumulative effective
+    mass in the push direction first reaches 90 %; modal level forces F_kn = Gamma_n m_k phi_kn Sa(T_n) g on the
+    diaphragm levels; story shear V_i,n = sum over levels k >= i; modes combined by CQC (5 % damping); "first mode" =
+    the push-direction mode the load pattern uses. Spectrum: ASCE 7 / 41 general shape with S_XS, S_X1 (T_L ignored);
+    the ratio does not depend on the hazard level because BSE-1N and BSE-2N have the same shape.
+    -> dict(status "not_significant" | "significant" | "not_evaluated", ratios per story, max_ratio, ...)."""
+    out = dict(clause="ASCE 41-23 7.3.2.1 item 2", limit=limit, mass_target=mass_target,
+               combination="CQC (5% damping)", spectrum="S_XS %.3f g, S_X1 %.3f g (T_L ignored)" % (SXS, SX1),
+               ratios=[], max_ratio=None, story_max=None, n_modes_used=0, cum_mass_frac=None)
+    modes = (pattern or {}).get("modes") or []
+    first = (pattern or {}).get("mode")
+    mk = (pattern or {}).get("masses") or {}
+    if not modes or first is None or not mk:
+        return dict(out, status="not_evaluated", reason="no modal data in the run (pushover written before NL-R2-12)")
+    used, cum = [], 0.0
+    for m in modes:
+        used.append(m); cum += m.get("meff_frac") or 0.0
+        if cum >= mass_target:
+            break
+    out.update(n_modes_used=len(used), cum_mass_frac=cum, n_modes_computed=len(modes))
+    m1 = next((m for m in modes if m["mode"] == first), None)
+    if m1 is None:
+        return dict(out, status="not_evaluated", reason="first mode %s not among the computed modes" % first)
+    if m1 not in used:
+        used.append(m1)
+    ks = sorted(mk)
+
+    def shears(m):
+        sa = spectrum_sa(m["T"], SXS, SX1) * G_IN
+        F = {k: m["gamma"] * mk[k] * float(m["phi"].get(k, m["phi"].get(str(k), 0.0))) * sa for k in ks}
+        return [sum(F[k] for k in ks[i:]) for i in range(len(ks))]
+
+    Vn = [shears(m) for m in used]
+    V1 = shears(m1)
+    rho = [[_cqc_rho(a["T"], b["T"]) for b in used] for a in used]
+    for i in range(len(ks)):
+        v2 = sum(rho[a][b] * Vn[a][i] * Vn[b][i] for a in range(len(used)) for b in range(len(used)))
+        Vm = math.sqrt(max(v2, 0.0)); v1 = abs(V1[i])
+        out["ratios"].append(dict(story=i + 1, V_modal_kip=Vm, V_mode1_kip=v1, ratio=(Vm / v1) if v1 > 0 else float("inf")))
+    worst = max(out["ratios"], key=lambda r: r["ratio"])
+    out.update(max_ratio=worst["ratio"], story_max=worst["story"])
+    if cum < mass_target - 1e-9:
+        return dict(out, status="not_evaluated",
+                    reason="the %d computed modes reach only %.1f%% mass participation (< 90%%)" % (len(modes), 100 * cum))
+    sig = worst["ratio"] > limit
+    return dict(out, status="significant" if sig else "not_significant",
+                reason="story %d: modal (%d modes, %.1f%% mass) / first-mode story shear = %.3f %s 1.30"
+                       % (worst["story"], len(used), 100 * cum, worst["ratio"], ">" if sig else "<="))
+
+
+NSP_STATUS_TEXT = {
+    "permitted": "NSP permitted (ASCE 41-23 7.3.2.1: mu_strength < mu_max and higher-mode effects not significant)",
+    "permitted_with_LDP": ("NSP NOT permitted alone -- higher-mode effects significant (ASCE 41-23 7.3.2.1 item 2): the NSP "
+                           "is permitted only with a supplementary LDP, both meeting their acceptance criteria"),
+    "not_permitted": "NSP NOT permitted -- mu_strength >= mu_max (ASCE 41-23 7.3.2.1 item 1): an NDP is required",
+    "not_evaluated": "NSP applicability NOT EVALUATED -- the higher-mode test (ASCE 41-23 7.3.2.1 item 2) was not completed",
+}
+
+
+def nsp_status(strength_ok, hm):
+    """Both tests of ASCE 41-23 7.3.2.1. Never "permitted" unless the higher-mode test ran and passed."""
+    if not strength_ok:
+        return "not_permitted"
+    st = (hm or {}).get("status")
+    if st == "significant":
+        return "permitted_with_LDP"
+    if st == "not_significant":
+        return "permitted"
+    return "not_evaluated"
+
+
 # --------------------------------------------------------------------------- idealisation
 def idealize(u, V, u_target):
     """ASCE 41-23 7.4.3.2.5 / Figure 7-3 bilinear idealisation.
@@ -215,7 +307,8 @@ def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
             break
         dt_guess = dt
     ide = idealize(u, V, out["target_disp_in"])
-    # Eq. (7-33) maximum strength ratio (NSP applicability, 7.3.2.1) with alpha_e from Eq. (7-34).
+    # Eq. (7-33) maximum strength ratio (NSP applicability, 7.3.2.1 item 1) with alpha_e from Eq. (7-34); the
+    # higher-mode test (item 2) below -- `nsp_permitted` is True only when both pass (NL-R2-12).
     alpha2, a2_basis = _alpha2(u, V, ide)
     QG = sum(run["gravity_table_QG"]) if run.get("gravity_table_QG") else W
     Varr = np.asarray(V)
@@ -229,7 +322,10 @@ def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
     alpha_e = alpha_pd + lam * (alpha2 - alpha_pd)
     h = 1.0 + 0.15 * math.log(max(out["Te"], 0.05))
     mu_max = (ide["ud"] / max(ide["uy"], 1e-9)) + (abs(alpha_e) ** (-h)) / 4.0 if alpha_e != 0 else float("inf")
-    permitted = out["mu_strength"] < mu_max
+    strength_ok = out["mu_strength"] < mu_max                      # 7.3.2.1 item 1
+    hm = higher_mode_check(run.get("pattern"), SXS, SX1)           # 7.3.2.1 item 2 (NL-R2-12)
+    nst = nsp_status(strength_ok, hm)
+    permitted = nst == "permitted"                                 # NSP alone permitted: BOTH tests passed
     sf = target_shortfall(run, out["target_disp_in"])              # NL-R2-24: failure vs numerical stop
     if sf is None:
         tstat = "reached"
@@ -238,7 +334,8 @@ def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
     else:
         tstat = "NOT EVALUATED -- %s (ASCE 41-23 7.4.3.3.1)" % sf["text"]
     out.update(alpha2=alpha2, alpha2_basis=a2_basis, alpha_PDelta=alpha_pd, alpha_e=alpha_e, lambda_nf=lam,
-               SX1_BSE2N=SX1_bse2n, mu_max=mu_max, nsp_permitted=permitted, theta_story1_elastic=theta1,
+               SX1_BSE2N=SX1_bse2n, mu_max=mu_max, nsp_permitted=permitted, nsp_strength_ok=bool(strength_ok),
+               higher_modes=hm, nsp_status=nst, nsp_status_text=NSP_STATUS_TEXT[nst], theta_story1_elastic=theta1,
                nsp_ok=bool(permitted and out["reached_target"]), target_shortfall=sf, target_status=tstat)
     return out
 

@@ -94,6 +94,42 @@ def _f(x, nd=2):
     return ("%%.%df" % nd) % x if isinstance(x, (int, float)) else str(x)
 
 
+def _hm_txt(n):
+    """NL-R2-12: the higher-mode test result for one NSP column."""
+    hm = n.get("higher_modes") or {}
+    if hm.get("max_ratio") is None:
+        return '<span class="warn">NOT EVALUATED</span> %s' % hm.get("reason", "no modal data")
+    lab = {"significant": '<span class="ng">significant</span>', "not_significant": '<span class="ok">not significant</span>'}.get(
+        hm.get("status"), '<span class="warn">NOT EVALUATED</span>')
+    return "%.2f (story %d; %d modes, %.0f%% mass, %s) → %s" % (hm["max_ratio"], hm["story_max"], hm["n_modes_used"],
+                                                                100 * (hm.get("cum_mass_frac") or 0), hm.get("combination", ""), lab)
+
+
+def _nsp_txt(n):
+    st = n.get("nsp_status") or ("not_permitted" if n.get("nsp_permitted") is False else "not_evaluated")
+    cls = {"permitted": "ok", "not_permitted": "ng", "permitted_with_LDP": "ng"}.get(st, "warn")
+    word = {"permitted": "permitted", "not_permitted": "NOT permitted — NDP required",
+            "permitted_with_LDP": "NOT permitted alone — supplementary LDP required", "not_evaluated": "NOT EVALUATED"}[st]
+    return '<span class="%s">%s</span>' % (cls, word)
+
+
+def _hm_table(nsp):
+    """Per-story ratios of the higher-mode test (NL-R2-12), one table per direction."""
+    hm = (nsp.get("BSE-1N") or next(iter(nsp.values()), {})).get("higher_modes") or {}
+    if not hm.get("ratios"):
+        return ""
+    rows = "".join("<tr><td>%d</td><td>%.0f</td><td>%.0f</td><td>%s</td></tr>"
+                   % (r["story"], r["V_modal_kip"], r["V_mode1_kip"], _tag(r["ratio"] <= hm["limit"], "%.2f" % r["ratio"], "%.2f" % r["ratio"]))
+                   for r in hm["ratios"])
+    return ("<h3>Higher-mode significance — ASCE 41-23 §7.3.2.1 item 2</h3><p>Response-spectrum story shears from the pushover "
+            "model's modes (initial stiffness, diaphragm level masses): %d modes in eigen order to %.1f%% mass participation in "
+            "this direction, combined by %s, against the first-mode-only shears; spectrum %s. Higher-mode effects are "
+            "significant where a ratio exceeds 1.30 (then the NSP must be supplemented by an LDP). Result: <b>%s</b> — %s.</p>"
+            "<table><tr><th>Story</th><th>V 90%%-mass MRSA (kip)</th><th>V first mode (kip)</th><th>ratio</th></tr>%s</table>"
+            % (hm["n_modes_used"], 100 * (hm.get("cum_mass_frac") or 0), hm.get("combination", ""), hm.get("spectrum", ""),
+               hm.get("status", "").replace("_", " ").upper(), hm.get("reason", ""), rows))
+
+
 def _reached_txt(n):
     """NL-R2-24: a push short of delta_t is NOT ACCEPTABLE only after a genuine strength loss / rotation b; a numerical
     stop (or the drift cap) above 0.8 Vmax is NOT EVALUATED."""
@@ -188,13 +224,16 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                 ("S<sub>a</sub>(T<sub>e</sub>) (g)", lambda n: _f(n["Sa"], 3)),
                 ("C<sub>0</sub> (Γ<sub>1</sub>φ<sub>roof</sub>) · C<sub>1</sub> · C<sub>2</sub>", lambda n: "%.3f · %.3f · %.3f" % (n["C0"], n["C1"], n["C2"])),
                 ("Strength ratio μ<sub>strength</sub> = S<sub>a</sub>C<sub>m</sub>/(V<sub>y</sub>/W), Eq. (7-32)", lambda n: "%s (C<sub>m</sub> %s, %s)" % (_f(n["mu_strength"], 3), _f(n.get("Cm"), 2), n.get("Cm_basis", ""))),
-                ("μ<sub>max</sub> (Eq. 7-33, α<sub>e</sub> Eq. 7-34) → NSP permitted (§7.3.2.1)?", lambda n: "%s → %s" % (_f(n["mu_max"], 2), _tag(n["nsp_permitted"], "yes", "NO — use NDP"))),
+                ("μ<sub>max</sub> (Eq. 7-33, α<sub>e</sub> Eq. 7-34) → μ<sub>strength</sub> &lt; μ<sub>max</sub> (§7.3.2.1 item 1)?", lambda n: "%s → %s" % (_f(n["mu_max"], 2), _tag(n.get("nsp_strength_ok", n["nsp_permitted"]), "yes", "NO — use NDP"))),
+                ("Higher modes (§7.3.2.1 item 2): max story shear 90%-mass MRSA / first mode (limit 1.30)", _hm_txt),
+                ("<b>NSP applicability (§7.3.2.1)</b>", _nsp_txt),
                 ("<b>Target displacement δ<sub>t</sub> (in) · /H</b>, Eq. (7-29)", lambda n: "<b>%.2f</b> · %.2f%%" % (n["target_disp_in"], 100 * n["target_over_H"])),
                 ("Push reached δ<sub>t</sub>? (§7.4.3.3.1)", _reached_txt),
                 ("Curve pushed to ≥ 1.5 δ<sub>t</sub>?", lambda n: _tag(n["reached_150pct"], "yes", "NO — extend push")))
         for lab, fn in rows:
             H.append("<tr><td>%s</td>%s</tr>" % (lab, "".join("<td>%s</td>" % fn(n) for n in R["nsp"].values())))
         H.append("</table>")
+        H.append(_hm_table(R["nsp"]))
 
         p = R["p695"]
         H.append("<h3>FEMA P-695-style factors from this curve</h3><table><tr><th>Factor</th><th>Value</th><th>Design basis</th><th>Reading</th></tr>")
@@ -302,7 +341,11 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
              "Gravity in the push distributed equally to column nodes per level (footprint from node extents); replace with tributary loads from model_static.py for irregular plans.",
              pz_item,
              "Force-controlled actions (column axial, connection welds/bolts) reported as P/P<sub>ye</sub> only; run the Eq. 7-38 check with γχ factors.",
-             "Higher-mode check: NSP must be supplemented by an LDP where higher modes are significant (story shear from a 90%-mass MRSA > 130% of the first-mode shear) — perform with the linear package's RS results."]
+             "Higher-mode check (ASCE 41-23 §7.3.2.1 item 2), computed here from the pushover model's modes: %s. Where significant, "
+             "the NSP is permitted only with a supplementary LDP (not part of this supplement)." % "; ".join(
+                 "%s: %s" % (d, (lambda hm: ("max ratio %.2f at story %d → %s" % (hm["max_ratio"], hm["story_max"], hm["status"].replace("_", " ")))
+                                 if hm.get("max_ratio") is not None else "NOT EVALUATED (%s)" % hm.get("reason", ""))(
+                     (results[d]["nsp"].get("BSE-1N") or {}).get("higher_modes") or {})) for d in runs)]
     H += ["<li>%s</li>" % i for i in items]
     H.append("</ol>")
     html = "\n".join(H)
