@@ -243,7 +243,7 @@ def cmd_feedback(a):
         if k == "drift": print(json.dumps(p["numbers"], indent=None))
         if k == "resize": print("\n".join("  %-24s %-9s %-9s %s" % (r["id"], r["verdict"], r["proposed"] or "", r["reason"][:80]) for r in p["rows"]))
         if k == "mechanism": print("  storeys:", [(s_["level"], s_["col_yielded"]) for s_ in p["storeys"]], " panel zone:", bool(p["panel_zone"]))
-        print("\n" + p["brief"])
+        print("\n" + (p.get("brief") or ""))                         # NL-R2-08
     if a.run:
         if not a.loop:
             sys.exit("--run needs --loop")

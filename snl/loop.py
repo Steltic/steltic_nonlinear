@@ -216,7 +216,7 @@ class Loop(threading.Thread):
         plan = apply_edits(plan, self.edits, jd)
         self.state["plan"] = F.plan_as_json(plan)
         json.dump(self.state["plan"], open(os.path.join(self.dir, "plan.json"), "w", encoding="utf-8"), indent=1)
-        open(os.path.join(self.dir, "brief.txt"), "w", encoding="utf-8").write(plan["brief"])
+        open(os.path.join(self.dir, "brief.txt"), "w", encoding="utf-8").write(plan.get("brief") or "")   # NL-R2-08
         if not plan.get("eligible"):
             self._step("plan", "failed", "; ".join(plan.get("reasons") or ["not eligible"]))
             self._set("failed", error="not eligible: " + "; ".join(plan.get("reasons") or []), finished=now(), passed=False)
@@ -419,7 +419,7 @@ def ddm_like_for_like(opts):
 def apply_edits(plan, edits, jd):
     """User edits from the UI: resize -> {'change_set': {id: proposed | null}}; drift -> {'target_fraction': f} is an
     option (handled before); mechanism -> {'scwb_target': x, 'joints': [...]} . The brief is rebuilt after editing."""
-    if not edits:
+    if not edits or plan.get("stopped_early"):                         # NL-R2-08: nothing to edit on a plan without numbers
         return plan
     if plan["kind"] == "resize" and isinstance(edits.get("change_set"), dict):
         cs = []
@@ -444,7 +444,7 @@ def apply_edits(plan, edits, jd):
                 m["joints"] = [dict(joint=str(j.get("joint") if isinstance(j, dict) else j), ratio=(j.get("ratio") if isinstance(j, dict) else None),
                                     action=(j.get("action", "doublers") if isinstance(j, dict) else "doublers")) for j in edits["joints"]]
         plan["brief"] = F.mechanism_brief(plan, jd)
-    elif plan["kind"] == "drift" and edits.get("brief_note"):
+    elif plan["kind"] == "drift" and edits.get("brief_note") and plan.get("eligible"):   # NL-R2-08: no note on a non-brief
         plan["brief"] += "\n\nNOTE FROM THE ENGINEER: " + str(edits["brief_note"])
     return plan
 
@@ -460,9 +460,11 @@ def _dc_max(jd):
 
 def _drift(jd):
     st = jd["steltic"]
-    if not st.get("drift_X"):
+    from . import compare as C
+    m = C.design_drift_max(st)                                 # NL-R2-08: drift-exempt storeys left out
+    if m is None:
         return None, None
-    return max(max(st["drift_X"] or [0]), max(st["drift_Y"] or [0])) / 100.0, (st.get("drift_limit_pct") or 0) / 100.0 or None
+    return m / 100.0, (st.get("drift_limit_pct") or 0) / 100.0 or None
 
 
 def package_checks(kind, plan, base, cand):

@@ -36,20 +36,63 @@ def _text(path):
     return re.sub(r"\s+", " ", t)
 
 
+# NL-R2-08: the HR report's Chapter 8 drift table. Current HR (October fixes, per-direction C_d / I_e, HR-01/HR-02):
+#   "Story δ xe /h X % Δ/h X % δ xe /h Y % Δ/h Y % ≤ limit (X 2.00% / Y 2.00%)", rows "1 0.177 0.974 0.190 1.047 OK"
+#   or "2 0.064 0.207 0.091 0.297 exempt: split-level ..." (cfg drift_exempt_stories);
+# older HR: "Story δe X % δ X % δe Y % δ Y % ≤2.00%". Both are accepted; columns are the same (story, elastic X, design X,
+# elastic Y, design Y).
+_DRIFT_HDR_NEW = re.compile(r"Story δ\s*xe\s*/\s*h X % Δ\s*/\s*h X % δ\s*xe\s*/\s*h Y % Δ\s*/\s*h Y % ≤\s*limit \(X ([\d.]+)% / Y ([\d.]+)%\)")
+_DRIFT_HDR_OLD = re.compile(r"Story δe X % δ X % δe Y % δ Y % ≤\s*([\d.]+)%")
+_DRIFT_ROW = re.compile(r"(\d+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) (OK|NG|FAIL|EXCEEDS|exempt)")
+_DRIFT_END = re.compile(r"Same analysis as|Wind drift|Story δ")
+
+
+def _drift_table(t, out):
+    m = _DRIFT_HDR_NEW.search(t)
+    if m:
+        lx, ly = float(m.group(1)), float(m.group(2))
+    else:
+        m = _DRIFT_HDR_OLD.search(t)
+        if not m:
+            return
+        lx = ly = float(m.group(1))
+    out["drift_limit_X_pct"], out["drift_limit_Y_pct"] = lx, ly
+    out["drift_limit_pct"] = min(lx, ly)                         # one number for the loops: the tighter direction
+    tail = t[m.end():m.end() + 8000]
+    e = _DRIFT_END.search(tail)
+    tail = tail[:e.start()] if e else tail
+    rows, exempt = [], []
+    for r in _DRIFT_ROW.finditer(tail):                           # storeys 1, 2, 3 ... in order; anything else is prose
+        if int(r.group(1)) != len(rows) + 1:
+            continue
+        rows.append(r)
+        if r.group(6) == "exempt":
+            exempt.append(len(rows))
+    if rows:
+        out["drift_X"] = [float(r.group(3)) for r in rows]; out["drift_Y"] = [float(r.group(5)) for r in rows]
+        out["drift_exempt"] = exempt
+
+
+def design_drift_max(st, dirn=None):
+    """NL-R2-08: max design drift (%) over the storeys the HR design checked against the limit (drift-exempt storeys --
+    e.g. split-level inter-diaphragm offsets -- are left out), for one direction or both; None when not read."""
+    if not st.get("drift_X"):
+        return None
+    ex = set(st.get("drift_exempt") or [])
+    vals = [v for d in ((dirn,) if dirn else ("X", "Y")) for i, v in enumerate(st.get("drift_" + d) or [], start=1) if i not in ex]
+    return max(vals) if vals else None
+
+
 def steltic_facts(job):
     """Design drift table (C_d delta_e / I_e per storey), drift limit, design V and W from report.html; D/C from calc_package."""
     t = _text(os.path.join(job, "report.html"))
-    out = dict(drift_limit_pct=None, drift_X=None, drift_Y=None, V_kip=None, W_kip=None, Cs=None, wind_X=None, wind_Y=None)
-    m = re.search(r"Story δe X % δ X % δe Y % δ Y % ≤([\d.]+)%(.{0,1200})", t)
-    if m:
-        out["drift_limit_pct"] = float(m.group(1))
-        rows = re.findall(r"(\d+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) (?:OK|NG|FAIL|EXCEEDS)", m.group(2))
-        if rows:
-            out["drift_X"] = [float(r[2]) for r in rows]; out["drift_Y"] = [float(r[4]) for r in rows]
+    out = dict(drift_limit_pct=None, drift_limit_X_pct=None, drift_limit_Y_pct=None, drift_X=None, drift_Y=None, drift_exempt=[],
+               V_kip=None, W_kip=None, Cs=None, wind_X=None, wind_Y=None)
+    _drift_table(t, out)
     m = re.search(r"Design base shear V = C s W = ([\d.]+) × ([\d,]+) = ([\d,]+) kip", t)
     if m:
         out["Cs"] = float(m.group(1)); out["W_kip"] = float(m.group(2).replace(",", "")); out["V_kip"] = float(m.group(3).replace(",", ""))
-    m = re.search(r"Wind base shear: X = ([\d,]+) kip, Y = ([\d,]+) kip", t)
+    m = re.search(r"Wind base shear(?: \(frame\))?: X = ([\d,]+) kip, Y = ([\d,]+) kip", t)       # NL-R2-08: "(frame)" in current HR
     if m:
         out["wind_X"] = float(m.group(1).replace(",", "")); out["wind_Y"] = float(m.group(2).replace(",", ""))
     cp = _load_json(os.path.join(job, "design", "calc_package.json"), {})
@@ -172,7 +215,7 @@ def build(job, out_name="four_analyses.html", title=None):
         st_v = f"D/C {dcm['DC']:.2f}"; st_vl = f"governing member {dcm['id']} ({sec}), {dcm['inputs'].get('governing_combo', '')}"
     else:
         st_v, st_vl = "—", "calc_package.json has no D/C values"
-    drift_max_st = max(max(st["drift_X"] or [0]), max(st["drift_Y"] or [0])) if st["drift_X"] else None
+    drift_max_st = design_drift_max(st)                                            # NL-R2-08: exempt storeys left out
     st_foot = []
     if st["V_kip"]: st_foot.append(f"Design base shear V = {st['V_kip']:,.0f} kip (C<sub>s</sub> {st['Cs']:.4f}, W = {st['W_kip']:,.0f} kip)")
     if st["wind_X"]: st_foot.append(f"wind base shear {st['wind_X']:,.0f} / {st['wind_Y']:,.0f} kip")
@@ -299,7 +342,7 @@ def build(job, out_name="four_analyses.html", title=None):
             rd = "The coefficient-method δ<sub>t</sub> sits " + " and ".join(f"{abs(v):.0f}% {'above' if v > 0 else 'below'}" for v in devs) + " the record mean (X, Y); the suite adds the record-to-record scatter."
         Q.append(row("MCE<sub>R</sub>-level roof displacement (in)", "—", f"δ<sub>t</sub> {dt_row}", nl_roof, "—", rd))
     if st["drift_X"] or po or nl:
-        Q.append(row("Max storey drift", (f"design {max(st['drift_X']):.2f}% / {max(st['drift_Y']):.2f}% (DE, C<sub>d</sub>δ<sub>e</sub>/I<sub>e</sub>)" if st["drift_X"] else "—"),
+        Q.append(row("Max storey drift", (f"design {design_drift_max(st, 'X'):.2f}% / {design_drift_max(st, 'Y'):.2f}% (DE, C<sub>d</sub>δ<sub>e</sub>/I<sub>e</sub>)" if design_drift_max(st) is not None else "—"),
                      (" / ".join((f"{100*d['acceptance']['BSE-2N']['max_story_drift']:.2f}%" if d['acceptance']['BSE-2N'].get('max_story_drift') is not None else "δ<sub>t</sub> not reached") for d in po["directions"].values()) + " at δ<sub>t</sub> BSE-2N" if po else "—"),
                      (f"mean {max(mean_X):.2f}% / {max(mean_Y):.2f}% (peaks {max(max_X):.2f}% / {max(max_Y):.2f}%)" if mean_X else ("not computed — no acceptable record" if nl else "—")), "—",
                      (f"Chapter 16 mean limit {pct(nl['limits']['mean_limit'])} for Risk Category {rc.replace('_','/')}" + (f"; ASCE 7 design limit {st['drift_limit_pct']:.2f}%." if st["drift_limit_pct"] else ".") if nl else "")))
