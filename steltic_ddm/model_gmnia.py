@@ -9,8 +9,10 @@ model_gmnia.py -- rebuild a Steltic elastic model as a GMNIA model in openseespy
     for braces (imperfections.py decides directions/magnitudes)
   * Steltic pins (elasticBeamColumn -releasey/-releasez) -> duplicate end node + zeroLength with stiff
     springs on the retained DOFs and NOTHING on the released rotation (true pin, no constraint chains)
-  * brace ends: pinned about all three axes (gusset idealisation); braces do NOT share a node at the
-    X-crossing (conservative: K = 1 on the full diagonal)
+  * brace ends: pinned about all three axes (gusset idealisation); at an X-crossing the two diagonals share their
+    mid-node translations (pinned crossing) when the HR design says they are connected there (calc_package:
+    "connected at the crossing", Lc <= 0.6 Lwp; NL-R2-28 (DDM)), otherwise they are independent (K = 1 on the
+    full diagonal)
   * rigid diaphragms and master nodes exactly as Steltic recorded them
   * bases: as recorded (fixed / pinned)
   * optional rigid_end_offset on primary beams: stiff elasticBeamColumn stubs
@@ -176,6 +178,7 @@ class GMNIAModel:
         if getattr(self, "_lb_conflicts", None):
             self.special_log.append("beam bracing: HR groups with different Lb for the same role/section -> the LARGEST Lb "
                                     "used: %s" % "; ".join("%s %s %s" % (r, sct, v) for (r, sct), v in sorted(self._lb_conflicts.items())[:6]))
+        self._tie_x_crossings()                                    # NL-R2-28 (DDM)
         for note in self.special_log:
             self.builder.log.append((0, "special", "note", 0, note))
         for master, slaves in nm.diaphragms.items():
@@ -232,6 +235,76 @@ class GMNIAModel:
         self.pins.append(tag)
         return tag
 
+
+    # ------------------------------------------------------------------ NL-R2-28 (DDM): X-brace crossings
+    def _hr_x_crossing_sections(self):
+        """Brace sections the HR design treats as X-braces CONNECTED AT THE CROSSING (calc_package members[].inputs:
+        configuration / note mentions the crossing and Lc_in <= 0.6 x the work-point length)."""
+        out = set()
+        for m in (self.nm.calc_package or {}).get("members", []) or []:
+            inp = m.get("inputs") or {}
+            if str(inp.get("role", "")) != "brace" or not inp.get("section"):
+                continue
+            txt = " ".join(str(inp.get(k, "")) for k in ("configuration", "note", "Lc_note")).lower()
+            try:
+                lc = float(inp.get("Lc_in")); lwp = float(inp.get("Lwp_in") or inp.get("workpoint_length_in") or inp.get("length_in"))
+            except (TypeError, ValueError):
+                continue
+            if "cross" in txt and lwp > 0 and lc <= 0.6 * lwp:
+                out.add(str(inp["section"]).upper().replace(" ", ""))
+        return out
+
+    @staticmethod
+    def x_pairs(braces, tol=1.0):
+        """Pairs of brace members whose work-point lines cross at both their mid-lengths (an X in one bay).
+        braces: [(tag, p1, p2)] -> [(tag_a, tag_b)]. tol: in."""
+        mids = [(t, tuple((a[q] + b[q]) / 2 for q in range(3)), tuple(b[q] - a[q] for q in range(3))) for t, a, b in braces]
+        out, used = [], set()
+        for i in range(len(mids)):
+            ta, ma, da = mids[i]
+            if ta in used:
+                continue
+            for j in range(i + 1, len(mids)):
+                tb, mb, db = mids[j]
+                if tb in used or math.dist(ma, mb) > tol:
+                    continue
+                cr = (da[1] * db[2] - da[2] * db[1], da[2] * db[0] - da[0] * db[2], da[0] * db[1] - da[1] * db[0])
+                if math.sqrt(sum(c * c for c in cr)) < 0.1 * math.sqrt(sum(c * c for c in da)) * math.sqrt(sum(c * c for c in db)):
+                    continue                                       # (anti)parallel: not an X
+                out.append((ta, tb)); used.update((ta, tb))
+                break
+        return out
+
+    def _tie_x_crossings(self):
+        """NL-R2-28 (DDM): where the HR design says the two diagonals of an X are connected at the crossing (and designs
+        the compression diagonal on half its work-point length), the GMNIA connects them too -- the mid chain nodes share
+        their translations (pinned crossing, equalDOF 1-3). The restraint the tension diagonal gives the compression
+        diagonal then comes out of the analysis instead of an assumed K (AISC 360-22 App. 1, 1.3.1(a): all component and
+        connection deformations of the structure as designed). Before: the diagonals were independent (K = 1 on the full
+        length), i.e. ~1/4 of the buckling load the HR design relied on (Ex21: HSS5-1/2X5-1/2X3/8, KL/r 319 vs 171)."""
+        self.x_ties = {}
+        if self.elastic:
+            return
+        secs = self._hr_x_crossing_sections()
+        if not secs:
+            return
+        from pushover import sections_db as SDB
+        cand = [(m.tag, self._coord(m.n1), self._coord(m.n2)) for m in self.nm.members
+                if m.kind == "brace" and not SDB.is_brb(m.section) and str(m.section).upper().replace(" ", "") in secs
+                and m.tag in self.sub_nodes and len(self.sub_nodes[m.tag]) >= 5 and len(self.sub_nodes[m.tag]) % 2 == 1]
+        skipped = sum(1 for m in self.nm.members if m.kind == "brace" and m.tag in self.sub_nodes
+                      and len(self.sub_nodes[m.tag]) % 2 == 0)
+        for ta, tb in self.x_pairs(cand):
+            na = self.sub_nodes[ta][len(self.sub_nodes[ta]) // 2]
+            nb = self.sub_nodes[tb][len(self.sub_nodes[tb]) // 2]
+            ops.equalDOF(na, nb, 1, 2, 3)
+            self.x_ties[ta] = tb; self.x_ties[tb] = ta
+        if self.x_ties:
+            self.special_log.append(
+                "X-brace crossings (NL-R2-28): %d X pairs of %s connected at the crossing (mid chain nodes share their "
+                "translations, rotations free) as the HR design assumes (calc_package: connected at the crossing, Lc <= "
+                "0.6 Lwp)%s" % (len(self.x_ties) // 2, ", ".join(sorted(secs)),
+                                 "; %d braces with an odd sub-element count left unconnected" % skipped if skipped else ""))
 
     # ------------------------------------------------------------------ NL-R2-27 beam bracing by the deck / infill
     def _hr_lb(self):

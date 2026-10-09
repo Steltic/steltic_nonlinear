@@ -273,3 +273,93 @@ def test_lower_bound_never_fails():
     for k in ("limit", "post-peak", "plateau", "disp-cap"):
         assert not phi_s.is_lower_bound(dict(termination=dict(kind=k)))
     assert not phi_s.is_lower_bound(dict())                          # results written before NL-R2-27
+
+
+# ---------------------------------------------------------------------------------------------- NL-R2-28 (DDM): X crossings
+def test_x_pairs_finds_the_two_diagonals_of_a_bay_only():
+    from steltic_ddm.model_gmnia import GMNIAModel
+    br = [(1, (0, 0, 0), (600, 0, 384)), (2, (600, 0, 0), (0, 0, 384)),          # X in bay 0 (XZ plane)
+          (3, (600, 0, 0), (1200, 0, 384)),                                       # single diagonal (no partner)
+          (4, (0, 600, 0), (0, 1200, 384)), (5, (0, 1200, 0), (0, 600, 384)),     # X in a Y frame
+          (6, (0, 0, 384), (600, 0, 768))]                                        # storey above: no shared mid
+    assert sorted(tuple(sorted(p)) for p in GMNIAModel.x_pairs(br)) == [(1, 2), (4, 5)]
+    # chevron halves meeting at the beam mid-span share an END, not their mid-lengths -> no tie
+    assert GMNIAModel.x_pairs([(7, (0, 0, 0), (300, 0, 384)), (8, (600, 0, 0), (300, 0, 384))]) == []
+
+
+class _NM:
+    def __init__(self, members):
+        self.calc_package = {"members": [{"inputs": m} for m in members]}
+
+
+@pytest.mark.parametrize("inp,expected", [
+    (dict(role="brace", section="HSS5-1/2X5-1/2X3/8", Lc_in=356.2, Lwp_in=712.4,
+          configuration="X-bracing, diagonals connected at the crossing"), {"HSS5-1/2X5-1/2X3/8"}),
+    (dict(role="brace", section="HSS5X5X3/8", Lc_in=201.2, length_in=402.5, workpoint_length_in=402.5,
+          Lc_note="X-bracing connected at the crossing: design Lc = 0.5 x work-point length"), {"HSS5X5X3/8"}),
+    (dict(role="brace", section="HSS7X7X1/2", Lc_in=225.2, length_in=225.2, configuration="chevron"), set()),
+    (dict(role="brace", section="HSS6X6X1/2", Lc_in=700.0, Lwp_in=712.4, configuration="X, not connected at the crossing"), set()),
+])
+def test_hr_x_crossing_sections_follow_the_calc_package(inp, expected):
+    """Only braces the HR design treats as X-braces connected at the crossing (Lc <= 0.6 Lwp) are tied (Ex21 / Ex30
+    calc packages); chevrons (Ex13) and full-length X designs are left alone."""
+    from steltic_ddm.model_gmnia import GMNIAModel
+    g = GMNIAModel.__new__(GMNIAModel)
+    g.nm = _NM([inp])
+    assert g._hr_x_crossing_sections() == expected
+
+
+def test_x_crossing_tie_raises_the_compression_diagonal_buckling_load():
+    """Two pin-ended HSS diagonals of a 600 x 384 in bay, the lower ends fixed in translation, the upper ends pushed
+    so that one diagonal is in compression and the other in tension (end rotations about X, Z held): with the crossing
+    tied (mid nodes share their
+    translations) the compression diagonal carries ~4x the force it carries untied (half vs full buckling length;
+    measured 216 vs 58 kip)."""
+    import math
+    import openseespy.opensees as ops
+    from steltic_ddm.sections_fiber import FiberSectionBuilder
+
+    def run(tie):
+        ops.wipe(); ops.model("basic", "-ndm", 3, "-ndf", 6)
+        H, B = 384.0, 600.0
+        ends = {1: (0, 0, 0), 2: (B, 0, H), 3: (B, 0, 0), 4: (0, 0, H)}
+        for t, c in ends.items():
+            ops.node(t, *c)
+        for t in (1, 3):
+            ops.fix(t, 1, 1, 1, 1, 0, 1)
+        for t in (2, 4):                         # top: pushed together in X (axial shortening of 1-2, lengthening of 3-4)
+            ops.fix(t, 0, 1, 1, 1, 0, 1)
+        ops.geomTransf("Corotational", 1, 0.0, 1.0, 0.0)
+        FiberSectionBuilder(ops, Fy=50.0, residual="none").hss_rect(1, "HSS5X5X3/8", residual="none")
+        ops.beamIntegration("Lobatto", 1, 1, 5)
+        mids, et = {}, 0
+        for k, (a, b) in enumerate(((1, 2), (3, 4))):
+            pa, pb = ends[a], ends[b]
+            chain = [a]
+            for s in range(1, 4):
+                f = s / 4.0
+                off = 0.001 * math.dist(pa, pb) * math.sin(math.pi * f)
+                t = 100 + 10 * k + s
+                ops.node(t, pa[0] + (pb[0] - pa[0]) * f, off, pa[2] + (pb[2] - pa[2]) * f)
+                chain.append(t)
+            chain.append(b)
+            mids[k] = chain[2]
+            for s in range(4):
+                et += 1
+                ops.element("forceBeamColumn", et, chain[s], chain[s + 1], 1, 1)
+        if tie:
+            ops.equalDOF(mids[0], mids[1], 1, 2, 3)
+        ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
+        ops.load(2, -1.0, 0, 0, 0, 0, 0); ops.load(4, -1.0, 0, 0, 0, 0, 0)
+        ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
+        ops.test("NormDispIncr", 1e-8, 50, 0); ops.algorithm("Newton")
+        ops.integrator("DisplacementControl", 2, 1, -0.01); ops.analysis("Static")
+        nmin = 0.0
+        for _ in range(150):
+            if ops.analyze(1) != 0:
+                break
+            nmin = min(nmin, ops.eleResponse(1, "basicForce")[0])
+        return -nmin                              # peak compression in the 1-2 diagonal (kip)
+
+    free, tied = run(False), run(True)
+    assert tied > 2.5 * free

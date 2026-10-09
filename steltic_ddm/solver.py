@@ -79,7 +79,16 @@ def brace_state(model):
         a = ops.nodeDisp(chain[0]); b = ops.nodeDisp(chain[-1])
         off = math.sqrt(sum((d[i] - 0.5 * (a[i] + b[i])) ** 2 for i in range(3)))
         L = first["L"] * (len(chain) - 1)
-        out[mtag] = dict(N=N, offset=off, L=L, buckled=(N < 0 and off > L / 200.0))
+        buck = N < 0 and off > L / 200.0
+        if mtag in (getattr(model, "x_ties", None) or {}) and len(chain) >= 5:
+            # NL-R2-28 (DDM): diagonal connected at the crossing -- each half buckles between its end and the crossing
+            k = len(chain) // 2
+            for lo, hi in ((0, k), (k, len(chain) - 1)):
+                q = ops.nodeDisp(chain[(lo + hi) // 2]); u = ops.nodeDisp(chain[lo]); v = ops.nodeDisp(chain[hi])
+                oh = math.sqrt(sum((q[i] - 0.5 * (u[i] + v[i])) ** 2 for i in range(3)))
+                off = max(off, oh)
+                buck = buck or (N < 0 and oh > (L / 2) / 200.0)
+        out[mtag] = dict(N=N, offset=off, L=L, buckled=buck)
     return out
 
 
