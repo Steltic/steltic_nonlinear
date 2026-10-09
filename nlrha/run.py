@@ -155,18 +155,24 @@ def link_state_note(hinges):
     for t, h in hinges.items():
         if h.get("kind") != "link":
             continue
-        d, _ = NM.zero_length_spring(t, 3)
+        d, V = NM.zero_length_spring(t, 3)
         s = h["spec"]
-        rows.append(((abs(d) - s.theta_y) / s.e_in, s.a_pl / s.e_in, s.b_pl / s.e_in, h["ele"]))
+        g, a, b = (abs(d) - s.theta_y) / s.e_in, s.a_pl / s.e_in, s.b_pl / s.e_in
+        # past b: once the MinMax wrapper (make_link_shear_material) has failed the link carries zero shear for good, but
+        # its deformation can come back below Delta_y + b e (Ex8 Gilroy: 5 links with V = 0 at d = 5.7-6.1 in < 6.21 in
+        # while the storey drift ran to 5.7 %), so a failed link is recognised by V = 0 beyond a (on the Table C2.4
+        # envelope the force beyond a is >= c Vp > 0)
+        lost = g >= b or (g >= 0.98 * a and abs(V) <= 1e-6 * max(abs(s.Vp_kip), 1.0))
+        rows.append((g, a, b, h["ele"], lost))
     if not rows:
         return ""
-    n_a = sum(1 for g, a, b, _ in rows if g >= 0.98 * a)
-    n_b = sum(1 for g, a, b, _ in rows if g >= b)
-    g, a, b, ele = max(rows)
+    n_a = sum(1 for g, a, b, _, lost in rows if g >= 0.98 * a or lost)
+    n_b = sum(1 for g, a, b, _, lost in rows if lost)
+    g, a, b, ele, _ = max(rows)
     if not n_a:
         return ""
     return ("; EBF links at the last converged state: %d of %d at or past the capping rotation a (strength loss, AISC 342-22 Table C2.4), "
-            "%d past b; max gamma_p %.3f rad (link %s; a %.3f, b %.3f rad)" % (n_a, len(rows), n_b, g, ele, a, b))
+            "%d past b (shear strength lost); max gamma_p %.3f rad (link %s; a %.3f, b %.3f rad)" % (n_a, len(rows), n_b, g, ele, a, b))
 
 
 def _truss_axial(tag):

@@ -170,6 +170,24 @@ def test_nc_reason_names_links_past_capping():
     assert "1 of 1 at or past the capping rotation a" in note and "0 past b" in note
     to(sh.theta_y + sh.b_pl + 0.05)
     assert "1 past b" in RN.link_state_note(hinges)
+    # the production link material (Hysteretic + MinMax at Delta_y + b e): once failed, V = 0 for good, also when the
+    # deformation comes back below b -- the link must still be counted as past b
+    to(0.0)                                                            # back to the origin before the swap
+    HM.make_link_shear_material(77, sh, HM.load_params())
+    ops.remove("element", 30000043)
+    ops.element("zeroLength", 30000043, 1, 2, "-mat", 1, 1, 77, 1, 1, 1, "-dir", 1, 2, 3, 4, 5, 6)
+    for f in (0.3, 0.6, 0.9):
+        to(sh.theta_y + f * sh.a_pl)
+    to(sh.theta_y + 0.5 * (sh.a_pl + sh.b_pl))                         # between a and b: on the descending branch, V > 0
+    d, V = NM.zero_length_spring(30000043, 3)
+    assert abs(V) > 0.1 * sh.Vp_kip
+    note = RN.link_state_note(hinges)
+    assert "1 of 1 at or past the capping rotation a" in note and "0 past b" in note
+    to(sh.theta_y + sh.b_pl + 0.05)                                    # MinMax fails
+    to(sh.theta_y + 0.5 * (sh.a_pl + sh.b_pl))                         # back below b: still failed (V = 0)
+    d, V = NM.zero_length_spring(30000043, 3)
+    assert V == 0.0 and abs(d) < sh.theta_y + sh.b_pl
+    assert "1 past b (shear strength lost)" in RN.link_state_note(hinges)
 
 
 def _one_link_level(analysis):
