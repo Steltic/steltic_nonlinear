@@ -136,9 +136,13 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
     (cited by content: in the converted corpus these numbers collide with the drift equation 16.4-1.)
     Flexure classification per AISC 342-22 C3.4 (ASCE 41-23 7.5): deformation-controlled for P_G/P_ye <= 0.6, else
     force-controlled. Force-controlled flexure is transformed the same way as the axial force and resisted by phi Mn
-    (AISC 360 F2/F3/F6). Deformation-controlled flexure enters with the analysed moment itself and the expected
-    strength M_CE, per AISC 342-22 C3.4b.2.b (Eqs. C3-9..C3-11 with m = 1). Interaction per AISC 360-22 H1-1
-    (identical to AISC 342-22 C3-9 with C3-12 / C3-13); C3-10 (|P_UF| / Pye <= 0.75) where flexure is
+    (AISC 360 F2/F3/F6) in both equations. Deformation-controlled flexure enters with the analysed moment itself and
+    the expected strength M_CE (MCx = MCEx in C3-9), per AISC 342-22 C3.4a.2b: "Columns or braces classified as
+    deformation-controlled for flexure shall also satisfy Equations C3-9, C3-10, and C3-11 when the column or brace is
+    in compression except that values for mx and my shall be taken as unity" -- so ONLY in the compression case
+    (Eq. 16.4-1); in the counteracting case (Eq. 16.4-2, net tension) a deformation-controlled moment is judged by the
+    hinge rotation (C3.4a.2b, Table C3.6) and is not combined with the axial tension (NL-R2-30). Interaction per AISC
+    360-22 H1-1 (identical to AISC 342-22 C3-9 with C3-12 / C3-13); C3-10 (|P_UF| / Pye <= 0.75) where flexure is
     deformation-controlled. A deformation-controlled axis MODELLED elastic (e.g. the minor axis of concentrated-hinge
     columns) whose demand exceeds M_CE is flagged: yielding the model cannot represent (16.3.1)."""
     k1 = 1.2 + 0.12 * SMS; k2 = 0.9 - 0.12 * SMS
@@ -155,7 +159,8 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
         if Mu is None:
             return None
         if flex[{"Mmaj": "major", "Mmin": "minor"}[axis]] == "deformation":
-            return Mu                                              # deformation-controlled: analysed moment, not amplified
+            # deformation-controlled: analysed moment, not amplified, and only with compression (C3.4a.2b, NL-R2-30)
+            return Mu if eq == 1 else 0.0
         Dm, hLm = split(Mns)
         return (k1 * Dm + hLm if eq == 1 else k2 * Dm) + gamma * Ie * max(Mu - Mns, 0.0)
     def mcap(axis):
@@ -167,6 +172,8 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
             return None
         m = mx / mcap("Mmaj") + my / mcap("Mmin")
         r = Pr / Pc if Pc else float("inf")
+        if m == 0.0:
+            return r                                               # no flexure: plain axial ratio (H1-1b's r/2 needs moments)
         return r + 8.0 / 9.0 * m if r >= 0.2 else r / 2.0 + m
     mx1, my1 = mdem("Mmaj", 1), mdem("Mmin", 1); mx2, my2 = mdem("Mmaj", 2), mdem("Mmin", 2)
     flags = []
@@ -179,7 +186,10 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
     dc_c = h1(max(Pr1, 0.0), cap["phiPn"], mx1, my1)
     dc_t = h1(-Pr2, cap["phiTn"], mx2, my2) if Pr2 < 0 else None
     dc_310 = (max(Pr1, 0.0) / (0.75 * cap["Pye"])) if (flex["major"] == "deformation" or flex["minor"] == "deformation") else None
-    cands = [(dc_c, "H1-1 compression, Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns)"), (dc_t, "H1-1 tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)"),
+    t_lbl = ("H1-1 tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)" if (mx2 or my2) else
+             "axial tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)" + (" (deformation-controlled flexure not combined in tension, AISC 342-22 C3.4a.2b)"
+                                                                  if "deformation" in (flex["major"], flex["minor"]) else ""))
+    cands = [(dc_c, "H1-1 compression, Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns)"), (dc_t, t_lbl),
              (dc_310, "AISC 342 C3-10 |P|/Pye <= 0.75")]
     cands = [c for c in cands if c[0] is not None]
     if cands:
