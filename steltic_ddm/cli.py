@@ -28,7 +28,8 @@ def _worker(args):
 def _done_line(r):
     if r.get("failed"):
         return "   FAILED %-38s imp %-3s -- %s (%.0f s) -> NOT EVALUATED" % (r["label"][:38], r["imp"], r["error"][:90], r["seconds"])
-    return "   done %-40s imp %-3s lambda_u %.3f  (%d steps, %.0f s) %s" % (r["label"][:40], r["imp"], r["res"]["lambda_u"], r["res"]["steps"], r["res"]["seconds"], r["cls"]["mechanism"][:60])
+    t = r["res"].get("termination") or {}
+    return "   done %-40s imp %-3s lambda_u %.3f  (%d steps, %.0f s) %s [end: %s]" % (r["label"][:40], r["imp"], r["res"]["lambda_u"], r["res"]["steps"], r["res"]["seconds"], r["cls"]["mechanism"][:60], t.get("kind", "?"))
 
 
 def not_evaluated(kept, results):
@@ -208,7 +209,8 @@ def run(args):
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
         mat = "CFS-P" if portal else "HR"
         ph = phi_s.choose(summ["kind"], phi_s.system_R(cfg, summ.get("lateral_dir")), r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)   # NL-R2-17
-        runs.append(dict(combo=c, summary=summ, res=r["res"], cls=r["cls"], phi=ph, check=phi_s.check(ph["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"]),
+        runs.append(dict(combo=c, summary=summ, res=r["res"], cls=r["cls"], phi=ph,
+                         check=phi_s.check(ph["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"], lower_bound=phi_s.is_lower_bound(r["res"])),   # NL-R2-27
                          imp=r["imp"], state=r["state"]))
     # member table from the governing strength combination per group
     member_table = []
@@ -312,7 +314,8 @@ def _finish(job, out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, t0,
                                                                    steps=r["res"]["steps"], fails=r["res"].get("fails"), lam_at_1p25d=r["res"].get("lam_at_1p25d"),
                                                                    seconds=r["res"]["seconds"], log=r["res"]["log"], state=r["state"],
                                                                    snapshot=r["res"]["snapshot"], control=r["res"].get("control"), lateral=r["res"].get("lateral"),
-                                                                   d_at_max=r["res"].get("d_at_max"), frames=r["res"].get("frames", [])) for r in runs],
+                                                                   d_at_max=r["res"].get("d_at_max"), frames=r["res"].get("frames", []),
+                                                                   termination=r["res"].get("termination"), bridges=r["res"].get("bridges")) for r in runs],
                    not_evaluated=nev, verdict=block["verdict"],
                    sensitivity=sens, member_table=member_table, elapsed_s=(elapsed if elapsed is not None else round(time.time() - t0))),
               open(os.path.join(out_dir, "ddm_results.json"), "w"), indent=1, default=str)
@@ -324,7 +327,7 @@ def _runs_from_results(d):
     for r in d["runs"]:
         res = dict(lambda_u=r["lambda_u"], first_yield=r.get("first_yield"), hist=r["hist"], steps=r["steps"], fails=r.get("fails"), lam_at_1p25d=r.get("lam_at_1p25d"),
                    seconds=r["seconds"], snapshot=r.get("snapshot"), control=r.get("control"), lateral=r.get("lateral"), d_at_max=r.get("d_at_max"),
-                   log=r.get("log", []), frames=r.get("frames", []))
+                   log=r.get("log", []), frames=r.get("frames", []), termination=r.get("termination"), bridges=r.get("bridges"))
         runs.append(dict(combo=(r["label"],), summary=dict(kind=r["kind"]), res=res, cls=r["cls"], phi=r["phi"], check=r["check"], imp=r["imp"], state=r["state"]))
     return runs
 
@@ -353,7 +356,7 @@ def report(args):
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
         mat = "CFS-P" if PA.is_portal(cfg) else "HR"
         r["phi"] = phi_s.choose(r["summary"]["kind"], phi_s.system_R(cfg, r["summary"].get("lateral_dir")), r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)   # NL-R2-17
-        r["check"] = phi_s.check(r["phi"]["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"])
+        r["check"] = phi_s.check(r["phi"]["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"], lower_bound=phi_s.is_lower_bound(r["res"]))
         print("   %-40s lambda_u %.3f  %-7s phi_s %s  -> %s" % (r["combo"][0][:40], r["res"]["lambda_u"], r["phi"]["cls"], r["phi"]["phi_s"], r["check"][1]))
     opts_rep = dict(d.get("options", {}))
     opts_rep["nsub"] = tuple(opts_rep.get("nsub", (2, 2, 4)))

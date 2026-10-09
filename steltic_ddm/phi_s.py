@@ -168,10 +168,21 @@ def choose(combo_kind, system_R, cls, governed_by_braces=False, hss_braces=False
                       if prov and t["phi"] is not None else None))
 
 
-def check(phi, lam_u, cls=None):
+def check(phi, lam_u, cls=None, lower_bound=False):
+    """phi_s * lambda_u >= 1. lower_bound (NL-R2-27): the sweep stopped while lambda was still rising (solver gave up
+    without a limit point, or the time / step budget ran out) -- lambda_u is a lower bound of the capacity, so a pass
+    stands but a shortfall is NOT EVALUATED, never a FAIL (same rule as the NL-R2-02 numerical stop)."""
     if cls == "numerical":
         return None, "NOT EVALUATED"        # NL-R2-02: a solver/control stop is never a structural PASS or FAIL
     if phi is None or lam_u is None:
         return None, "n/a"
     v = phi * lam_u
+    if lower_bound and v < 1.0:
+        return None, "NOT EVALUATED"
     return round(v, 3), ("PASS" if v >= 1.0 else "FAIL")
+
+
+def is_lower_bound(res):
+    """NL-R2-27: True when the sweep's lambda_u is only a lower bound (termination kind 'numerical' or 'budget')."""
+    t = (res or {}).get("termination") or {}
+    return t.get("kind") in ("numerical", "budget")

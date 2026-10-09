@@ -213,7 +213,9 @@ class FiberSectionBuilder:
         elif res == "eccs":
             a = 0.5 if d / bf <= 1.2 else 0.3
             def sig_fl(zfrac): return a * (1 - 2 * zfrac)            # +a at junction, -a at tips
-            sig_web = a                                              # ECCS: web +a at flanges -> -a mid; use mean + for simplicity
+            # NL-R2-27: web +a at the flanges -> -a at mid-depth (linear). The old uniform +a web left a net tension
+            # a*Fy*Aw locked into every member at zero load (not self-equilibrating); the linear web has zero mean.
+            sig_web = lambda yfrac: a * (2 * yfrac - 1)              # yfrac 0 (mid-depth) .. 1 (flange)
         else:
             def sig_fl(zfrac): return 0.0
             sig_web = 0.0
@@ -233,10 +235,10 @@ class FiberSectionBuilder:
                         self.ops.fiber(zc, yc, dz * tf / nt, m)
                     nfib += 1
         nwy, nwz = nf_web
-        m = self._mat(sig_web)
         dy = hw / nwy; dzw = tw / nwz
         for j in range(nwy):
             yc = -hw / 2 + (j + 0.5) * dy
+            m = self._mat(sig_web(abs(yc) / (hw / 2)) if callable(sig_web) else sig_web)
             for q in range(nwz):
                 zc = -tw / 2 + (q + 0.5) * dzw
                 if axis == "y":
@@ -266,9 +268,8 @@ class FiberSectionBuilder:
         # walls as strips: two flanges (width B, thick t) at +/-(H-t)/2 ; two webs (height H-2t) at +/-(B-t)/2
         A_model = 2 * B * t + 2 * (H - 2 * t) * t
         scale = (A_csv / A_model) if A_csv else 1.0
-        nfib = 0
-        def fib(y, z, a, sig):
-            self.ops.fiber(y, z, a * scale, self._mat_spec(material) if material else self._mat(sig, Fy))
+        # fibre layout (y, z, area, residual fraction): two flanges (width B) then two webs (height H - 2t)
+        fibs = []
         for sgn in (+1, -1):
             for i in range(n_per_side):
                 zc = -B / 2 + (i + 0.5) * B / n_per_side
@@ -279,7 +280,7 @@ class FiberSectionBuilder:
                     sig = -0.15 + 0.30 * frac ** 2
                 for j in range(n_thick):
                     yc = sgn * ((H - t) / 2 - t / 2 + (j + 0.5) * t / n_thick)
-                    fib(yc, zc, (B / n_per_side) * (t / n_thick), sig); nfib += 1
+                    fibs.append((yc, zc, (B / n_per_side) * (t / n_thick), sig))
         for sgn in (+1, -1):
             for i in range(n_per_side):
                 yc = -(H - 2 * t) / 2 + (i + 0.5) * (H - 2 * t) / n_per_side
@@ -289,7 +290,17 @@ class FiberSectionBuilder:
                     sig = -0.15 + 0.30 * frac ** 2
                 for j in range(n_thick):
                     zc = sgn * ((B - t) / 2 - t / 2 + (j + 0.5) * t / n_thick)
-                    fib(yc, zc, ((H - 2 * t) / n_per_side) * (t / n_thick), sig); nfib += 1
+                    fibs.append((yc, zc, ((H - 2 * t) / n_per_side) * (t / n_thick), sig))
+        if res == "cf_hss_membrane" and not material:
+            # NL-R2-27: make the membrane pattern self-equilibrating. -0.15 + 0.30 frac^2 has a wall mean of about
+            # -0.05 Fy, i.e. a net COMPRESSION of ~0.05 Fy A locked into every HSS at zero load (Ex13: brace -27 kip
+            # at lambda = 0, roof sway +0.011 in). Shift by the area-weighted mean: same shape, zero net force (the
+            # pattern is doubly symmetric, so the moments are zero too).
+            mean = sum(a * s for _y, _z, a, s in fibs) / sum(a for _y, _z, a, _s in fibs)
+            fibs = [(y, z, a, s - mean) for y, z, a, s in fibs]
+        nfib = 0
+        for yc, zc, a, sig in fibs:
+            self.ops.fiber(yc, zc, a * scale, self._mat_spec(material) if material else self._mat(sig, Fy)); nfib += 1
         self.log.append((secTag, label, "HSS", nfib, "residual=%s t_des=%.3f" % (res, t)))
         return dict(A=A_csv or A_model, H=H, B=B, t=t, nfib=nfib)
 
