@@ -54,6 +54,11 @@ def _sweep_one(args):
     import io, contextlib
     nm = ingest.load_package(job, engine_dir)
     cfg = nm.cfg
+    from types import SimpleNamespace
+    from pushover import hinge_models as HM
+    why = HM.unsupported_system(SimpleNamespace(**{k: (cfg or {}).get(k) for k in ("system", "system_X", "system_Y")}), engine="ddm")
+    if why:                                                       # NL-R2-L2: refuse up front, never crash in the model build
+        sys.exit("DDM NOT EVALUATED -- " + why)
     cases = loads.steltic_combos(cfg, nm=nm)
     combo = [c for c in cases if c[0] == combo_label][0]
     from . import portal_adapter as PA
@@ -115,6 +120,11 @@ def run(args):
     print(">> ingest", job)
     nm = ingest.load_package(job, engine_dir)
     cfg = nm.cfg
+    from types import SimpleNamespace
+    from pushover import hinge_models as HM
+    why = HM.unsupported_system(SimpleNamespace(**{k: (cfg or {}).get(k) for k in ("system", "system_X", "system_Y")}), engine="ddm")
+    if why:                                                       # NL-R2-L2: refuse up front, never crash in the model build
+        sys.exit("DDM NOT EVALUATED -- " + why)
     print("   ", json.dumps(ingest.summary(nm), default=str)[:400])
     from . import portal_adapter as PA
     portal = PA.is_portal(cfg)
@@ -328,6 +338,11 @@ def report(args):
     out_dir = args.out or job
     nm = ingest.load_package(job, engine_dir)
     cfg = nm.cfg
+    from types import SimpleNamespace
+    from pushover import hinge_models as HM
+    why = HM.unsupported_system(SimpleNamespace(**{k: (cfg or {}).get(k) for k in ("system", "system_X", "system_Y")}), engine="ddm")
+    if why:                                                       # NL-R2-L2: refuse up front, never crash in the model build
+        sys.exit("DDM NOT EVALUATED -- " + why)
     d = json.load(open(os.path.join(out_dir, "ddm_results.json")))
     runs = _runs_from_results(d)
     R = cfg.get("seis", {}).get("R")

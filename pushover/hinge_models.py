@@ -1019,11 +1019,27 @@ def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
 # verdict. The special segment of an STMF (AISC 341-22 E4: chord flexure/shear + X-diagonal yielding/buckling within
 # the segment) has no nonlinear model here.
 import re as _re
+# NL-R2-L2: plate shear walls. The web plates (or the steel-concrete composite wall panels) carry the storey shear;
+# the HR model represents them with rigid zones / elastic panels this module has no section for, and there is no
+# nonlinear web model here (tension-field strips for an SPSW, a composite wall fibre / panel model for a C-PSW).
+# Before NL-R2-L2 the pushover crashed at the model build (fibre section RIGID_ZONE not in aisc_shapes.csv).
+_PSW_SYSTEMS = (
+    (_re.compile(r"\bSPSW\b|STEEL\s+PLATE\s+SHEAR\s+WALL|SPECIAL\s+PLATE\s+SHEAR\s+WALL", _re.I),
+     "special plate shear wall (SPSW, AISC 341-22 F5): the steel web plates, which provide the inelastic deformation "
+     "through web-plate (tension-field) yielding, have no nonlinear model in this module (AISC 342-22 C6 steel plate "
+     "shear walls not implemented) -- the analysis is NOT EVALUATED"),
+    (_re.compile(r"\bC{1,2}-?PSW\b|COMPOSITE\s+PLATE\s+SHEAR\s+WALL|SPEEDCORE", _re.I),
+     "composite plate shear wall (C-PSW/CF, CC-PSW/CF; AISC 341-22 H7 / H8): the concrete-filled steel wall panels and "
+     "filled composite coupling beams have no nonlinear model in this module -- the analysis is NOT EVALUATED"),
+)
 UNSUPPORTED_SYSTEMS = (
     (_re.compile(r"\bSTMF\b|SPECIAL\s+TRUSS\s+MOMENT", _re.I),
      "special truss moment frame (STMF): the special segment (AISC 341-22 E4) has no nonlinear element model in this "
      "module, and its truss chords would otherwise be taken as EBF links -- the analysis is NOT EVALUATED"),
-)
+) + _PSW_SYSTEMS
+# Systems the DDM (GMNIA, steltic_ddm) cannot model either. The STMF is not among them: the DDM models the truss as a
+# frame and never takes chords as links (find_links with the declared system, NL-R2-13).
+DDM_UNSUPPORTED_SYSTEMS = _PSW_SYSTEMS
 
 
 def declared_systems(basis) -> list:
@@ -1036,10 +1052,11 @@ def declared_systems(basis) -> list:
     return out
 
 
-def unsupported_system(basis) -> str | None:
-    """NL-R2-13: the refusal message when the declared system is one this module cannot model, else None."""
+def unsupported_system(basis, engine: str = "nonlinear") -> str | None:
+    """NL-R2-13 / NL-R2-L2: the refusal message when the declared system is one this module cannot model, else None.
+    engine="ddm": only the systems the GMNIA design-by-analysis cannot model either (plate shear walls)."""
     for s in declared_systems(basis):
-        for rx, why in UNSUPPORTED_SYSTEMS:
+        for rx, why in (DDM_UNSUPPORTED_SYSTEMS if engine == "ddm" else UNSUPPORTED_SYSTEMS):
             if rx.search(s):
                 return "system %r not supported: %s." % (s, why)
     return None
