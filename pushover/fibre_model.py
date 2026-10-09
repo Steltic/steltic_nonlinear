@@ -36,7 +36,8 @@ from . import sections_db as SDB
 from .nonlinear_model import (
     E_KSI_AL, MAT_BASE, RIGID_T, RIGID_R,
     member_kind, strong_I_slot, strong_rot_dof, _dir_vec, beam_params_for, fr_column_ends,
-    element_context, build_brace, link_shear_spring, finish_stats, _pt_mass_balance,
+    element_context, build_brace, link_shear_spring, finish_stats, _pt_mass_balance, _link_mass_balance,
+    STEEL_DENSITY_KIP_IN3, G_IN,
 )
 
 SEG_NODE_BASE = 70_000_000
@@ -268,6 +269,9 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         if lk and not lk.get("skipped") and kind == "beam":
             # NL-03 EBF link: shear spring (Table C2.4 backbone) in series with the fibre chain (flexural yielding in fibres)
             end1, mat = link_shear_spring(e, p1, p2, sec, prm, mat, hinges, stats, tiny=tiny)
+            link_node = end1
+        else:
+            link_node = None
         # major-axis releases -> pin (no rotational continuity); unreleased -> continuous fibre
         if not hinge_i:
             end1 = FIB_PIN_NODE + e["tag"] * 10 + 1; ops.node(end1, *p1); ops.mass(end1, *([tiny] * 6))
@@ -302,6 +306,15 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
             ops.node(mid, *xyz); ops.mass(mid, *([tiny] * 6))
             chain.append(mid)
         chain.append(end2)
+        if link_node is not None and str(prm.get("_analysis", "")).lower() == "nlrha":
+            # NL-R2-22 (review): the EBF link's own steel mass, as in the IMK builder (build_link_imk), on the shear-spring
+            # node and the link's interior fibre-chain nodes -- taken off the floor mass by _link_mass_balance
+            lnodes = [link_node] + chain[1:-1]
+            mlk = SDB.props(sec)["A"] * L * STEEL_DENSITY_KIP_IN3 / G_IN
+            for nd in lnodes:
+                mn = mlk / len(lnodes)
+                ops.mass(nd, *([mn] * 3 + [mn * L * L / 12.0] * 3))
+            ctx.setdefault("link_mass", []).append((e["n1"], mlk))
         seg_tags = []
         for si, (s0, s1, kd) in enumerate(segs):
             etag = e["tag"] if si == 0 else (SEG_ELE_BASE + e["tag"] * 100 + si)
@@ -342,6 +355,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
     _pt_mass_balance(pkg, ctx, stats)
+    _link_mass_balance(pkg, ctx, stats)                          # NL-R2-22 (review): EBF link own mass, fibre path
     finish_stats(stats, ctx, prm, "fibre")
     if verbose:
         nfib = sum(x[3] for x in builder.log) if builder.log else 0
