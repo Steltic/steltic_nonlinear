@@ -310,6 +310,11 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
             # NL-R2-27: load-controlled continuation after the displacement control was exhausted at a bifurcation
             # (Ex13: inelastic lateral-torsional buckling of a beam -- the control DOF does not see the new mode and the
             # displacement-controlled Newton diverges, while load control converges and lambda keeps rising)
+            # review D1: size the load step so that the EXPECTED control-DOF increment at the current secant stiffness stays
+            # within half the jump limit -- a softening path is then followed, only a real snap trips _jump_ok
+            kt_now = _tangent_ratio(hist, slope, n=1)
+            if kt_now and kt_now > 0:
+                dl_lc = min(dl_lc, max(0.5 * BRIDGE_JUMP * dlam * kt_now, BRIDGE_FRACS[0] * dlam))
             ops.integrator("LoadControl", dl_lc)
             d_before = ops.nodeDisp(cnode, cdof)
             ok = _converge(equilibrium=True)
