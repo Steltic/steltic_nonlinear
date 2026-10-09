@@ -363,3 +363,75 @@ def test_x_crossing_tie_raises_the_compression_diagonal_buckling_load():
 
     free, tied = run(False), run(True)
     assert tied > 2.5 * free
+
+
+# ---------------------------------------------------------------------------------------------- review D1: bridge vs limit
+def _von_mises(L=100.0, h=10.0, EA=1.0e4):
+    import openseespy.opensees as ops
+    ops.wipe(); ops.model("basic", "-ndm", 2, "-ndf", 2)
+    ops.node(1, 0, 0); ops.node(2, L, h); ops.node(3, 2 * L, 0)
+    ops.fix(1, 1, 1); ops.fix(3, 1, 1); ops.fix(2, 1, 0)
+    ops.uniaxialMaterial("Elastic", 1, EA)
+    ops.element("corotTruss", 1, 1, 2, 1.0, 1); ops.element("corotTruss", 2, 2, 3, 1.0, 1)
+    ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1); ops.load(2, 0.0, -1.0)
+    ops.constraints("Plain"); ops.numberer("RCM"); ops.system("UmfPack")
+    ops.test("NormDispIncr", 1e-6, 25, 0); ops.algorithm("Newton")
+    return ops
+
+
+def _vm_residual(ops, L=100.0, h=10.0, EA=1.0e4):
+    import math
+    lam, v = ops.getLoadFactor(1), ops.nodeDisp(2, 2)
+    y = h + v; Lc = math.hypot(L, y); L0 = math.hypot(L, h)
+    return -2 * EA * (Lc - L0) / L0 * y / Lc - lam
+
+
+def _vm_limit_and_slope():
+    ops = _von_mises(); ops.integrator("LoadControl", 0.05); ops.analysis("Static"); ops.analyze(1)
+    slope = ops.nodeDisp(2, 2) / 0.05
+    ops = _von_mises(); ops.integrator("DisplacementControl", 2, 2, -0.05); ops.analysis("Static")
+    lim = 0.0
+    for _ in range(400):
+        assert ops.analyze(1) == 0
+        lim = max(lim, ops.getLoadFactor(1))
+    return lim, slope
+
+
+def _vm_up_to(frac):
+    ops = _von_mises(); ops.integrator("DisplacementControl", 2, 2, -0.05); ops.analysis("Static")
+    lim, _ = _VM
+    while ops.getLoadFactor(1) < (1 - frac) * lim:
+        assert ops.analyze(1) == 0
+    return ops
+
+
+_VM = None
+
+
+@pytest.mark.parametrize("frac", [0.0005, 0.002, 0.01, 0.03])
+@pytest.mark.parametrize("dl_frac", [0.02, 0.05, 0.2])
+def test_bridge_never_reports_above_a_snap_through_limit(frac, dl_frac):
+    """Von Mises shallow truss (true limit 3.8108). Started 0.05-3 % below the limit, the old bridge (0.5 dlam first,
+    NormDispIncr with Krylov / line search) reported equilibrium at 1.001-1.016 x the limit, on the snapped branch
+    (v -4 -> -21.6) or out of equilibrium. Now an accepted bridge step is an equilibrium state below the limit; a step
+    that only converges by snapping is rejected with the reason."""
+    global _VM
+    from steltic_ddm import solver as S
+    if _VM is None:
+        _VM = _vm_limit_and_slope()
+    lim, slope = _VM
+    assert abs(lim - 3.8108) < 2e-3
+    ops = _vm_up_to(frac)
+    dlam = dl_frac * lim
+    dl, why = S._bridge(dlam, 2, 2, slope, -1)
+    if dl is not None:
+        assert ops.getLoadFactor(1) <= lim * (1 + 1e-9)
+        assert abs(_vm_residual(ops)) < 1e-4
+        assert ops.nodeDisp(2, 2) > -8.0                              # still on the near (pre-snap) branch
+    # continuing in load control (as the sweep does) never passes the limit either
+    while dl is not None:
+        dl, why = S._bridge(dlam, 2, 2, slope, -1)
+        if dl is not None:
+            assert ops.getLoadFactor(1) <= lim * (1 + 1e-9) and abs(_vm_residual(ops)) < 1e-4
+    if why is not None:
+        assert "snap" in why

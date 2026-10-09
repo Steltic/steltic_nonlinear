@@ -143,18 +143,28 @@ def storey_drifts(model, dirn):
     return disp, dr
 
 
-BRIDGE_FRACS = (0.5, 0.1, 0.02)                # NL-R2-27: load-control bridge steps, fractions of dlam
+BRIDGE_FRACS = (0.02, 0.1, 0.5)                # NL-R2-27 (review D1): load-control bridge steps, SMALLEST first
+BRIDGE_EQ_TOL = 1e-4                           # RelativeNormUnbalance tolerance of every load-controlled step
+BRIDGE_JUMP = 3.0                              # max control-DOF jump of a load-controlled step, x the sweep dlambda x elastic slope
 
 
-def _converge(first=True, line_search=True):
+def _converge(first=True, line_search=True, equilibrium=False):
     """One analysis step with the fallback chain (NL-R2-27): Newton, then KrylovNewton, then Newton with a line search.
     first=False skips the plain Newton (already tried by the caller); line_search=False stops after Krylov (the cheap
-    chain used while halving the displacement step, as before). Restores Newton / the base test. -> 0 if converged."""
+    chain used while halving the displacement step, as before). Restores Newton / the base test. -> 0 if converged.
+    equilibrium=True (review D1, every LOAD-controlled step): convergence is judged on the out-of-balance force
+    (RelativeNormUnbalance), never on the displacement increment -- a Krylov / line-search iteration can stall with tiny
+    displacement increments far from equilibrium (von Mises truss: accepted a state with a bar resultant of 1411 against
+    an applied 3.8), which NormDispIncr takes as converged."""
     chain = ([("Newton", (), 1e-6, 25)] if first else []) + [("KrylovNewton", (), 1e-5, 30)] + (
         [("NewtonLineSearch", ("-type", "Bisection"), 1e-5, 40)] if line_search else [])
     ok = -1
     for alg, args, tol, it in chain:
-        ops.algorithm(alg, *args); ops.test("NormDispIncr", tol, it, 0)
+        ops.algorithm(alg, *args)
+        if equilibrium:
+            ops.test("RelativeNormUnbalance", BRIDGE_EQ_TOL, it, 0)
+        else:
+            ops.test("NormDispIncr", tol, it, 0)
         ok = ops.analyze(1)
         if ok == 0:
             break
@@ -162,15 +172,36 @@ def _converge(first=True, line_search=True):
     return ok
 
 
-def _bridge(dlam):
-    """NL-R2-27: from the last converged state, try load-controlled steps of BRIDGE_FRACS * dlam. A converged step means
-    equilibrium exists at a HIGHER load factor, so the displacement-control failure was not a limit point. -> the
-    step that converged (lambda increment), or None (no equilibrium found above the current lambda)."""
+def _jump_ok(d0, d1, dlam, slope, sgn):
+    """Review D1: a load-controlled step (at most dlam / 2) is a continuation of the SAME equilibrium path only when the
+    control DOF moved in the push direction and by no more than BRIDGE_JUMP x the sweep's dlam x the elastic slope, i.e.
+    no more than three full displacement-control steps (a snap to a far branch moves it by orders of magnitude more, or
+    backwards; von Mises truss: 17.6 against 0.12 allowed)."""
+    dd = (d1 - d0) * sgn
+    return dd > -1e-12 * max(1.0, abs(d0)) and abs(d1 - d0) <= BRIDGE_JUMP * dlam * abs(slope)
+
+
+def _bridge(dlam, cnode=None, cdof=None, slope=None, sgn=1):
+    """NL-R2-27: from the last converged state, try load-controlled steps of BRIDGE_FRACS * dlam (smallest first).
+    A step is accepted only when it converged on the out-of-balance force (an equilibrium state) AND the control DOF moved
+    forward by a plausible amount (_jump_ok) -- then equilibrium exists at a HIGHER load factor on the same path and the
+    displacement-control failure was not a limit point. -> (dl, None) accepted; (None, None) no equilibrium found;
+    (None, why) a converged step was REJECTED (snap to another branch) -- the domain then holds that rejected, committed
+    state and the caller must stop analysing (the sweep ends at a limit at the last accepted lambda)."""
     for f in BRIDGE_FRACS:
+        d0 = ops.nodeDisp(cnode, cdof) if cnode is not None else None
         ops.integrator("LoadControl", f * dlam)
-        if _converge() == 0:
-            return f * dlam
-    return None
+        if _converge(equilibrium=True) != 0:
+            continue
+        if cnode is None or slope is None:
+            return f * dlam, None
+        d1 = ops.nodeDisp(cnode, cdof)
+        if _jump_ok(d0, d1, dlam, slope, sgn):
+            return f * dlam, None
+        return None, ("load-controlled step +%.3g reached equilibrium only by a jump of the control DOF of %.3g "
+                      "(allowed %.3g in the push direction) -- snap-through to another branch" % (
+                          f * dlam, d1 - d0, BRIDGE_JUMP * dlam * abs(slope)))
+    return None, None
 
 
 def _tangent_ratio(hist, slope, n=3):
@@ -280,7 +311,17 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
             # (Ex13: inelastic lateral-torsional buckling of a beam -- the control DOF does not see the new mode and the
             # displacement-controlled Newton diverges, while load control converges and lambda keeps rising)
             ops.integrator("LoadControl", dl_lc)
-            ok = _converge()
+            d_before = ops.nodeDisp(cnode, cdof)
+            ok = _converge(equilibrium=True)
+            if ok == 0 and not _jump_ok(d_before, ops.nodeDisp(cnode, cdof), dlam, slope, sgn):
+                # review D1: equilibrium reached only by snapping to another branch -- the last accepted state is the limit
+                lam_now = hist[-1][0]
+                kt = _tangent_ratio(hist, slope)
+                termination = dict(kind="limit", lam=lam_now, tangent=kt,
+                                   detail="load control above lambda %.3f snaps (control DOF jump %.3g) -- limit point / "
+                                          "unstable bifurcation" % (lam_now, ops.nodeDisp(cnode, cdof) - d_before))
+                log.append("step %d: load-controlled step snapped to another branch -- limit at lambda %.3f -- stopping" % (step, lam_now))
+                break
             if ok != 0:
                 fails += 1
                 mode = "dc"; du = du0 / 4
@@ -304,7 +345,7 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
                         termination = dict(kind="post-peak", lam=lam_now,
                                            detail="displacement control exhausted past the peak (lambda %.3f < lambda_u %.3f)" % (lam_now, lam_max))
                         break
-                    dlb = None if bridges >= max_bridges else _bridge(dlam)
+                    dlb, snapped = (None, None) if bridges >= max_bridges else _bridge(dlam, cnode, cdof, slope, sgn)
                     if dlb is None:
                         kt = _tangent_ratio(hist, slope)
                         what = ("limit point (tangent %.0f%% of elastic)" % (100 * kt) if kt is not None and kt < 0.25 else
@@ -314,10 +355,14 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
                             termination = dict(kind="numerical", lam=lam_now, tangent=kt,
                                                detail="solver gave up after %d load-control bridges at lambda %.3f" % (bridges, lam_now))
                             log.append("step %d: step size exhausted after %d bridges -- stopping (numerical, lambda_u is a lower bound)" % (step, bridges))
+                        elif snapped:
+                            termination = dict(kind="limit", lam=lam_now, tangent=kt,
+                                               detail="no equilibrium above lambda %.3f on the same path: %s -- %s" % (lam_now, snapped, what))
+                            log.append("step %d: step size exhausted, load control snaps -- %s at lambda %.3f -- stopping" % (step, what, lam_now))
                         else:
                             termination = dict(kind="limit", lam=lam_now, tangent=kt,
                                                detail="no equilibrium above lambda %.3f: displacement control exhausted and load "
-                                                      "control failed down to dlambda %.3g -- %s" % (lam_now, BRIDGE_FRACS[-1] * dlam, what))
+                                                      "control failed from dlambda %.3g to %.3g -- %s" % (lam_now, BRIDGE_FRACS[0] * dlam, BRIDGE_FRACS[-1] * dlam, what))
                             log.append("step %d: step size exhausted -- %s at lambda %.3f -- stopping" % (step, what, lam_now))
                         break
                     bridges += 1; mode, dl_lc = "lc", dlb; du = du0
