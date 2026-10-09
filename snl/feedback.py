@@ -176,19 +176,30 @@ def risk_category(jd):
     return "IV" if Ie >= 1.5 else ("III" if Ie >= 1.25 else "I_II")
 
 
+def _no_brief(plan):
+    """NL-R2-08: a plan that stops before its numbers exist still carries a `brief` (what HR Steel would be sent: nothing),
+    so the CLI, the loop server and apply_edits never meet a KeyError on an ineligible plan."""
+    plan["stopped_early"] = True                                # apply_edits leaves such a plan alone
+    plan["brief"] = (BRIEF_HEADER % plan["kind"]) + "\nNOT ELIGIBLE -- no brief is sent to HR Steel:\n" + "\n".join("- " + r for r in plan["reasons"])
+    return plan
+
+
 # ------------------------------------------------------------------------------------------------ loop 1: drift
 def drift_plan(jd, options=None):
     o = dict(DEFAULTS, **(options or {}))
     nl = jd.get("nlrha"); st = jd["steltic"]
     plan = dict(kind="drift", title=LOOPS["drift"], eligible=False, reasons=[], numbers={}, sources={})
     rc = risk_category(jd); plan["risk_category"] = rc
+    if rc == "IV":                                              # NL-R2-08: stated before any early return
+        plan["reasons"].append("Risk Category IV: 16.1.2 keeps the 12.12.1 drift limits -- no relief (the numbers show the size of the prize)")
     if not nl:
         plan["reasons"].append("no Chapter 16 result in nlrha/nlrha_package.json -- run the NLRHA first")
-        return plan
+        return _no_brief(plan)
     V, L = nl["verdict"], nl["limits"]
     mean16, lim16 = V.get("mean_drift_max"), L.get("mean_limit")
-    lin = st.get("drift_X") or st.get("drift_Y")
-    lin_max = max(max(st["drift_X"] or [0]), max(st["drift_Y"] or [0])) / 100.0 if lin else None
+    from . import compare as C
+    lin_max = C.design_drift_max(st)                           # NL-R2-08: drift-exempt storeys left out
+    lin_max = lin_max / 100.0 if lin_max is not None else None
     lin_lim = (st.get("drift_limit_pct") or 0) / 100.0 or None
     cfg_dl = jd["cfg"].get("drift_limit") or (lin_lim if lin_lim else 0.02)
     rho_factor = (cfg_dl / lin_lim) if (lin_lim and cfg_dl) else 1.0             # drift_limit / reported allowable (rho for MF-only SDC D-F)
@@ -200,15 +211,13 @@ def drift_plan(jd, options=None):
                            clause="ASCE 7-22 16.1.2: the 12.12.1 drift limits need not apply for Risk Category I-III when a Chapter 16 analysis is performed")
     if not (mean16 and lim16 and lin_max and lin_lim):
         plan["reasons"].append("drift numbers incomplete (need the report's Chapter 8 table and the NLRHA verdict)")
-        return plan
+        return _no_brief(plan)
     scale = o["target_fraction"] * lim16 / mean16
     new_eff = lin_max * scale                                   # expected linear drift once the NLRHA mean sits at target_fraction x limit
     new_cfg = round(min(new_eff * rho_factor, lim16), 4)
     plan["numbers"].update(scale=round(scale, 3), new_linear_target=round(new_eff, 4), new_cfg_drift_limit=new_cfg,
                            prize="Chapter 16 measured %.2f%% of a %.2f%% limit: %.0f%% of the margin the linear design never saw"
                                  % (100 * mean16, 100 * lim16, 100 * (1 - mean16 / lim16)))
-    if rc == "IV":
-        plan["reasons"].append("Risk Category IV: 16.1.2 keeps the 12.12.1 drift limits -- no relief (the numbers show the size of the prize)")
     if not V.get("overall"):
         plan["reasons"].append("the Chapter 16 verdict is NOT ACCEPTABLE -- a relief cannot rest on it")
     if scale <= 1.0 + o["min_gain"]:
@@ -282,7 +291,7 @@ def resize_plan(jd, options=None):
     dd, nl, po = jd.get("ddm"), jd.get("nlrha"), jd.get("pushover")
     if not (dd or nl or po):
         plan["reasons"].append("no nonlinear result in the job folder (ddm_results.json, nlrha/, pushover/)")
-        return plan
+        return _no_brief(plan)
     mt = {(r["role"], r["section"]): r for r in (dd or {}).get("member_table", [])}
     lam = {r["label"]: r for r in (dd or {}).get("runs", [])}                  # combo label -> lambda_u, phi check
     nl_groups = (nl or {}).get("deformation_groups", [])
@@ -292,7 +301,8 @@ def resize_plan(jd, options=None):
         for d in po["directions"].values():
             po_groups += d["acceptance"].get("BSE-2N", {}).get("groups", [])
     st = jd["steltic"]
-    lin_max = max(max(st["drift_X"] or [0]), max(st["drift_Y"] or [0])) if st.get("drift_X") else None
+    from . import compare as C
+    lin_max = C.design_drift_max(st)                           # NL-R2-08: drift-exempt storeys left out
     util = (lin_max / st["drift_limit_pct"]) if (lin_max and st.get("drift_limit_pct")) else None
     drift_governed = bool(util and util >= o["drift_governed"] and not jd["cfg"].get("has_relief"))
     plan["drift_utilisation"] = util; plan["drift_governed"] = drift_governed
@@ -403,7 +413,7 @@ def mechanism_plan(jd, options=None):
     po = jd.get("pushover")
     if not po:
         plan["reasons"].append("no pushover result (pushover/pushover_package.json)")
-        return plan
+        return _no_brief(plan)
     levels = jd["levels"]
     hinged = {}
     for dname, d in po["directions"].items():
@@ -528,7 +538,8 @@ def cleared_params(params, candidate_calc, window=(0.6, 0.9)):
 
 # ------------------------------------------------------------------------------------------------ dispatch
 def plan(jd, kind, options=None):
-    return {"drift": drift_plan, "resize": resize_plan, "mechanism": mechanism_plan}[kind](jd, options)
+    p = {"drift": drift_plan, "resize": resize_plan, "mechanism": mechanism_plan}[kind](jd, options)
+    return p if "brief" in p else _no_brief(p)                 # NL-R2-08: every plan carries a brief
 
 
 def all_plans(jd, options=None):

@@ -1,9 +1,10 @@
 """cli.py -- Non Linear Dynamic Bot tool.
 
     python -m nlrha scale   <steltic package>  [--site-class D] [--n 11] [--out DIR]      # select + scale only (fast)
-    python -m nlrha run     <steltic package>  [--pushover-dir DIR] [--n 11] [--dt 0.01] [--records 1-11] [--only-records 4] [--out DIR]
+    python -m nlrha run     <steltic package>  [--pushover-dir DIR] [--n 11] [--dt 0.01] [--records 1-11] [--only-records 4] [--out DIR] [--resume]
                                                [--xi 0.025] [--params hinge_params.json] [--free-vib 5]
-Outputs (default <job>/nlrha/): nlrha_report.html, nlrha_package.json, gm_scaling.json, per-record peaks in the package.
+Outputs (default <job>/nlrha/): nlrha_report.html, nlrha_package.json, gm_scaling.json, per-record peaks in the package;
+records/r<i>.pkl, one per finished record (NL-R2-26: `run --resume` continues an interrupted suite from them).
 """
 from __future__ import annotations
 import argparse, json, os, sys, time
@@ -26,6 +27,14 @@ def _load(args):
     except Exception:
         pass
     return pkg, prm, ch16, TL
+
+
+def _refuse_unsupported(pkg):
+    """NL-R2-13: a system the nonlinear builder has no model for (STMF) is refused before any analysis."""
+    from pushover import hinge_models as HM
+    why = HM.unsupported_system(pkg.basis)
+    if why:
+        sys.exit("NLRHA NOT EVALUATED -- " + why)
 
 
 def _library(args):
@@ -157,14 +166,46 @@ def _modal_and_range(pkg, prm, ch16, loads):
 def cmd_scale(args):
     from . import ground_motions as GM, model as MD
     pkg, prm, ch16, TL = _load(args)
+    _refuse_unsupported(pkg)
     loads, gtab, split = MD.ch16_gravity(pkg, ch16)
     PG, modal, lo, hi = _modal_and_range(pkg, prm, ch16, loads)
     sets, recs = _library(args)
     tgt, deagg, pf, hz = _target(args, pkg)
     gm, chosen = GM.select_and_scale(recs, pkg.basis.SDS, pkg.basis.SD1, TL, lo, hi, n_select=args.n, target=tgt, deagg=deagg, pulse_fraction=pf, sf_bounds=_sf_bounds(args), sets=sets)
+    _attach_windows(gm, chosen, 5.0, args.trim_records, args.trim_ends)              # NL-R2-18
     out = args.out or os.path.join(str(pkg.root), "nlrha"); os.makedirs(out, exist_ok=True)
     json.dump(dict(modal=modal, gm={k: v for k, v in gm.items()}), open(os.path.join(out, "gm_scaling.json"), "w"), indent=1, default=str)
     print("wrote", os.path.join(out, "gm_scaling.json"))
+
+
+def _attach_windows(gm, chosen, free_vib_s=5.0, mode="off", ends="both"):
+    """NL-R2-18: the analysed window of every selected record (record_window: checked end cut, optional trimming),
+    checked against the spectra that set its scale factor over the scaling period range. Stored on the record (the
+    run uses it) and in gm (report, package, 16.1.4 document). Returns the suite summary."""
+    import numpy as np
+    from . import run as RN, ground_motions as GM
+    P = np.asarray(gm["periods"], float); m = (P >= gm["T_lower"] - 1e-9) & (P <= gm["T_upper"] + 1e-9)
+    tot = dict(mode=mode, ends=ends if mode != "off" else "none", tol=RN.SPECTRAL_TOL, taper_s=RN.TAPER_S if mode != "off" else 0.0,
+               free_vib_s=free_vib_s, fv_ref_s=RN.FV_REF_S, period_range=[gm["T_lower"], gm["T_upper"]], integrated_s=0.0, untrimmed_s=0.0, record_s=0.0,
+               n_widened=0, n_check_failed=0, n_trimmed=0)
+    for r, g in zip(chosen, gm["selected"]):
+        nz = int(round(RN.FV_REF_S / r["dt"]))                          # reference: full record + free vibration
+        ref = GM.pair_spectra(np.concatenate([r["a1"], np.zeros(nz)]), np.concatenate([r["a2"], np.zeros(nz)]), r["dt"], P[m])
+        w = RN.record_window(r["a1"], r["a2"], r["dt"], free_vib_s, periods=P[m], ref=ref, mode=mode, ends=ends)
+        r["window"] = w; g["window"] = w
+        tot["integrated_s"] += w["t_end_rel"]; tot["untrimmed_s"] += w["untrimmed_s"]; tot["record_s"] += w["record_s"]
+        tot["n_widened"] += int(bool((w.get("check") or {}).get("n_widened"))); tot["n_check_failed"] += int((w.get("check") or {}).get("ok") is False)
+        tot["n_trimmed"] += int(bool(w["trimmed"]))
+        c = w.get("check") or {}
+        print("[window] %-34s %6.2f-%6.2f s of %6.1f s (+%.0f s free vib.)%s; spectra vs full record max %.1f%% (%s, T %.2f s)%s"
+              % (("%s %s" % (r.get("earthquake") or r["id"], r.get("station") or ""))[:34], w["t_start"], w["t_sig"], w["record_s"], w["free_vib_s"],
+                 " trimmed" if w["trimmed"] else "", 100 * (c.get("max_change") or 0), c.get("at"), c.get("T") or 0,
+                 (" -- widened %d step(s)" % c["n_widened"]) if c.get("n_widened") else ""))
+    tot["saved_s"] = tot["untrimmed_s"] - tot["integrated_s"]
+    gm["record_window"] = tot
+    print("[window] record trimming %s%s: %.0f s integrated (untrimmed %.0f s, saved %.0f s); %d record(s) widened by the %.0f%% spectral check"
+          % (mode, (" (%s)" % ends) if mode != "off" else "", tot["integrated_s"], tot["untrimmed_s"], tot["saved_s"], tot["n_widened"], 100 * RN.SPECTRAL_TOL))
+    return tot
 
 
 def _fmt_pct(v, nd=2):
@@ -250,43 +291,93 @@ def _print_verdict(acc):
         print("[16.4]   records NOT run (%d): %s" % (len(nr), "; ".join(str(x.get("label")) for x in nr)))
 
 
-def _run_suite(jobs, labels, early_nc, allowed, parallel, tag=""):
+def _indexed_call(arg):
+    """multiprocessing entry (NL-R2-26): (k, worker, job) -> (k, worker(job)), so results can be saved as they finish."""
+    k, fn, job = arg
+    return k, fn(job)
+
+
+def _record_file(rec_dir, i, suffix=""):
+    return os.path.join(rec_dir, "r%d%s.pkl" % (i, suffix))
+
+
+def _save_record(path, key, result):
+    """NL-R2-26: one finished record -> <out>/records/r<i>.pkl, written atomically (a restart mid-write leaves no torn file)."""
+    import pickle
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(dict(key=key, result=result, saved=time.strftime("%Y-%m-%dT%H:%M:%S")), f)
+    os.replace(tmp, path)
+
+
+def _load_record(path, key):
+    """The saved result of one record, or None when there is none, it cannot be read, or it was run with other inputs
+    (record, scale factor, time step, window, parameters ... -- `key`): such a record is run again."""
+    import pickle
+    if not os.path.exists(path):
+        return None
+    try:
+        d = pickle.load(open(path, "rb"))
+    except Exception as ex:                                            # noqa: BLE001
+        print("[nlrha] resume: %s unreadable (%s) -- the record is run again" % (path, ex), flush=True); return None
+    if key is not None and d.get("key") != key:
+        print("[nlrha] resume: %s was run with other inputs -- the record is run again" % path, flush=True); return None
+    return d.get("result")
+
+
+def _run_suite(jobs, labels, early_nc, allowed, parallel, tag="", rec_dir=None, idx=None, keys=None, resume=False, suffix="", worker=None):
     """Run the record jobs. Early abort (off by default) only once the verdict is decided: genuine non-convergence
     (16.4.1.1 item 1) on more records than 16.4.1.1 permits for the Risk Category -- the remaining records cannot
-    change NOT ACCEPTABLE. Incomplete (time-out) records never trigger it. Returns (results, early_abort info|None);
-    the records not run are listed by the caller (`planned` minus results)."""
+    change NOT ACCEPTABLE. Incomplete (time-out) records never trigger it. Returns (results in job order, early abort
+    info|None); the records not run are listed by the caller (`planned` minus results).
+    NL-R2-26: with `rec_dir` each record's result is written to <rec_dir>/r<i><suffix>.pkl as soon as it finishes (i =
+    the 1-based suite index from `idx`; also in the parallel path); `resume` loads the records whose file exists and
+    whose `keys` entry matches, and runs only the others."""
     from . import run as RN, acceptance as AC
-    results = []
+    worker = worker or RN.run_record_worker
+    idx = list(idx) if idx is not None else list(range(1, len(jobs) + 1))
+    keys = list(keys) if keys is not None else [None] * len(jobs)
+    done = {}
+    if resume and rec_dir:
+        for k in range(len(jobs)):
+            r = _load_record(_record_file(rec_dir, idx[k], suffix), keys[k])
+            if r is not None:
+                done[k] = r
+        print("[nlrha]%s resume: %d of %d record(s) loaded from %s; %d to run" % (tag, len(done), len(jobs), rec_dir, len(jobs) - len(done)), flush=True)
     thr = max(int(early_nc), int(allowed) + 1) if early_nc and early_nc > 0 else 0
+    def finished(k, out):
+        done[k] = out
+        if rec_dir:
+            _save_record(_record_file(rec_dir, idx[k], suffix), keys[k], out)
     def check():
-        n_nc = sum(1 for r in results if AC.record_status(r) == "nonconvergence")
-        if thr and n_nc >= thr and len(results) < len(jobs):
-            return dict(n_nc=n_nc, threshold=thr, n_run=len(results), n_skipped=len(jobs) - len(results),
+        n_nc = sum(1 for r in done.values() if AC.record_status(r) == "nonconvergence")
+        if thr and n_nc >= thr and len(done) < len(jobs):
+            return dict(n_nc=n_nc, threshold=thr, n_run=len(done), n_skipped=len(jobs) - len(done),
                         basis=("ASCE 7-22 16.4.1.1: %d record(s) failed to converge (item 1) > %d unacceptable permitted for this Risk Category; "
-                               "the verdict is NOT ACCEPTABLE whatever the remaining %d record(s) give" % (n_nc, allowed, len(jobs) - len(results))))
+                               "the verdict is NOT ACCEPTABLE whatever the remaining %d record(s) give" % (n_nc, allowed, len(jobs) - len(done))))
         return None
-    early = None
-    if parallel > 1:
-        import multiprocessing as mp
-        with mp.get_context("spawn").Pool(parallel) as pool:
-            if not thr:
-                results = pool.map(RN.run_record_worker, jobs)
-            else:
-                for out in pool.imap(RN.run_record_worker, jobs):
-                    results.append(out)
+    early = check()
+    pending = [k for k in range(len(jobs)) if k not in done]
+    if pending and not early:
+        if parallel > 1:
+            import multiprocessing as mp
+            with mp.get_context("spawn").Pool(min(parallel, len(pending))) as pool:
+                for k, out in pool.imap_unordered(_indexed_call, [(k, worker, jobs[k]) for k in pending]):
+                    finished(k, out)
                     early = check()
                     if early:
                         pool.terminate(); break
-    else:
-        for j in jobs:
-            results.append(RN.run_record_worker(j))
-            if thr:
+        else:
+            for k in pending:
+                finished(k, worker(jobs[k]))
                 early = check()
                 if early:
                     break
+    results = [done[k] for k in sorted(done)]
     if early:
-        done = {r.get("record") for r in results}
-        early["records_not_run"] = [lab for rid, lab in labels if rid not in done]
+        ids = {r.get("record") for r in results}
+        early["records_not_run"] = [lab for rid, lab in labels if rid not in ids]
         print("[nlrha]%s early abort: %s. Records NOT run: %s" % (tag, early["basis"], "; ".join(early["records_not_run"])), flush=True)
     return results, early
 
@@ -300,6 +391,7 @@ def cmd_run(args):
     if getattr(args, "plasticity", None):
         os.environ["SNL_PLASTICITY"] = str(args.plasticity)
     pkg, prm, ch16, TL = _load(args)
+    _refuse_unsupported(pkg)
     if getattr(args, "plasticity", None):
         prm.setdefault("numerics", {})["plasticity"] = args.plasticity
     if getattr(args, "member_nseg", None) is not None:
@@ -319,6 +411,7 @@ def cmd_run(args):
     sets, recs = _library(args)
     tgt, deagg, pf, hz = _target(args, pkg)
     gm, chosen = GM.select_and_scale(recs, pkg.basis.SDS, pkg.basis.SD1, TL, lo, hi, n_select=args.n, target=tgt, deagg=deagg, pulse_fraction=pf, sf_bounds=_sf_bounds(args), sets=sets)
+    _attach_windows(gm, chosen, args.free_vib, getattr(args, "trim_records", "off") or "off", getattr(args, "trim_ends", "both") or "both")   # NL-R2-18
     sel = range(1, len(chosen) + 1)
     only = getattr(args, "only_records", None)
     if only:
@@ -329,7 +422,7 @@ def cmd_run(args):
     elif args.records:
         a, b = args.records.split("-"); sel = range(int(a), int(b) + 1)
     sample_brace = next((t for t, e in ((e["tag"], e) for e in pkg.model.elements) if pkg.schedule.get(t, {}).get("member") == "brace"), None)
-    budget = dict(step_budget_factor=float(getattr(args, "step_budget", 40.0)), wall_budget_s=float(getattr(args, "record_budget_s", 1800.0)))
+    budget = dict(step_budget_factor=float(getattr(args, "step_budget", 40.0)), wall_budget_s=_wall_budget_arg(getattr(args, "record_budget_s", None)))
     planned = [dict(record=chosen[i - 1]["id"], label="%s %s" % (chosen[i - 1].get("earthquake") or chosen[i - 1]["id"], chosen[i - 1].get("station") or "")) for i in sel]
     labels = [(q["record"], q["label"]) for q in planned]
     jobs = [(str(pkg.root), args.params, ch16, PG, loads, chosen[i - 1], args.xi, args.dt, args.free_vib, sample_brace, args.integrator, budget) for i in sel]
@@ -337,17 +430,22 @@ def cmd_run(args):
     early_nc = int(getattr(args, "early_abort_nc", 0) or 0)
     rc = AC.risk_category(pkg, args.risk_category); print("[16.4] Risk Category", rc.replace("_", "/"))
     allowed = ch16["unacceptable_response"].get("max_unacceptable", {}).get(rc, ch16["unacceptable_response"]["max_unacceptable_RC_I_II"])
-    results, early = _run_suite(jobs, labels, early_nc, allowed, args.parallel)
+    # NL-R2-26: every finished record is saved to <out>/records/r<i>.pkl at once (a restarted container / PC loses only the
+    # records in flight); --resume loads those whose inputs match and runs the rest. raw_results.pkl and the report as before.
+    out = args.out or os.path.join(str(pkg.root), "nlrha"); os.makedirs(out, exist_ok=True)
+    rec_dir = os.path.join(out, "records"); resume = bool(getattr(args, "resume", False))
+    keys = [_record_key(args, chosen[i - 1]) for i in sel]
+    results, early = _run_suite(jobs, labels, early_nc, allowed, args.parallel, rec_dir=rec_dir, idx=list(sel), keys=keys, resume=resume)
     results_nl = early_nl = loads_nl = gtab_nl = split_nl = PG_nl = None
     if run_nl:
         print("[gravity 16.3.2] analysis WITHOUT live load (1.0 D) on the same %d record(s)" % len(jobs), flush=True)
         loads_nl, gtab_nl, split_nl = MD.ch16_gravity(pkg, ch16, with_live=False)
         PG_nl = NM.column_gravity_axials(pkg, loads_nl)
         jobs_nl = [j[:3] + (PG_nl, loads_nl) + j[5:] for j in jobs]
-        results_nl, early_nl = _run_suite(jobs_nl, labels, early_nc, allowed, args.parallel, tag=" [no-live]")
-    out = args.out or os.path.join(str(pkg.root), "nlrha"); os.makedirs(out, exist_ok=True)
+        results_nl, early_nl = _run_suite(jobs_nl, labels, early_nc, allowed, args.parallel, tag=" [no-live]", rec_dir=rec_dir, idx=list(sel),
+                                          keys=[dict(k, gravity="no_live") for k in keys], resume=resume, suffix="_nolive")
     meta = dict(planned=planned, suite_size=len(chosen), early_abort=early, early_abort_no_live=early_nl, early_aborted=bool(early or early_nl),
-                early_abort_nc=early_nc, budget=budget, no_live_mode=nl_mode)
+                early_abort_nc=early_nc, budget=budget, no_live_mode=nl_mode, resumed=resume, records_dir=rec_dir)
     import pickle
     with open(os.path.join(out, "raw_results.pkl"), "wb") as f:            # never lose a 30-minute suite to a report bug
         pickle.dump(dict(results=results, gm=gm, modal=modal, gtab=gtab, split=split, PG=PG, ch16=ch16, meta=meta,
@@ -371,6 +469,24 @@ def cmd_run(args):
     _viewer(out, pkg, prm, ch16, gm, results, acc, modal, args.xi, pp)
 
 
+def _record_key(args, rec):
+    """NL-R2-26: what a saved record result depends on; a saved file with another key is not reused by --resume."""
+    import hashlib
+    def md5(*paths):
+        h = hashlib.md5(); n = 0
+        for p in paths:
+            if p and os.path.isfile(p):
+                h.update(open(p, "rb").read()); n += 1
+        return h.hexdigest() if n else None
+    prm_hash = md5(getattr(args, "params", None))
+    root = args.package if os.path.isdir(str(args.package)) else os.path.dirname(str(args.package))
+    pkg_hash = md5(*(os.path.join(root, f) for f in ("model_opensees.py", "cfg.py")))
+    w = rec.get("window") or {}
+    return dict(record=rec["id"], sf=round(float(rec["sf"]), 6), x_comp=rec.get("x_comp"), dt=args.dt, integrator=args.integrator, xi=args.xi,
+                free_vib=args.free_vib, window=(round(float(w.get("t_start", 0.0)), 4), round(float(w.get("t_end_rel", 0.0)), 4)) if w else None,
+                plasticity=getattr(args, "plasticity", None), member_nseg=getattr(args, "member_nseg", None), params=prm_hash, package=pkg_hash)
+
+
 def _viewer(out, pkg, prm, ch16, gm, results, acc, modal, xi, pp):
     """nlrha_viewer_3d.html (Steltic viewer bundle). Never lets a viewer problem hide the report."""
     try:
@@ -378,6 +494,19 @@ def _viewer(out, pkg, prm, ch16, gm, results, acc, modal, xi, pp):
         print("wrote", V3.write(out, pkg, prm, ch16, gm, results, acc, modal, xi, pushover_pkg=pp))
     except Exception as ex:                                            # noqa: BLE001
         print("[viewer] skipped:", ex)
+
+
+def _wall_budget_arg(v):
+    """--record-budget-s: None / 'auto' -> 'auto' (NL-R2-15: scaled to the record window and the model size; an explicit
+    SNL_NLRHA_RECORD_BUDGET_S still wins when the option is absent), a number -> fixed seconds, 0 -> unlimited."""
+    if v is None:
+        return None
+    if str(v).strip().lower() == "auto":
+        return "auto"
+    try:
+        return float(v)
+    except ValueError:
+        sys.exit("--record-budget-s must be 'auto' or a number of seconds (0 = unlimited), got %r" % v)
 
 
 def _sf_bounds(args):
@@ -404,6 +533,11 @@ def main(argv=None):
             p.add_argument("--cs-period", type=float, help="which conditioning period of the site hazard to use with --target cs (default: the first)")
             p.add_argument("--pulse-fraction", type=float, default=None, help="share of the suite reserved for pulse-type records (default: the near-fault screen of the site hazard, else 0)")
             p.add_argument("--sf-bounds", help="keep only records whose shape-fit scale factor lies in lo-hi (default 0.25-4; 'none' = unbounded)")
+            p.add_argument("--trim-records", default="off", choices=["off", "standard", "aggressive"],
+                           help="NL-R2-18 optional record trimming (default off): standard = 0.1-99.5%% Arias, aggressive = 0.5-99%%, both components "
+                                "together; zero-crossing ends with a 0.5 s cosine taper; any record whose spectra over the scaling range change by more than "
+                                "2%% is widened back towards the full record; scale factors stay those of the full record; disclosed per record")
+            p.add_argument("--trim-ends", default="both", choices=["both", "head", "tail"], help="which quiet end(s) --trim-records trims (default both)")
         if name == "hazard":
             p.add_argument("--lat", type=float, required=True); p.add_argument("--lon", type=float, required=True)
             p.add_argument("--vs30", type=float, help="Vs30 for the disaggregation (default: the USGS site-class value)")
@@ -430,9 +564,12 @@ def main(argv=None):
             p.add_argument("--no-live-case", default="auto", choices=["auto", "run", "skip"],
                            help="16.3.2 analysis without live load (1.0 D): auto = run it when the exception does not apply (default); run = always; "
                                 "skip = never (the verdict then cannot be ACCEPTABLE when the case is required)")
-            p.add_argument("--record-budget-s", type=float, default=1800.0, help="wall-time budget per record (s; 0 = none). A record that runs out is "
-                           "reported 'incomplete (time-out)', never as non-convergence")
+            p.add_argument("--record-budget-s", default=None, help="wall-time budget per record: 'auto' (default; NL-R2-15: max(4 h, 6e-4 s x "
+                           "nominal steps x model nodes), so it grows with the record length, the time step and the model) or seconds (0 = none). "
+                           "A record that runs out is reported 'incomplete (time-out)', never as non-convergence")
             p.add_argument("--step-budget", type=float, default=40.0, help="analyze-call budget per record, as a multiple of its nominal step count (0 = none)")
+            p.add_argument("--resume", action="store_true", help="NL-R2-26: reuse the per-record results already saved in <out>/records/r<i>.pkl (each record "
+                           "is saved as soon as it finishes) when their inputs match, and run only the missing records -- after a restart of the machine")
     lib = sub.add_parser("library", help="index a folder of PEER .AT2 / CSV record pairs (writes index.json; reads PEER _SearchResults.csv metadata when present)")
     lib.add_argument("folder")
     cr = sub.add_parser("criteria", help="draft the 16.1.4 design criteria document (docx + html) from the package and whatever analyses exist")

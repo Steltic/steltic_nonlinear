@@ -11,9 +11,12 @@ What is evaluated where (NL-09):
   * delta_t is iterated with the idealisation it depends on; the idealisation runs to
     Delta_d = min(delta_t, displacement at V_max) -- always a point ON the recorded curve.
   * component acceptance, storey drifts and the mechanism census are read at the first recorded step whose
-    roof displacement equals or exceeds delta_t (7.4.3.3.1). When the push never got there (collapse,
-    non-convergence, drift cap) the level is reported as TARGET NOT REACHED: no D/C, no drift and
-    `acceptable = False` -- never the last converged point presented as if it were delta_t.
+    roof displacement equals or exceeds delta_t (7.4.3.3.1). When the push never got there, no D/C and no
+    drift are reported -- never the last converged point presented as if it were delta_t -- and the reason
+    decides the verdict (NL-R2-24, `target_shortfall`): a genuine strength loss / mechanism before delta_t
+    (V fell to 0.8 Vmax, the P-695 tail criterion, or gravity hinges reached rotation b) is TARGET NOT
+    REACHED, `acceptable = False`; a numerical stop (solver non-convergence or the drift cap) with V still
+    above 0.8 Vmax is NOT EVALUATED, `acceptable = None` -- not evidence of collapse.
   * a level with no monitored component (or no monitored beam/column in a frame that has moment-frame
     members) is NOT EVALUATED: worst D/C None, never 0.00 (NL-01).
 """
@@ -30,6 +33,49 @@ NOT_EVALUATED = "not_evaluated"
 TARGET_NOT_REACHED = "target_not_reached"
 
 
+# NL-R2-24: why a push ended short of delta_t (acceptance[level]["shortfall"]["kind"])
+SHORT_STRENGTH = "strength_loss"            # V fell to 0.8 Vmax before delta_t -> TARGET NOT REACHED, NOT ACCEPTABLE
+SHORT_COMPONENT = "component_limit"         # gravity hinges at rotation b before delta_t -> TARGET NOT REACHED, NOT ACCEPTABLE
+SHORT_NUMERICAL = "numerical"               # solver stopped with V > 0.8 Vmax -> NOT EVALUATED
+SHORT_DRIFT_CAP = "drift_cap"               # --max-drift reached first -> NOT EVALUATED
+
+
+def target_shortfall(run, disp):
+    """None when the recorded push reached `disp`; otherwise why it did not (NL-R2-24). A stop before delta_t is a
+    genuine strength loss / mechanism only when the curve shows it: V at or below 0.8 Vmax after the peak (the
+    FEMA P-695 / tail criterion used for delta_u) or gravity hinges at rotation b (tail status component_limit) at a
+    roof displacement short of delta_t. A solver stop while V is still above 0.8 Vmax (Ex8: V/Vmax = 1.000) is a
+    NUMERICAL stop and says nothing about collapse."""
+    u = np.asarray(run["rec"]["u"], dtype=float); V = np.asarray(run["rec"]["V"], dtype=float)
+    if len(u) and u.max() >= disp - 1e-9:
+        return None
+    Vmax = float(V.max()) if len(V) else 0.0
+    i_max = int(np.argmax(V)) if len(V) else 0
+    r_end = float(V[-1] / Vmax) if Vmax > 0 else float("nan")
+    base = dict(u_end_in=float(u[-1]) if len(u) else 0.0, target_disp_in=float(disp), V_end_over_Vmax=r_end, Vmax_kip=Vmax)
+    post = np.where((np.arange(len(V)) > i_max) & (V <= 0.8 * Vmax))[0]
+    if len(post):
+        return dict(base, kind=SHORT_STRENGTH, u_event_in=float(u[post[0]]),
+                    text="strength loss before the target: V fell to 0.8 Vmax at roof u = %.2f in < delta_t %.2f in"
+                         % (float(u[post[0]]), disp))
+    tail = run.get("tail") or {}
+    if tail.get("status") == "component_limit" and float(tail.get("u_component_limit", float("inf"))) < disp:
+        return dict(base, kind=SHORT_COMPONENT, u_event_in=float(tail["u_component_limit"]),
+                    text="gravity-carrying hinges reached rotation b (loss of gravity capacity) at roof u = %.2f in < delta_t %.2f in"
+                         % (float(tail["u_component_limit"]), disp))
+    if str(run.get("stop_reason", "")).startswith("reached max"):
+        return dict(base, kind=SHORT_DRIFT_CAP,
+                    text="analysis stopped at the drift cap (--max-drift) at V/Vmax = %.3f before the target displacement "
+                         "(roof u = %.2f in < delta_t %.2f in)" % (r_end, base["u_end_in"], disp))
+    return dict(base, kind=SHORT_NUMERICAL,
+                text="analysis stopped numerically at V/Vmax = %.3f before the target displacement (roof u = %.2f in < "
+                     "delta_t %.2f in); a numerical stop above 0.8 Vmax is not evidence of collapse" % (r_end, base["u_end_in"], disp))
+
+
+def shortfall_is_failure(sf) -> bool:
+    return bool(sf) and sf.get("kind") in (SHORT_STRENGTH, SHORT_COMPONENT)
+
+
 # --------------------------------------------------------------------------- spectra
 def spectrum_sa(T, SXS, SX1):
     """ASCE 7 / ASCE 41 general horizontal response spectrum (5% damping, TL ignored -> flagged)."""
@@ -39,6 +85,98 @@ def spectrum_sa(T, SXS, SX1):
     if T <= Ts:
         return SXS
     return SX1 / T
+
+
+# --------------------------------------------------------------------------- NSP applicability, higher modes
+HM_RATIO_LIMIT = 1.30            # ASCE 41-23 7.3.2.1 item 2: "exceeds 130% of the corresponding story shear"
+HM_MASS_TARGET = 0.90            # "using sufficient modes to produce 90% mass participation"
+HM_DAMPING = 0.05                # CQC cross-modal coefficients at the 5 % damping of the spectrum
+
+
+def _cqc_rho(Ti, Tj, xi=HM_DAMPING):
+    """CQC cross-modal coefficient (Der Kiureghian 1981, equal damping), r = w_j / w_i = T_i / T_j."""
+    r = Ti / Tj if Tj > 0 else 0.0
+    den = (1 - r * r) ** 2 + 4 * xi * xi * r * (1 + r) ** 2
+    return 8 * xi * xi * (1 + r) * r ** 1.5 / den if den > 0 else 1.0
+
+
+def higher_mode_check(pattern, SXS, SX1, limit=HM_RATIO_LIMIT, mass_target=HM_MASS_TARGET):
+    """ASCE 41-23 7.3.2.1 item 2 (NL-R2-12): "a modal response spectrum analysis shall be performed for the structure
+    using sufficient modes to produce 90% mass participation. A second response spectrum analysis shall also be
+    performed, considering only the first mode participation. Higher mode effects shall be considered significant if
+    the shear in any story resulting from the modal analysis considering modes required to obtain 90% mass
+    participation exceeds 130% of the corresponding story shear considering only the first mode response."
+
+    Implemented from the eigen solve of the pushover model (initial stiffness, after gravity) in `pattern`
+    (nonlinear_model.modal_pattern): modes in eigen order up to and including the one where the cumulative effective
+    mass in the push direction first reaches 90 %; modal level forces F_kn = Gamma_n m_k phi_kn Sa(T_n) g on the
+    diaphragm levels; story shear V_i,n = sum over levels k >= i; modes combined by CQC (5 % damping); "first mode" =
+    the push-direction mode the load pattern uses. Spectrum: ASCE 7 / 41 general shape with S_XS, S_X1 (T_L ignored);
+    the ratio does not depend on the hazard level because BSE-1N and BSE-2N have the same shape.
+    -> dict(status "not_significant" | "significant" | "not_evaluated", ratios per story, max_ratio, ...)."""
+    out = dict(clause="ASCE 41-23 7.3.2.1 item 2", limit=limit, mass_target=mass_target,
+               combination="CQC (5% damping)", spectrum="S_XS %.3f g, S_X1 %.3f g (T_L ignored)" % (SXS, SX1),
+               ratios=[], max_ratio=None, story_max=None, n_modes_used=0, cum_mass_frac=None)
+    modes = (pattern or {}).get("modes") or []
+    first = (pattern or {}).get("mode")
+    mk = (pattern or {}).get("masses") or {}
+    if not modes or first is None or not mk:
+        return dict(out, status="not_evaluated", reason="no modal data in the run (pushover written before NL-R2-12)")
+    used, cum = [], 0.0
+    for m in modes:
+        used.append(m); cum += m.get("meff_frac") or 0.0
+        if cum >= mass_target:
+            break
+    out.update(n_modes_used=len(used), cum_mass_frac=cum, n_modes_computed=len(modes))
+    m1 = next((m for m in modes if m["mode"] == first), None)
+    if m1 is None:
+        return dict(out, status="not_evaluated", reason="first mode %s not among the computed modes" % first)
+    if m1 not in used:
+        used.append(m1)
+    ks = sorted(mk)
+
+    def shears(m):
+        sa = spectrum_sa(m["T"], SXS, SX1) * G_IN
+        F = {k: m["gamma"] * mk[k] * float(m["phi"].get(k, m["phi"].get(str(k), 0.0))) * sa for k in ks}
+        return [sum(F[k] for k in ks[i:]) for i in range(len(ks))]
+
+    Vn = [shears(m) for m in used]
+    V1 = shears(m1)
+    rho = [[_cqc_rho(a["T"], b["T"]) for b in used] for a in used]
+    for i in range(len(ks)):
+        v2 = sum(rho[a][b] * Vn[a][i] * Vn[b][i] for a in range(len(used)) for b in range(len(used)))
+        Vm = math.sqrt(max(v2, 0.0)); v1 = abs(V1[i])
+        out["ratios"].append(dict(story=i + 1, V_modal_kip=Vm, V_mode1_kip=v1, ratio=(Vm / v1) if v1 > 0 else float("inf")))
+    worst = max(out["ratios"], key=lambda r: r["ratio"])
+    out.update(max_ratio=worst["ratio"], story_max=worst["story"])
+    if cum < mass_target - 1e-9:
+        return dict(out, status="not_evaluated",
+                    reason="the %d computed modes reach only %.1f%% mass participation (< 90%%)" % (len(modes), 100 * cum))
+    sig = worst["ratio"] > limit
+    return dict(out, status="significant" if sig else "not_significant",
+                reason="story %d: modal (%d modes, %.1f%% mass) / first-mode story shear = %.3f %s 1.30"
+                       % (worst["story"], len(used), 100 * cum, worst["ratio"], ">" if sig else "<="))
+
+
+NSP_STATUS_TEXT = {
+    "permitted": "NSP permitted (ASCE 41-23 7.3.2.1: mu_strength < mu_max and higher-mode effects not significant)",
+    "permitted_with_LDP": ("NSP NOT permitted alone -- higher-mode effects significant (ASCE 41-23 7.3.2.1 item 2): the NSP "
+                           "is permitted only with a supplementary LDP, both meeting their acceptance criteria"),
+    "not_permitted": "NSP NOT permitted -- mu_strength >= mu_max (ASCE 41-23 7.3.2.1 item 1): an NDP is required",
+    "not_evaluated": "NSP applicability NOT EVALUATED -- the higher-mode test (ASCE 41-23 7.3.2.1 item 2) was not completed",
+}
+
+
+def nsp_status(strength_ok, hm):
+    """Both tests of ASCE 41-23 7.3.2.1. Never "permitted" unless the higher-mode test ran and passed."""
+    if not strength_ok:
+        return "not_permitted"
+    st = (hm or {}).get("status")
+    if st == "significant":
+        return "permitted_with_LDP"
+    if st == "not_significant":
+        return "permitted"
+    return "not_evaluated"
 
 
 # --------------------------------------------------------------------------- idealisation
@@ -169,7 +307,8 @@ def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
             break
         dt_guess = dt
     ide = idealize(u, V, out["target_disp_in"])
-    # Eq. (7-33) maximum strength ratio (NSP applicability, 7.3.2.1) with alpha_e from Eq. (7-34).
+    # Eq. (7-33) maximum strength ratio (NSP applicability, 7.3.2.1 item 1) with alpha_e from Eq. (7-34); the
+    # higher-mode test (item 2) below -- `nsp_permitted` is True only when both pass (NL-R2-12).
     alpha2, a2_basis = _alpha2(u, V, ide)
     QG = sum(run["gravity_table_QG"]) if run.get("gravity_table_QG") else W
     Varr = np.asarray(V)
@@ -183,21 +322,31 @@ def nsp_target(run, basis, prm, hazard_factor, site_class="D"):
     alpha_e = alpha_pd + lam * (alpha2 - alpha_pd)
     h = 1.0 + 0.15 * math.log(max(out["Te"], 0.05))
     mu_max = (ide["ud"] / max(ide["uy"], 1e-9)) + (abs(alpha_e) ** (-h)) / 4.0 if alpha_e != 0 else float("inf")
-    permitted = out["mu_strength"] < mu_max
+    strength_ok = out["mu_strength"] < mu_max                      # 7.3.2.1 item 1
+    hm = higher_mode_check(run.get("pattern"), SXS, SX1)           # 7.3.2.1 item 2 (NL-R2-12)
+    nst = nsp_status(strength_ok, hm)
+    permitted = nst == "permitted"                                 # NSP alone permitted: BOTH tests passed
+    sf = target_shortfall(run, out["target_disp_in"])              # NL-R2-24: failure vs numerical stop
+    if sf is None:
+        tstat = "reached"
+    elif shortfall_is_failure(sf):
+        tstat = "TARGET NOT REACHED: %s -- NOT ACCEPTABLE (ASCE 41-23 7.4.3.3.1)" % sf["text"]
+    else:
+        tstat = "NOT EVALUATED -- %s (ASCE 41-23 7.4.3.3.1)" % sf["text"]
     out.update(alpha2=alpha2, alpha2_basis=a2_basis, alpha_PDelta=alpha_pd, alpha_e=alpha_e, lambda_nf=lam,
-               SX1_BSE2N=SX1_bse2n, mu_max=mu_max, nsp_permitted=permitted, theta_story1_elastic=theta1,
-               nsp_ok=bool(permitted and out["reached_target"]),
-               target_status=("reached" if out["reached_target"] else
-                              "TARGET NOT REACHED: the push ended at %.2f in < delta_t %.2f in (collapse / non-convergence / drift cap) "
-                              "-- NOT ACCEPTABLE (ASCE 41-23 7.4.3.3.1)" % (u_end, out["target_disp_in"])))
+               SX1_BSE2N=SX1_bse2n, mu_max=mu_max, nsp_permitted=permitted, nsp_strength_ok=bool(strength_ok),
+               higher_modes=hm, nsp_status=nst, nsp_status_text=NSP_STATUS_TEXT[nst], theta_story1_elastic=theta1,
+               nsp_ok=bool(permitted and out["reached_target"]), target_shortfall=sf, target_status=tstat)
     return out
 
 
 # --------------------------------------------------------------------------- FEMA P-695 factors
 def p695_factors(run, basis, nsp_bse1):
+    from .package_reader import dir_basis
     u = np.asarray(run["rec"]["u"]); V = np.asarray(run["rec"]["V"])
     Vmax = float(V.max()); i_max = int(np.argmax(V))
-    Vdes = basis.V_design_kip
+    db = dir_basis(basis, run.get("direction"))                   # NL-R2-17: the push direction's own V / T / Om0 (mixed systems)
+    Vdes = db["V_design_kip"]
     Omega = Vmax / Vdes if Vdes else None
     post = np.where((np.arange(len(V)) > i_max) & (V <= 0.8 * Vmax))[0]
     tail = run.get("tail", {})
@@ -207,9 +356,10 @@ def p695_factors(run, basis, nsp_bse1):
         du = float(np.interp(0.8 * Vmax, V[post[0] - 1:post[0] + 1][::-1], u[post[0] - 1:post[0] + 1][::-1])); du_bound = "captured"
     else:
         du = float(u[-1]); du_bound = "LOWER BOUND (curve did not lose 20% of Vmax before the run stopped)"
-    W = nsp_bse1["W_kip"]; T = max(basis.T_design_s or 0.0, run["pattern"]["T1"])
+    W = nsp_bse1["W_kip"]; T = max(db["T_design_s"] or 0.0, run["pattern"]["T1"])
     dy_eff = nsp_bse1["C0"] * (Vmax / W) * (G_IN / (4 * math.pi ** 2)) * T ** 2
-    return dict(Vmax_kip=Vmax, u_at_Vmax_in=float(u[i_max]), V_design_kip=Vdes, Omega=Omega, Omega0_design=basis.Om0,
+    return dict(Vmax_kip=Vmax, u_at_Vmax_in=float(u[i_max]), V_design_kip=Vdes, Omega=Omega, Omega0_design=db["Om0"],
+                R_design=db["R"], Cd_design=db["Cd"], system_design=db["system"], per_direction_basis=db["per_direction"],
                 delta_u_in=du, delta_u_basis=du_bound, delta_y_eff_in=dy_eff, mu_T=du / dy_eff, T_used_s=T,
                 Vmax_over_W=Vmax / W)
 
@@ -294,8 +444,9 @@ def acceptance(run, hinges, disp, level_name):
     exceeding delta_t shall satisfy 7.5.3.
 
     `status`: "evaluated" | "not_evaluated" (no monitored component, or no monitored beam/column although the
-    frame has moment-frame members: worst_DC None, NEVER 0.00) | "target_not_reached" (the push never got to
-    delta_t: worst_DC None, drifts None, acceptable False). `acceptable` is None unless evaluated or the target
+    frame has moment-frame members: worst_DC None, NEVER 0.00; or, NL-R2-24, reason "stopped_before_target": the push
+    stopped numerically / at the drift cap short of delta_t with V > 0.8 Vmax) | "target_not_reached" (strength loss or
+    rotation b before delta_t: worst_DC None, drifts None, acceptable False). `shortfall` (target_shortfall) says why. `acceptable` is None unless evaluated or the target
     was not reached (False); the performance level a Risk Category needs is applied by the consumer.
     `at_last_converged` (diagnostic only, when the target was not reached) carries the numbers at the last
     converged step, labelled as such."""
@@ -313,10 +464,16 @@ def acceptance(run, hinges, disp, level_name):
     if i is None:
         j = len(run["rec"]["u"]) - 1
         table, worst, census, drifts, colN = _census_drifts(run, hinges, j)
-        return dict(base, status=TARGET_NOT_REACHED, evaluated=False, acceptable=False,
-                    note="TARGET NOT REACHED: the push ended at roof u = %.2f in, short of delta_t = %.2f in "
-                         "(collapse, non-convergence or drift cap) -- NOT ACCEPTABLE; component acceptance and drift at "
-                         "delta_t NOT EVALUATED (ASCE 41-23 7.4.3.3.1)." % (float(run["rec"]["u"][j]), disp),
+        sf = target_shortfall(run, disp)
+        if shortfall_is_failure(sf):                 # genuine strength loss / mechanism before delta_t
+            verdict = dict(status=TARGET_NOT_REACHED, acceptable=False,
+                           note="TARGET NOT REACHED: %s -- NOT ACCEPTABLE; component acceptance and drift at delta_t "
+                                "not evaluated (ASCE 41-23 7.4.3.3.1)." % sf["text"])
+        else:                                        # NL-R2-24: numerical stop / drift cap, still above 0.8 Vmax
+            verdict = dict(status=NOT_EVALUATED, acceptable=None, reason="stopped_before_target",
+                           note="NOT EVALUATED -- %s; component acceptance and drift at delta_t not evaluated "
+                                "(ASCE 41-23 7.4.3.3.1)." % sf["text"])
+        return dict(base, evaluated=False, shortfall=sf, **verdict,
                     roof_disp_in=None, step=None, groups=[], worst_DC=dict(IO=None, LS=None, CP=None), census=[],
                     story_drifts=[], max_story_drift=None, col_N_max_kip=None,
                     at_last_converged=dict(roof_disp_in=float(run["rec"]["u"][j]), step=j, worst_DC=worst,
@@ -344,7 +501,8 @@ def acceptance(run, hinges, disp, level_name):
 
 def level_verdict(acc, perf):
     """True / False / None for one acceptance block against performance level `perf` ("IO"|"LS"|"CP"):
-    False when the target was not reached, None when not evaluated, else worst D/C <= 1.0."""
+    False when the target was not reached through strength loss, None when not evaluated (including a numerical
+    stop before the target, NL-R2-24), else worst D/C <= 1.0."""
     if not acc:
         return None
     st = acc.get("status")

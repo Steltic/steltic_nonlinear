@@ -35,7 +35,7 @@ from . import hinge_models as HM
 from .nonlinear_model import (
     E_KSI_AL, MAT_BASE, RIGID_T, RIGID_R,
     member_kind, strong_I_slot, strong_rot_dof, _dir_vec, beam_params_for, fr_column_ends,
-    element_context, build_brace, link_shear_spring, finish_stats,
+    element_context, build_brace, link_shear_spring, finish_stats, _pt_mass_balance,
 )
 
 SEG_NODE_BASE = 70_000_000
@@ -126,7 +126,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         ops.node(t, *xyz)
     for t, fl in m.fixes.items():
         ops.fix(t, *fl)
-    tiny = 1e-8 * min(v[0] for v in m.masses.values())
+    tiny = 1e-8 * min((v[0] for v in m.masses.values() if v[0] > 0), default=1.0)   # R2 patch (NL-R2-01b): masters carry explicit 0.0 masses when the CoM node holds the mass
     for t in m.nodes:
         ops.mass(t, *([tiny] * 6))
     for t, mv in m.masses.items():
@@ -328,6 +328,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
                 hinges[hk] = dict(ele=e["tag"], end=end, kind=kind, section=("%s link" % sec) if is_link else sec,
                                   dof=dof, K0=None, mat=None,
                                   form="fibre_end", segs=region, comp=comp, mode=mode, Lp_in=Lp, rbs=rbs_end,
+                                  rbs_offset_in=(a_r + 0.5 * b_r) if rbs_end else 0.0,          # NL-R2-16: RBS centre (Emc beam shear)
                                   node=e["n1"] if end == 1 else e["n2"], z=p1[2] if end == 1 else p2[2], spec=spec)
                 stats["monitored_ends"] += 1
                 stats["monitored_%s_ends" % ("beam" if kind == "beam" else "col")] += 1
@@ -335,6 +336,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     stats["panel_zone_registry"] = {}
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
+    _pt_mass_balance(pkg, ctx, stats)
     finish_stats(stats, ctx, prm, "fibre")
     if verbose:
         nfib = sum(x[3] for x in builder.log) if builder.log else 0

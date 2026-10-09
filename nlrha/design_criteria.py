@@ -99,6 +99,92 @@ def _params_status(g):
     return ((PS.unverified_text(view) if unv else "") or "the file has verified=false"), bool(prm.get("verified")) and not unv
 
 
+# --------------------------------------------------------------------------- NL-R2-05: what the run used
+def _used(g):
+    """What the analyses on file actually built, so section 5 states the run, not fixed strings: the NLRHA's element
+    census / 16.3.1 statement (nlrha_package.json model_stats, degradation_16_3_1), the pushover's (pushover_package.json
+    hinge_stats), and the member kinds of the package. Absent pieces stay None -- the rows then say "not run"."""
+    from pushover import sections_db as SDB
+    nl, po = g.get("nl") or {}, g.get("po") or {}
+    sched = [v for v in (g["pkg"].schedule or {}).values() if isinstance(v, dict)]
+    kind = lambda v: str(v.get("member") or "").lower()
+    secs = [str(v.get("section") or "") for v in sched if kind(v) == "brace"]
+    nls, pos = nl.get("model_stats") or None, po.get("hinge_stats") or None
+    return dict(nl=bool(nl), po=bool(po), nls=nls, pos=pos, deg=nl.get("degradation_16_3_1"),
+                n_brace=sum(1 for x in secs if not SDB.is_brb(x)), n_brb=sum(1 for x in secs if SDB.is_brb(x)),
+                n_col=sum(1 for v in sched if kind(v) == "col"), n_beam=sum(1 for v in sched if kind(v) == "beam"),
+                links=max(int((nls or {}).get("links") or 0), int((pos or {}).get("links") or 0)),
+                n_moment_beam=sum(1 for e in g["pkg"].model.elements if "etype" not in e and not e.get("release")
+                                  and kind(g["pkg"].schedule.get(e["tag"]) or {}) == "beam"))
+
+
+def _census(st, kind):
+    """'44 nonlinear (44 physical-theory fibre, 0 Table C3.4 truss)' / '348 beam hinges, imk' from a builder census, or None."""
+    if not st:
+        return None
+    if kind == "brace":
+        nb = int(st.get("brace_nonlinear") or 0) - int(st.get("brb") or 0)
+        npt = int(st.get("brace_physical_theory") or 0)
+        return ("%d nonlinear (%d physical-theory fibre, %d Table C3.4 truss)" % (nb, npt, nb - npt)) if nb > 0 else "none nonlinear"
+    n = st.get(kind)
+    if n is None:
+        return None
+    return "%s %s hinges, %s" % (n, "beam" if kind == "beam" else "column", (st.get("degradation") or {}).get("plasticity") or st.get("plasticity") or "plasticity not recorded")
+
+
+def _run_text(u, kind):
+    run = "; ".join(x for x in (("NLRHA built " + _census(u["nls"], kind)) if _census(u["nls"], kind) else None,
+                                ("pushover built " + _census(u["pos"], kind)) if _census(u["pos"], kind) else None) if x)
+    return run or "no analysis on file yet (not run)"
+
+
+def _hinge_row(group, u, kind):
+    base = str(group.get("basis") or group.get("table") or "")
+    txt = ((("mode %s: " % group["mode"]) if group.get("mode") else "") + base) if base else "not in the parameter file -- repository template (UNVERIFIED)"
+    return txt[:300] + " -- " + _run_text(u, kind)
+
+
+def _lambda_text(ls):
+    if not ls:
+        return ""
+    return "; Lambda as built: " + ", ".join("%s %s-%s rad (%d hinges%s)" % ("beams" if k == "beam" else "columns", v["min"], v["max"], v["n"],
+                                                                           (", %d at 0" % v["n_zero"]) if v.get("n_zero") else "") for k, v in sorted(ls.items()))
+
+
+def _degradation_row(g, u):
+    """(criterion text, source) of the 16.3.1 row: the run's own statement when the NLRHA ran, else what the parameter
+    file would build, saying plainly that the NLRHA has not run."""
+    deg = u["deg"]
+    if deg:
+        parts = "; ".join("%s: %s" % (i.get("component"), i.get("modelled")) for i in deg.get("items") or [])
+        verdict = ("modelled for every component family present" if deg.get("demonstrated") else
+                   "NOT demonstrated for: %s -- 16.3.1 requires it unless shown not to govern [engineer to justify or add]"
+                   % ", ".join(str(i.get("component")) for i in deg.get("items") or [] if not i.get("ok")))
+        return ("%s. %s%s" % (verdict, parts, _lambda_text((u["nls"] or {}).get("lambda_summary"))))[:900], "nlrha/nlrha_package.json degradation_16_3_1 · ASCE 7-22 16.3.1"
+    cdet = g["prm"].get("cyclic_deterioration") or {}
+    mode = str(cdet.get("mode") or "none").lower()
+    plan = ("not modelled (cyclic_deterioration.mode = none)" if mode in ("none", "off", "0") else
+            "IMK energy-based deterioration, cyclic_deterioration.mode = %s%s" % (mode, (" -- %s" % str(cdet.get("source"))[:120]) if cdet.get("source") else ""))
+    if u["nl"]:
+        return ("not recorded by the NLRHA on file (its nlrha_package.json predates the 16.3.1 statement) -- re-run; the parameter file sets: %s" % plan,
+                "component parameters file · ASCE 7-22 16.3.1")
+    return ("NLRHA not run yet -- the parameter file sets: %s; the run states what it built" % plan, "component parameters file · ASCE 7-22 16.3.1")
+
+
+def _base_text(pkg):
+    """Column-base restraint as replayed from model_opensees.py (the supports the run uses), not a cfg regex."""
+    m = pkg.model
+    if not m.fixes or not m.nodes:
+        return "no support records read"
+    z0 = min(v[2] for v in m.nodes.values())
+    kinds = {}
+    for t, f in m.fixes.items():
+        if t in m.nodes and abs(m.nodes[t][2] - z0) < 1e-6 and len(f) >= 6 and all(f[:3]):
+            k = "fixed" if all(f[3:6]) else ("pinned" if not any(f[3:6]) else "partially restrained")
+            kinds[k] = kinds.get(k, 0) + 1
+    return (", ".join("%d %s" % (n, k) for k, n in sorted(kinds.items())) + " base node(s)") if kinds else "no fixed base nodes read"
+
+
 # --------------------------------------------------------------------------- the content, once, for both outputs
 class Section:
     def __init__(self, title, level=1):
@@ -121,6 +207,7 @@ class Section:
 
 
 def content(g, project=None, engineer=None, reviewer=None):
+    from . import report as RP                                     # NL-R2-18: the record-window disclosure texts
     pkg, b, ch16, prm, rc = g["pkg"], g["pkg"].basis, g["ch16"], g["prm"], g["rc"]
     calc = g["calc"]; cd = calc.get("capacity_design") or {}
     rcs = rc.replace("_", "/")
@@ -133,8 +220,11 @@ def content(g, project=None, engineer=None, reviewer=None):
         % pkg.name)
     s.t([["Item", "Value", "Source"],
          ["Project", project or "[project name / address]", "input"],
-         ["Building", "%s · %s · %s storeys%s" % (pkg.name, b.system or cd.get("system") or "[SFRS]", len(b.heights_in) if b.heights_in else (len(g["po"]["gravity"]) if g["po"] else "?"), (" · h_n = %.0f ft" % hn_ft) if hn_ft else ""), "cfg.py / calc_package.json"],
-         ["Seismic force-resisting system", str(cd.get("system") or b.system or "[system]"), "calc_package.json capacity_design.system"],
+         ["Building", "%s · %s · %s levels%s" % (pkg.name, b.system or cd.get("system") or "[SFRS]", len(b.heights_in) if b.heights_in else (len(g["po"]["gravity"]) if g["po"] else "?"), (" · h_n = %.0f ft" % hn_ft) if hn_ft else ""), "cfg.py / calc_package.json"],
+         ["Seismic force-resisting system", str(cd.get("system") or b.system or "[system]"), "calc_package.json capacity_design.system"]]
+        + [["Direction %s system (mixed, ASCE 7-22 12.2.2)" % d, "%s -- R %s, C_d %s, Omega_0 %s" % (x.get("system"), x.get("R"), x.get("Cd"), x.get("Om0")),
+            "; ".join(sorted(set((x.get("source") or {}).values())))] for d, x in sorted((getattr(b, "by_dir", None) or {}).items())]      # NL-R2-17
+        + [
          ["Risk Category / I_e", "%s / %s" % (rcs, b.Ie), "cfg.py (Ie) · nlrha acceptance rule"],
          ["Engineer of record", engineer or "[name, licence]", "input"], ["Independent reviewer (16.5)", reviewer or "[name, licence, firm]", "input"],
          ["Design of record", ("promoted from loop %s on %s" % (g["dor"].get("loop"), g["dor"].get("promoted_at"))) if g["dor"] else "the Steltic package in this job folder", "design/design_of_record.json"]])
@@ -181,12 +271,16 @@ def content(g, project=None, engineer=None, reviewer=None):
          ["Scaling", ch16["amplitude_scaling"]["rule"] + ((" -- suite mean / target min %.3f, factors %.2f-%.2f" % (gm["min_ratio_in_range"], min(r["sf"] for r in gm["selected"]), max(r["sf"] for r in gm["selected"]))) if gm else ""), ch16["amplitude_scaling"]["clause"]],
          ["Spectral matching", "not used", ch16["spectral_matching"]["clause"]],
          ["Orientation", ch16["orientation"]["rule"] + ((" -- deviations X %.2f, Y %.2f" % (gm["orientation_dev_x"], gm["orientation_dev_y"])) if gm else ""), ch16["orientation"]["clause"]],
-         ["Pulse-type share", ("%.0f%% of the suite (%d records)" % (100 * gm.get("pulse_fraction", 0), gm.get("n_pulse", 0))) if gm and gm.get("pulse_fraction") else "none required (not near-fault) [confirm]", "16.2.2 / 16.2.4"]])
+         ["Pulse-type share", ("%.0f%% of the suite (%d records)" % (100 * gm.get("pulse_fraction", 0), gm.get("n_pulse", 0))) if gm and gm.get("pulse_fraction") else "none required (not near-fault) [confirm]", "16.2.2 / 16.2.4"],
+         # NL-R2-18: the record window (end cut, optional trimming) is a modification of the motions -> disclosed here
+         ["Record window / trimming", re.sub(r"<[^>]+>", "", RP.window_text(gm["record_window"])) if gm and gm.get("record_window") else
+          "each record from its start to the 99.5 % Arias point plus free vibration [end cut not yet checked: re-run `nlrha scale`]", "16.1.4 / 16.2.3.2"]])
     if gm:
-        rows = [["#", "Earthquake · station", "M", "R_rup (km)", "scale factor", "component to X", "pulse"]]
+        rows = [["#", "Earthquake · station", "M", "R_rup (km)", "scale factor", "component to X", "pulse", "analysed window (s) · spectral check"]]
         for i, r in enumerate(gm["selected"]):
             rows.append([str(i + 1), "%s · %s" % (r.get("earthquake") or r["id"], r.get("station") or ""), ("%.1f" % r["M"]) if isinstance(r.get("M"), (int, float)) else "-", ("%.1f" % r["r_rup_km"]) if isinstance(r.get("r_rup_km"), (int, float)) else "-",
-                         "%.2f" % r["sf"], str(r["comp1"] if r["x_comp"] == 1 else r["comp2"]), "yes" if r.get("pulse") else ""])
+                         "%.2f" % r["sf"], str(r["comp1"] if r["x_comp"] == 1 else r["comp2"]), "yes" if r.get("pulse") else "",
+                         re.sub(r"<[^>]+>", "", RP.window_cell(r.get("window"))).replace("&gt;", ">")])
         s.p("Selected suite (from %s):" % ("nlrha/gm_scaling.json" if g["gm"] else "nlrha/nlrha_package.json")); s.t(rows)
     else:
         s.p("[The suite has not been selected yet: run `nlrha scale` (or the full analysis) and re-issue this document; the selected records, factors and orientation are then tabulated here.]")
@@ -205,26 +299,38 @@ def content(g, project=None, engineer=None, reviewer=None):
     if bf.get("modifier_checks"):
         adj += "; checks: " + _readable(bf.get("modifier_checks"))
     mat = prm.get("material") or {}
+    u = _used(g)                                                     # NL-R2-05: what the run actually built
+    deg_txt, deg_src = _degradation_row(g, u)
+    pz_mode = (u["nls"] or u["pos"] or {}).get("panel_zone_mode") or (prm.get("panel_zones") or {}).get("mode", "rigid")
+    brace_txt = ("%d buckling braces in the package. Parameter file: %s; NLRHA element: %s. %s"
+                 % (u["n_brace"], str(br.get("basis") or br.get("table") or "brace_axial not in the file")[:200], br.get("nlrha_element") or "truss",
+                    _run_text(u, "brace"))) if u["n_brace"] else "no buckling braces in the package schedule"
     nl_damp = ((g["nl"] or {}).get("ch16") or {}).get("damping") or ch16["damping"]
     s.t([["Aspect", "Criterion adopted", "Source / clause"],
          ["Model", "three-dimensional model of the package (nodes, elements, diaphragms and masses replayed from model_opensees.py); hysteretic behaviour per AISC 342 component models", ch16["modeling"]["clause"]],
-         ["Expected material", "F_ye = R_y F_y = %s x %s ksi" % (mat.get("Ry_expected"), mat.get("Fy_ksi")), mat.get("note") or "AISC 342 A5.2"],
-         ["Beam hinges", (bf.get("basis") or "[beam hinge model]")[:400], "AISC 342 Table C5.5 / C2.2"],
+         ["Expected material", "F_ye = R_y F_y = %s x %s ksi%s%s" % (mat.get("Ry_expected"), mat.get("Fy_ksi"), (" (grade %s)" % mat["active_grade"]) if mat.get("active_grade") else "",
+                                                                  ("; braces %s x %s ksi" % (br.get("Ry_expected"), br.get("Fy_ksi"))) if (u["n_brace"] and br.get("Fy_ksi")) else ""),
+          "component parameters material.Fy_ksi / Ry_expected (AISC 342 A5.2)"],
+         ["Beam hinges", _hinge_row(bf, u, "beam") if u["n_beam"] else "no beams in the package schedule", "AISC 342 Table C5.5 / C2.2"],
          ["Adjustments to beam hinges", adj, "AISC 342 C5.4a.1.a.1"],
-         ["Column hinges", (cf.get("basis") or "[column hinge model]")[:400], "AISC 342 Table C3.6"],
-         ["Braces", (br.get("basis") or "n/a")[:300] if br else "no braces in the SFRS", "AISC 342 Table C3.6 / ASCE 41"],
-         ["Panel zones", "%s (mode: %s)" % ("modelled as scissors zones" if (prm.get("panel_zones") or {}).get("mode", "rigid") != "rigid" else "rigid joints (no explicit panel-zone spring)", (prm.get("panel_zones") or {}).get("mode", "rigid")) + ("; design check: %s" % _readable(cd.get("panel_zone")) if cd.get("panel_zone") else ""), "AISC 342 C4.3a / AISC 341 E3.6e"],
-         ["Cyclic deterioration", "not modelled (Lambda = 0) -- 16.3.1 requires it unless shown not to govern [engineer to justify or add]", ch16["component_models"]["note"][:160]],
+         ["Column hinges", _hinge_row(cf, u, "col") if u["n_col"] else "no columns in the package schedule", "AISC 342 Table C3.6"],
+         ["Braces", brace_txt, "AISC 342 Table C3.4 / Commentary C3"],
+         *([["Buckling-restrained braces", "%d BRBs in the package; AISC 342 Table C3.3 backbone, core strength (F_ysc, omega, beta, R_y) from the parameter file or the HR package%s"
+             % (u["n_brb"], ("; NLRHA built %s BRB elements" % u["nls"]["brb"]) if (u["nls"] or {}).get("brb") is not None else "; NLRHA not run"), "AISC 342 Table C3.3 / AISC 341 F4.2a"]] if u["n_brb"] else []),
+         *([["EBF links", "%d link shear springs as built (AISC 342 Table C2.4 backbone)" % u["links"], "AISC 342 Table C2.4"]] if u["links"] else []),
+         ["Panel zones", "%s (mode: %s)" % ("modelled as scissors zones" if pz_mode != "rigid" else "rigid joints (no explicit panel-zone spring)", pz_mode) + ("; design check: %s" % _readable(cd.get("panel_zone")) if cd.get("panel_zone") else ""), "AISC 342 C4.3a / AISC 341 E3.6e"],
+         ["Cyclic deterioration", deg_txt, deg_src],
          ["Gravity loads", ch16["gravity"]["rule"], ch16["gravity"]["clause"]],
          ["P-delta", ch16["p_delta"]["rule"], ch16["p_delta"]["clause"]],
-         ["Torsion", ch16["torsion"]["rule"], ch16["torsion"]["clause"]],
+         ["Torsion", "inherent eccentricity of the package masses; accidental torsion is NOT applied by the analysis (16.3.4 requires it where a Type 1 horizontal irregularity exists) [engineer to confirm]", ch16["torsion"]["clause"]],
          ["Damping", "%.1f%% Rayleigh on the elastic elements and mass at T_1 and 0.2 T_1 (cap %.1f%%)" % (100 * nl_damp.get("xi_used", 0.025), 100 * nl_damp.get("xi_max", 0.025)), ch16["damping"]["clause"]],
-         ["Integration", "%s, dt %s s, adaptive sub-stepping on non-convergence, free vibration after the record" % (str(nl_damp.get("integrator", "hht")).upper(), nl_damp.get("dt_s", 0.01)), "analysis settings"],
-         ["Diaphragms / foundations", "rigid diaphragms at each level as in the linear model; column bases as in the package (%s); no soil-structure interaction" % (re.search(r"base\s*=\s*['\"]([^'\"]+)", g["cfg_text"]).group(1) if re.search(r"base\s*=\s*['\"]([^'\"]+)", g["cfg_text"]) else "fixed"), "16.3.6 [engineer to confirm]"],
+         ["Integration", "%s, dt %s s, adaptive sub-stepping on non-convergence, free vibration after the record window (section 4)" % (str(nl_damp.get("integrator", "hht")).upper(), nl_damp.get("dt_s", 0.01)), "analysis settings"],
+         ["Diaphragms / foundations", "%s; column bases as replayed from the package model (%s); no soil-structure interaction" % (("%d rigid diaphragm(s) as in the linear model" % len(pkg.model.diaphragms)) if pkg.model.diaphragms else "no rigid-diaphragm constraint in the package model", _base_text(pkg)), "16.3.6 [engineer to confirm]"],
          ["Component parameters file", os.path.basename(g["prm_path"]) if g["prm_path"] else "repository template (UNVERIFIED)",
           ("verified -- %s" % (prm.get("source") or "")[:200]) if prm_ok else ("UNVERIFIED -- values not supplied by the user: %s" % unv_txt)]])
 
     s = Section("6. Acceptance criteria (16.4)"); S.append(s)
+    x2c = ch16["force_controlled"].get("exception_2") or {}
     tab = ch16["transient_drift"]["table_12_12_1_all_other"].get(rc, 0.02)
     mean_lim = ch16["transient_drift"]["factor_on_table_12_12_1"] * tab
     tall = None
@@ -233,25 +339,45 @@ def content(g, project=None, engineer=None, reviewer=None):
     s.t([["Criterion", "Rule adopted for Risk Category %s" % rcs, "Clause"],
          ["Suite statistic", ch16["results_basis"]["rule"], ch16["results_basis"]["clause"]],
          ["Unacceptable response", ch16["unacceptable_response"]["rule"] + " -- permitted here: %d" % ch16["unacceptable_response"]["max_unacceptable"].get(rc, 0), ch16["unacceptable_response"]["clause"]],
-         ["Mean transient story drift", "<= %.1f%% of h_sx (2 x the Table 12.12-1 value %.3f)%s; peak per record <= %.1f%%" % (100 * mean_lim, tab, (" and <= %.2f%% by the height formula" % (100 * tall)) if tall else "", 150 * mean_lim), ch16["transient_drift"]["clause"]],
+         ["Mean transient story drift", "<= %.1f%% of h_sx (2 x the Table 12.12-1 value %.3f)%s; peak per record <= %.1f%%" % (100 * mean_lim, tab, (" and <= %.2f%% by the height formula" % (100 * tall)) if tall else "", 150 * mean_lim)
+          + ((" -- per direction (mixed systems, 12.2.2): %s; each takes the 'all other structures' row of Table 12.12-1 (16.4.1.2), so the limit is the same in both directions"
+              % ", ".join("%s %s" % (d, x.get("system")) for d, x in sorted((getattr(b, "by_dir", None) or {}).items()))) if getattr(b, "by_dir", None) else ""), ch16["transient_drift"]["clause"]],
          ["Residual drift", ("<= %.1f%% of h_sx (h_n > %d ft)" % (100 * ch16["residual_drift"]["limit"], ch16["residual_drift"]["height_ft"])) if (hn_ft and hn_ft > ch16["residual_drift"]["height_ft"]) else "not applicable (h_n <= %d ft)" % ch16["residual_drift"]["height_ft"], ch16["residual_drift"]["clause"]],
          ["Deformation-controlled elements", "mean of the per-record peak deformations <= CP of the component model and within the valid modelling range b; " + ch16["deformation_controlled"]["rule"], ch16["deformation_controlled"]["clause"]],
          ["Force-controlled elements", ch16["force_controlled"]["rule"] + " -- gamma = %.1f, phi = %s (critical) / %.1f (ordinary), B = %.1f" % (ch16["force_controlled"]["gamma"], ch16["force_controlled"]["phi_critical"], ch16["force_controlled"]["phi_ordinary"], ch16["force_controlled"]["B"]), ch16["force_controlled"]["clause"]],
+         # NL-R2-16: the use of 16.4.2.1 Exception 2 is stated in the criteria before the analysis
+         ["Force-controlled actions limited by a yield mechanism", ((x2c.get("rule") or "") + ". APPLIED to: " + (x2c.get("implemented_for") or "") + " (" + (x2c.get("decision") or "") + ")")
+          if x2c.get("apply", True) else "16.4.2.1 Exception 2 NOT used: every force-controlled action by the default equations", x2c.get("clause", "16.4.2.1 Exception 2")],
          ["Gravity system", ch16["gravity_system"]["rule"], ch16["gravity_system"]["clause"]]])
     s.n("Table 12.12-1 values for Risk Category III and IV are transcribed in ch16_params.json and marked RE-VERIFY through Query file manager before use in a deliverable.")
     s.p("Element classification for this building:", style=None)
-    s.b("deformation-controlled: SMF beam hinges at the RBS (AISC 342 Table C5.5 row for the prequalified RBS connection), column hinges with P_G/P_ye <= 0.6 (Table C3.6), brace axial deformation where braces exist; the acceptance limit is CP for the Chapter 16 check with the valid range b.", "Deformation-controlled --")
-    s.b("force-controlled: column axial compression in braced-frame and gravity columns and any column with P_G/P_ye > 0.6 (critical), column splices and base plates (critical, checked from the package), beam-column panel-zone shear where rigid joints are assumed (ordinary), diaphragm and collector forces (from the linear package with Omega_0).", "Force-controlled --")
+    dc_items = [x for x in (("beam flexural hinges (%s)" % str(bf.get("basis") or bf.get("table") or "AISC 342 Table C2.2 / C5.5")[:120]) if u["n_beam"] else None,
+                            "column hinges with P_G/P_ye <= 0.6 (Table C3.6)" if u["n_col"] else None,
+                            "buckling-brace axial deformation (Table C3.4)" if u["n_brace"] else None,
+                            "BRB axial deformation (Table C3.3)" if u["n_brb"] else None,
+                            "EBF link shear (Table C2.4)" if u["links"] else None) if x]
+    s.b("deformation-controlled: %s; the acceptance limit is CP for the Chapter 16 check with the valid range b." % "; ".join(dc_items or ["none identified in the package schedule"]), "Deformation-controlled --")
+    s.b("force-controlled: column axial compression in %s and any column with P_G/P_ye > 0.6 (critical; checked by the analysis, 16.4.2.1), column splices and base plates (critical; NOT checked by the analysis -- from the linear package), %sdiaphragm and collector forces (from the linear package with Omega_0)."
+        % ("braced-frame and gravity columns" if (u["n_brace"] or u["n_brb"]) else "gravity columns",
+           "beam-column panel-zone shear where rigid joints are assumed (ordinary), " if (u["n_moment_beam"] and pz_mode == "rigid") else ""), "Force-controlled --")
+    if x2c.get("apply", True):
+        s.b("16.4.2.1 Exception 2 is used for the axial force of moment-frame and braced-frame columns whose flexure is deformation-controlled and whose column line receives seismic force only from modelled yielding components (beam hinges, braces): such an axial force is limited by the yield mechanism and is checked by Eqs. (16.4-3) / (16.4-4) with the capacity-limited effect E_mc (load factor 1.0) instead of Eqs. (16.4-1) / (16.4-2). The analysis report lists the columns it was applied to and reports the default check beside it. Gravity columns and columns with force-controlled flexure keep the default check.", "Exception 2 --")
     s.b("[The engineer of record designates any further critical / ordinary / noncritical actions and the B factor where expected strength is used.]", "To complete --")
 
     s = Section("7. The linear analysis the design rests on (16.1.2)"); S.append(s)
+    bdir = getattr(b, "by_dir", None) or {}                          # NL-R2-17: mixed systems (12.2.2)
     rel = g["relief"]
     s.t([["Item", "Value", "Source"],
          ["Design procedure", "ASCE 7-22 Chapter 12 %s; AISC 360/341 LRFD member and connection design (HR Steel package)" % ("ELF + MRSA" if "RS" in g["cfg_text"] else "ELF"), "cfg.py analyses"],
-         ["R / C_d / Omega_0 / I_e", "%s / %s / %s / %s" % (b.R, b.Cd, b.Om0, b.Ie), "cfg.py"],
-         ["Redundancy rho", str(g["rho"] if g["rho"] is not None else "[rho]") + " (16.1.2 permits rho = 1.0 with a Chapter 16 analysis)", "cfg.py"],
-         ["Design base shear / seismic weight", "%s / %s kip" % (b.V_design_kip, b.W_kip), "report.html"],
-         ["Story drift limit of the linear design", ("%.3f h_sx" % g["drift_limit"]) if g["drift_limit"] else "[Table 12.12-1]", "cfg.py drift_limit"],
+         ["R / C_d / Omega_0 / I_e", ("%s / %s / %s / %s" % (b.R, b.Cd, b.Om0, b.Ie)) if not bdir else
+          " · ".join("%s (%s): %s / %s / %s / %s" % (d, x.get("system"), x.get("R"), x.get("Cd"), x.get("Om0"), b.Ie) for d, x in sorted(bdir.items())),
+          "cfg.py" if not bdir else "per direction (12.2.2): " + b.sources.get("by_dir", "")],
+         ["Redundancy rho", (str(g["rho"] if g["rho"] is not None else "[rho]") if not bdir else " · ".join("%s: %s" % (d, x.get("rho", "[rho]")) for d, x in sorted(bdir.items())))
+          + " (16.1.2 permits rho = 1.0 with a Chapter 16 analysis)", "cfg.py" if not bdir else "per direction"],
+         ["Design base shear / seismic weight", ("%s / %s kip" % (b.V_design_kip, b.W_kip)) if not bdir else
+          " · ".join("V_%s %s" % (d, x.get("V_design_kip")) for d, x in sorted(bdir.items())) + " / W %s kip" % b.W_kip, "report.html" if not bdir else "per direction (12.2.2): " + b.sources.get("by_dir", "")],
+         ["Story drift limit of the linear design", (("%.3f h_sx" % g["drift_limit"]) if g["drift_limit"] else "[Table 12.12-1]") if not (bdir and all(x.get("drift_limit") for x in bdir.values())) else
+          " · ".join("%s %.3f h_sx" % (d, x["drift_limit"]) for d, x in sorted(bdir.items())), "cfg.py drift_limit" if not bdir else "per direction"],
          ["16.1.2 drift relief", ("IN FORCE: linear target %s from the Chapter 16 result of job %s (mean drift %s vs %s); the relaxed design is provisional until the Chapter 16 analysis is re-run on it" % (rel.get("linear_target"), rel.get("nlrha_job"), rel.get("nlrha_mean_drift"), rel.get("nlrha_limit"))) if rel else ("not applicable (Risk Category IV keeps the 12.12.1 limits)" if rc == "IV" else "not applied -- the 12.12.1 limits govern the linear design"), "cfg.py drift_relief_16_1_2"],
          ["Capacity design", "; ".join("%s: %s" % (k, _readable(v, 160)) for k, v in cd.items() if k in ("SCWB", "panel_zone", "redundancy")) or "[per AISC 341]", "calc_package.json capacity_design"]])
 
@@ -262,18 +388,32 @@ def content(g, project=None, engineer=None, reviewer=None):
     s.p("Submittal to the reviewer: this document; the HR Steel package (report.html, cfg.py, design/calc_package.json, member_schedule.csv, model_opensees.py); the pushover supplement and hinge_params_used.json; nlrha/gm_scaling.json (or the suite table above); after the analysis, nlrha/nlrha_report.html and nlrha_package.json with per-record results; the four-analyses sheet; the retrieval log of the standards consulted.")
 
     s = Section("9. Open items and deviations"); S.append(s)
-    items = ["Cyclic strength and stiffness deterioration is not modelled (Lambda = 0); 16.3.1 requires it unless shown not to govern -- the engineer of record must justify this or enable it.",
+    deg = u["deg"]
+    if deg and deg.get("demonstrated"):
+        deg_item = None                                              # nothing open: the run models it (section 5)
+    elif deg:
+        deg_item = ("16.3.1 strength / stiffness degradation is NOT demonstrated by the model for: %s -- the engineer of record must justify this (response not sufficient to produce it) or model it."
+                    % ", ".join(str(i.get("component")) for i in deg.get("items") or [] if not i.get("ok")))
+    else:
+        deg_item = "16.3.1 strength / stiffness degradation: %s -- confirm from the NLRHA's own statement once it has run." % (
+            "the NLRHA on file does not record it" if u["nl"] else "the NLRHA has not been run")
+    nlc = (g["nl"] or {}).get("no_live_case") or {}
+    nlc_txt = (("On file: the no-live case is %s%s." % ("required" if nlc.get("required") else "not required", (" and %s" % ("was run" if nlc.get("run") else "was NOT run")) if nlc.get("required") else ""))
+               if nlc else ("On file: %s." % ("the NLRHA does not record the no-live case" if g["nl"] else "the NLRHA has not been run")))
+    items = [deg_item,
              (("Component parameters not supplied/verified by the user: %s. Check them against the printed AISC 342-22 / ASCE 41-23 tables and re-issue." % unv_txt)
               if not prm_ok else "Component backbones were verified against %s." % ((prm.get("source") or "")[:160])),
              ("Ground motions are ranked against the site disaggregation; the tectonic regime and any pulse content rest on the library's metadata -- confirm against the project hazard report." if (gm and gm.get("deagg")) else "Ground-motion selection uses spectral-shape fit to the code spectrum; 16.2.2 consistency with the site's controlling M, R and tectonic regime needs the project hazard (run `nlrha hazard`)."),
-             "Accidental torsion is applied only where a Type 1 irregularity exists (16.3.4). Gravity follows the framed floor plate (floors at L0, roofs at Lr, quarter-bay tributaries); the 1.0 D analysis without live load is run whenever the 16.3.2 exception (sum 0.5L <= 25% sum D and L0 < 100 psf over >= 75% of the area) does not apply -- the verdict is withheld (INCOMPLETE) if it is required and was not run.",
-             "The force-controlled column check (16.4.2.1, both equations) combines axial force with concurrent flexure (AISC 360 H1-1 = AISC 342 C3-9) using AISC 360 E3 / F2-F6 with the F_y of the component parameters, K = 1, L_b = column length, C_b = 1; connections, splices and base plates are checked from the linear package, not from the nonlinear demands.",
+             "Accidental torsion is not applied by the analysis; 16.3.4 requires it where a Type 1 horizontal irregularity exists -- the engineer of record confirms there is none. Gravity follows the framed floor plate (floors at L0, roofs at Lr, quarter-bay tributaries); the 1.0 D analysis without live load is required unless the 16.3.2 exception (sum 0.5L <= 25% sum D and L0 < 100 psf over >= 75% of the area) applies -- the verdict is withheld (INCOMPLETE) if it is required and was not run. " + nlc_txt,
+             "The force-controlled column check (16.4.2.1, both equations) combines axial force with concurrent flexure (AISC 360 H1-1 = AISC 342 C3-9) using AISC 360 E3 / F2-F6 with the F_y of the component parameters, K = 1, L_b = column length, C_b = 1; connections, splices and base plates are checked from the linear package, not from the nonlinear demands."
+             + (" Where 16.4.2.1 Exception 2 applies (column axial force limited by the yield mechanism), the column is accepted when it meets either the default equations or Eqs. (16.4-3) / (16.4-4) (an exception relaxes the requirement; the lower D/C governs and the report states which), with E_mc from the mechanism statics of the column line (model capacities, never below the analysed suite maximum), applied moments neglected as AISC 341-22 D1.4a(b) permits; the engineer of record and the reviewer must accept this interpretation (user decision 7 Oct 2026, review item NL-R2-16)." if x2c.get("apply", True) else ""),
              "Foundations, soil-structure interaction and vertical ground motion (16.1.3) are not modelled.",
              "[Site class and V_s30 from the geotechnical report; project-specific performance objectives beyond the code minimum, if any.]"]
     if rel:
         items.append("The design carries the 16.1.2 drift relief; issue only after the Chapter 16 analysis of the relieved design passes 16.4.")
     for it in items:
-        s.b(it)
+        if it:
+            s.b(it)
 
     if g["nl"]:
         s = Section("10. Results on file (for the reviewer)"); S.append(s)
@@ -283,7 +423,9 @@ def content(g, project=None, engineer=None, reviewer=None):
              ["Unacceptable responses", "%d of %d (allowed %d)" % (v["n_unacceptable"], v["n_records"], v["unacceptable_allowed"])],
              ["Mean transient story drift", "max %s vs %s" % (_pc(v.get("mean_drift_max")), _pc(l["mean_limit"]))],
              ["Deformation-controlled", "CP %s, valid range %s" % ("ok" if v["deformation_ok"] else "EXCEEDED", "ok" if v["valid_range_ok"] else "EXCEEDED")],
-             ["Force-controlled columns", "%s (worst D/C %s)" % ("ok" if v["force_controlled_ok"] else "NG", v.get("worst_FC_DC"))],
+             ["Force-controlled columns", "%s (worst D/C %s)" % ("ok" if v["force_controlled_ok"] else "NG", v.get("worst_FC_DC"))
+              + ((" -- 16.4.2.1 Exception 2 used for: %s; default check without it: worst D/C %s" % ("; ".join((v.get("FC_exception_2") or {}).get("members") or []), v.get("worst_FC_DC_default")))
+                 if (v.get("FC_exception_2") or {}).get("used") else (" -- 16.4.2.1 Exception 2 not used" if v.get("FC_exception_2") is not None else ""))],
              ["Overall", v.get("status") or ("ACCEPTABLE" if v["overall"] else "NOT ACCEPTABLE")]])
         s.n("Generated %s by the Nonlinear module; the report nlrha/nlrha_report.html carries the per-record and per-group tables." % g["nl"].get("generated"))
 
@@ -292,6 +434,9 @@ def content(g, project=None, engineer=None, reviewer=None):
     for k, v in ch16.items():
         if isinstance(v, dict) and v.get("clause"):
             rows.append([v["clause"], str(v.get("pdf_page", "")), (v.get("rule") or v.get("note") or "")[:400]])
+            x = v.get("exception_2")
+            if isinstance(x, dict) and x.get("clause"):                  # NL-R2-16
+                rows.append([x["clause"], str(x.get("pdf_page", "")), ("%s -- %s" % (x.get("rule") or "", "applied" if x.get("apply", True) else "NOT applied"))[:600]])
     s.t(rows)
     s = Section("Appendix B. Standards retrieval log", 1); S.append(s)
     if g["retrieval"]:
@@ -301,7 +446,9 @@ def content(g, project=None, engineer=None, reviewer=None):
     s = Section("Appendix C. Sources of the numbers in this document", 1); S.append(s)
     for src in ("cfg.py and design/calc_package.json of the HR Steel package (system, hazard parameters, R / C_d / Omega_0 / I_e, drift limit, capacity design)",
                 "nlrha/ch16_params.json (clauses, pdf pages and the numeric rules the tool implements)",
-                "%s (component models)" % (os.path.basename(g["prm_path"]) if g["prm_path"] else "pushover/hinge_params.json placeholder"),
+                "%s (component models)" % (os.path.basename(g["prm_path"]) if g["prm_path"] else "repository template pushover/hinge_params.json (UNVERIFIED)"),
+                ("nlrha/nlrha_package.json model_stats / degradation_16_3_1 and pushover/pushover_package.json hinge_stats (what the analyses built)"
+                 if (u["nl"] or u["po"]) else "no analysis output on file yet: section 5 states the parameter file, not a run"),
                 "nlrha/site_hazard.json (USGS design maps and disaggregation, conditional spectra, near-fault screen)" if hz else "no site hazard file",
                 "nlrha/gm_scaling.json / nlrha/nlrha_package.json (selected suite, scale factors, orientation)" if gm else "no suite selected yet"):
         s.b(src)

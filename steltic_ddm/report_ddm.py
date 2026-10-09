@@ -76,6 +76,18 @@ ul{padding-left:1.2em}li{margin:3px 0}
 """
 
 
+def verdict(runs, not_evaluated=()):
+    """Overall DDM verdict (NL-R2-02 / NL-R2-11): FAIL if any phi_s check fails; INCOMPLETE if any combination is NOT
+    EVALUATED (solver/control stop, or a sweep that failed); PASS only when every checked combination passes and
+    none is missing."""
+    marks = [(r.get("check") or (None, "n/a"))[1] for r in runs]
+    if "FAIL" in marks:
+        return "FAIL"
+    if "NOT EVALUATED" in marks or not_evaluated:
+        return "INCOMPLETE"
+    return "PASS" if "PASS" in marks else "n/a"
+
+
 def phi_s_provisional(runs):
     """True when any combination checked used a phi_s class the policy flags provisional / extrapolated."""
     return any(r["phi"].get("phi_s") is not None and (r["phi"].get("provisional") or "provisional" in (r["phi"].get("status") or "")) for r in runs)
@@ -148,14 +160,18 @@ def member_equivalence_html(eq):
             'the GMNIA result above governs.</div>' % (PHI_MEMBER, rows, worst))
 
 
-def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, notes):
-    """runs: list of dict(combo=..., summary=..., res=..., cls=..., phi=...)."""
+def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, notes, not_evaluated=None):
+    """runs: list of dict(combo=..., summary=..., res=..., cls=..., phi=...); not_evaluated: NL-R2-11 failed combinations."""
+    nev = list(not_evaluated or [])
     name = nm.name
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     prov = {f: _sha(os.path.join(nm.job_dir, f)) for f in ("cfg.py", "model_opensees.py", "design/calc_package.json")}
     strength = [r for r in runs if r["phi"]["phi_s"] is not None]
-    worst = min(strength, key=lambda r: r["phi"]["phi_s"] * r["res"]["lambda_u"]) if strength else None
+    evaluated = [r for r in strength if r["check"][0] is not None]         # NL-R2-02: numerical stops are NOT EVALUATED
+    worst = min(evaluated, key=lambda r: r["phi"]["phi_s"] * r["res"]["lambda_u"]) if evaluated else None
     n_pass = sum(1 for r in strength if r["check"][1] == "PASS")
+    n_ne = sum(1 for r in runs if r["check"][1] == "NOT EVALUATED") + len(nev)
+    overall = verdict(runs, nev)
     R = cfg.get("seis", {}).get("R")
 
     parts = []
@@ -175,6 +191,9 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
         parts.append('<div class="tile"><div class="k">λ<sub>u</sub> (governing)</div><div class="v">%.2f</div></div>' % worst["res"]["lambda_u"])
         parts.append('<div class="tile"><div class="k">φ<sub>s</sub>·λ<sub>u</sub> (governing)</div><div class="v %s">%.2f</div></div>' % (worst["check"][1], worst["check"][0]))
     parts.append('<div class="tile"><div class="k">DDM checks</div><div class="v">%d / %d pass</div></div>' % (n_pass, len(strength)))
+    if n_ne:
+        parts.append('<div class="tile"><div class="k">not evaluated</div><div class="v FAIL">%d</div></div>' % n_ne)
+    parts.append('<div class="tile"><div class="k">DDM verdict</div><div class="v %s">%s</div></div>' % ("PASS" if overall == "PASS" else "FAIL", overall))
     parts.append('<div class="tile"><div class="k">transfer gate</div><div class="v %s">%s</div></div></div>' % ("PASS" if gate["ok"] else "FAIL", "PASS" if gate["ok"] else "FAIL"))
     parts.append(member_equivalence_html(member_equivalence(runs, member_table)))
 
@@ -189,7 +208,10 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     parts.append('<p>Source package: <code>%s</code>. Steltic design: <b>%s</b>; system <b>%s</b>; R = %s, C<sub>d</sub> = %s, Ω<sub>0</sub> = %s; '
                  'bases <b>%s</b>, joints <b>%s</b>, gravity framing <b>%s</b>; %s. The DDM agent analysed the '
                  'building exactly as designed — no member was resized.</p>' % (
-                     _h(nm.job_dir), _h(cfg.get("arch", "")), _h(cfg.get("system", "")), R, cfg.get("seis", {}).get("Cd"), cfg.get("seis", {}).get("Om0"),
+                     _h(nm.job_dir), _h(cfg.get("arch", "")), _h(cfg.get("system", "")),
+                     (R if phi_s.system_R(cfg, "X") == phi_s.system_R(cfg, "Y") else       # NL-R2-17: mixed systems, per direction
+                      "%s (X, %s) / %s (Y, %s)" % (phi_s.system_R(cfg, "X"), _h((cfg.get("seis_X") or {}).get("system", "")), phi_s.system_R(cfg, "Y"), _h((cfg.get("seis_Y") or {}).get("system", cfg.get("seis", {}).get("system", ""))))),
+                     cfg.get("seis", {}).get("Cd"), cfg.get("seis", {}).get("Om0"),
                      cfg.get("model", {}).get("bases") or cfg.get("base"), cfg.get("model", {}).get("joints") or "—", cfg.get("model", {}).get("gravity") or "—",
                      geo))
     secs = sorted({(m.role, m.section) for m in nm.members})
@@ -233,7 +255,7 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
                  % (round(1 / o.get("psi", 1 / 500)), o.get("gravity_dirs", "+X and +Y"), round(1 / o.get("bow", 1 / 1000))))
     parts.append('<li><b>Joints:</b> as designed — Steltic beam releases become true pins (duplicate node + zeroLength, released rotation carries no stiffness); brace ends pinned in bending, torsion retained; braces do not share a node at the X-crossing (K = 1 on the full diagonal, conservative).</li>')
     parts.append('<li><b>Diaphragms / bases:</b> rigid diaphragms and base fixities exactly as recorded in model_opensees.py.</li>')
-    parts.append('<li><b>Loading and solution:</b> each factored ASCE 7-22 combination (regenerated with Steltic\'s <code>design_pipeline.combos</code>) applied proportionally and scaled by λ; gravity as two-way tributary line loads on beams (Steltic <code>apply_gravity</code>), lateral forces and accidental torsion at the diaphragm masters; adaptive displacement control (Newton → KrylovNewton, step halving); λ<sub>u</sub> = the FIRST limit point of the λ–Δ curve (a drop of more than 15 % or an 8-step post-peak budget ends the run — post-buckling redistribution beyond that is not credited), or the onset of a plastic plateau (tangent stiffness below 2 % of elastic — strain-hardening creep beyond a mechanism is not credited).</li></ul>')
+    parts.append('<li><b>Loading and solution:</b> each factored ASCE 7-22 combination (regenerated with Steltic\'s <code>design_pipeline.combos</code>) applied proportionally and scaled by λ; gravity distributed exactly as the member design (Steltic <code>static_model</code>: floor system, one-way deck span and infill load path, roof bays, cladding — NL-R2-03), lateral forces and accidental torsion at the diaphragm masters; adaptive displacement control (Newton → KrylovNewton, step halving); λ<sub>u</sub> = the FIRST limit point of the λ–Δ curve (a drop of more than 15 % or an 8-step post-peak budget ends the run — post-buckling redistribution beyond that is not credited), or the onset of a plastic plateau (tangent stiffness below 2 % of elastic — strain-hardening creep beyond a mechanism is not credited).</li></ul>')
 
     # 4 capacity table
     parts.append('<h2>4 · System capacity by combination</h2>')
@@ -250,7 +272,16 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
             ph["cls"], ("%.2f" % ph["phi_s"]) if ph["phi_s"] is not None else "—",
             ("%.3f" % r["check"][0]) if r["check"][0] is not None else "—", r["check"][1], r["check"][1],
             _h(r["cls"]["mechanism"]), drift, res["steps"], res["seconds"]))
+    for n in nev:                                                       # NL-R2-11: failed sweeps, with the reason
+        done = ", ".join("%s λ<sub>u</sub> %.3f" % (_h(k), v) for k, v in n.get("completed", {}).items())
+        parts.append('<tr><td>%s</td><td>%s</td><td>%s</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td class="FAIL">NOT EVALUATED</td>'
+                     '<td colspan="3">sweep failed: %s%s</td></tr>' % (
+                         _h(n["label"]), _h(n.get("kind", "")), _h(",".join(n.get("failed", [])) or "—"),
+                         _h("; ".join(n.get("reasons", []))), (" — completed: " + done) if done else ""))
     parts.append('</table></div>')
+    if nev:
+        parts.append('<p class="FAIL">%d combination%s NOT EVALUATED (a sweep failed). The DDM verdict cannot be PASS until %s analysed.</p>'
+                     % (len(nev), "s" if len(nev) > 1 else "", "they are" if len(nev) > 1 else "it is"))
     parts.append('<p class="cap">Design check: φ<sub>s</sub>·λ<sub>u</sub> ≥ 1.0 (Zhang, Shayan, Rasmussen &amp; Ellingwood 2016). λ<sub>u</sub> is the load factor on the WHOLE factored combination at the peak of the load–deformation curve of the nominal (imperfect, residual-stressed) structure. '
                  'Seismic-pattern combinations on an R = %s system: %s.</p>' % (R, "treated as ordinary strength combinations (R ≤ 3, no ductile detailing assumed), φ<sub>s</sub> per the hot-rolled class" if (R is None or R <= 3) else "reported as a seismic supplement without a φ<sub>s</sub> pass/fail (outside the calibrations)"))
 
@@ -277,6 +308,9 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     if sensitivity:
         parts.append('<div class="tw"><table><tr><th>case</th><th>combination</th><th>λ<sub>u</sub></th><th>Δ vs nominal</th><th>mechanism</th></tr>')
         for s in sensitivity:
+            if s.get("lambda_u") is None:                              # NL-R2-11: failed sensitivity sweep
+                parts.append('<tr><td>%s</td><td>%s</td><td>—</td><td>—</td><td>%s</td></tr>' % (_h(s["case"]), _h(s["combo"]), _h(s["mechanism"])))
+                continue
             parts.append('<tr><td>%s</td><td>%s</td><td>%.3f</td><td>%+.1f %%</td><td>%s</td></tr>' % (_h(s["case"]), _h(s["combo"]), s["lambda_u"], 100 * (s["lambda_u"] / s["ref"] - 1), _h(s["mechanism"])))
         parts.append('</table></div>')
     else:
@@ -310,12 +344,15 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     return path
 
 
-def ddm_block(nm, gate, runs, sensitivity, options, member_table):
+def ddm_block(nm, gate, runs, sensitivity, options, member_table, not_evaluated=None):
+    nev = list(not_evaluated or [])
     return {
         "method": "Direct Design Method (system-based design by advanced analysis) -- steltic_ddm 0.1",
         "basis": ["Zhang, Shayan, Rasmussen & Ellingwood, JCSR 123 (2016) I & II",
                   "AISC 360-22 Appendix 1 (design by advanced analysis) -- cite via Query file manager"]
                  + [phi_s.SOURCES[k] for k in sorted({src for r in runs if r["phi"]["cls"] in phi_s.TABLE for src in phi_s.TABLE[r["phi"]["cls"]]["sources"]})],
+        "verdict": verdict(runs, nev),
+        "not_evaluated": nev,
         "phi_s_provisional": phi_s_provisional(runs),
         "phi_s_status": phi_s_status_text(runs, as_html=False),
         "phi_s_classes": {r["phi"]["cls"]: dict(phi_s=r["phi"]["phi_s"], beta_T=r["phi"]["beta_T"], status=r["phi"]["status"]) for r in runs},
@@ -328,7 +365,7 @@ def ddm_block(nm, gate, runs, sensitivity, options, member_table):
             {"label": r["combo"][0], "kind": r["summary"]["kind"], "imperfection": r["imp"], "scheme": "proportional",
              "lambda_u": round(r["res"]["lambda_u"], 3), "lambda_first_yield": (round(r["res"]["first_yield"], 3) if r["res"]["first_yield"] else None),
              "phi_s": r["phi"]["phi_s"], "phi_class": r["phi"]["cls"], "phi_source": r["phi"]["source"],
-             "check": ("phi_s*lambda_u = %.3f %s" % r["check"]) if r["check"][0] is not None else "n/a",
+             "check": ("phi_s*lambda_u = %.3f %s" % r["check"]) if r["check"][0] is not None else r["check"][1],
              "mechanism": r["cls"]["mechanism"], "hinges_by_role": r["cls"]["hinges_by_role"], "buckled_braces": len(r["cls"]["buckled_braces"]),
              "roof_disp_at_peak_in": (round(r["res"]["snapshot"]["drifts"][0][-1], 3) if r["res"]["snapshot"].get("drifts") else None),
              "steps": r["res"]["steps"], "seconds": r["res"]["seconds"]} for r in runs],

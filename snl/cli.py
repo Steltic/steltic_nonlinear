@@ -94,6 +94,9 @@ def cmd_run(a):
             if a.site_hazard: cmd += ["--site-hazard", os.path.abspath(a.site_hazard)]
             if a.pulse_fraction is not None: cmd += ["--pulse-fraction", str(a.pulse_fraction)]
             if a.sf_bounds: cmd += ["--sf-bounds", a.sf_bounds]
+            if a.record_budget_s is not None: cmd += ["--record-budget-s", str(a.record_budget_s)]     # NL-R2-15
+            if a.trim_records and a.trim_records != "off": cmd += ["--trim-records", a.trim_records, "--trim-ends", a.trim_ends]   # NL-R2-18
+            if a.resume: cmd += ["--resume"]                                                       # NL-R2-26
             # Product rule 1: NLRHA starts ModIMK; fibre via mesh-converge ladder
             plast = a.plasticity if a.plasticity else "imk"
             nseg = a.member_nseg if a.member_nseg is not None else (4 if plast in ("fibre", "fiber") else 1)
@@ -178,6 +181,13 @@ def main(argv=None):
     r.add_argument("--site-hazard", help="site_hazard.json from `nlrha hazard` (default <job>/nlrha/site_hazard.json)")
     r.add_argument("--pulse-fraction", type=float, default=None, help="share of the suite reserved for pulse-type records")
     r.add_argument("--sf-bounds", help="NLRHA: keep records whose shape-fit scale factor lies in lo-hi, e.g. 0.25-4")
+    r.add_argument("--record-budget-s", default=None, help="NLRHA wall-time budget per record: 'auto' (default: scaled to the record and the model, "
+                                                            "at least 4 h) or seconds (0 = none); a record that runs out is 'incomplete (time-out)'")
+    r.add_argument("--trim-records", nargs="?", const="standard", default="off", choices=["off", "standard", "aggressive"],
+                   help="NLRHA optional record trimming (default off; --trim-records alone = standard 0.1-99.5%% Arias, aggressive = 0.5-99%%); "
+                        "2%% spectral check per record, disclosed in the NLRHA report and the 16.1.4 document")
+    r.add_argument("--trim-ends", default="both", choices=["both", "head", "tail"], help="which quiet end(s) --trim-records trims")
+    r.add_argument("--resume", action="store_true", help="NLRHA: keep the records already finished by an interrupted run (<job>/nlrha/records/r<i>.pkl) and run only the rest")
     r.add_argument("--no-criteria", action="store_true", help="do not write the 16.1.4 design criteria draft at the end of the run")
     r.add_argument("--project", help="project name for the design criteria document"); r.add_argument("--engineer"); r.add_argument("--reviewer")
     fb = sub.add_parser("feedback", help="the three re-design loops back to HR Steel: plan (and optionally run) one, or promote a verified candidate")
@@ -243,7 +253,7 @@ def cmd_feedback(a):
         if k == "drift": print(json.dumps(p["numbers"], indent=None))
         if k == "resize": print("\n".join("  %-24s %-9s %-9s %s" % (r["id"], r["verdict"], r["proposed"] or "", r["reason"][:80]) for r in p["rows"]))
         if k == "mechanism": print("  storeys:", [(s_["level"], s_["col_yielded"]) for s_ in p["storeys"]], " panel zone:", bool(p["panel_zone"]))
-        print("\n" + p["brief"])
+        print("\n" + (p.get("brief") or ""))                         # NL-R2-08
     if a.run:
         if not a.loop:
             sys.exit("--run needs --loop")

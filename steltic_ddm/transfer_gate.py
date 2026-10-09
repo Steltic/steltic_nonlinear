@@ -9,9 +9,59 @@ A mismatch beyond `tol` (default 5 %) blocks the run and names the likely cause 
 release decoding, diaphragm membership, section mapping). Fibre W-sections ignore fillets, so a
 1-3 % softer GMNIA model is expected and reported, not flagged.
 """
-import math, re
+import math, os, re
 import openseespy.opensees as ops
 from .model_gmnia import GMNIAModel
+
+# NL-R2-23: the dense -fullGenLapack fallback needs ~3 n^2 doubles; on a 12k-DOF building that is several GB and
+# hours (Ex12: OOM-killed at 6 GB after 1.5 h). Above this limit the fallback is refused and the gate fails.
+DENSE_EIGEN_MAX_GB = 2.0
+DENSE_EIGEN_ENV = "STELTIC_DDM_DENSE_EIGEN_GB"
+
+
+class SingularModelError(RuntimeError):
+    """ARPACK could not start (singular stiffness) and the dense eigen fallback is too large to attempt."""
+
+
+def dense_eigen_gb(ndof):
+    """Memory estimate of a dense generalized eigen solve: K, M and the work/eigenvector arrays ~ 3 n^2 doubles."""
+    return 3.0 * 8.0 * float(ndof) ** 2 / 1e9
+
+
+def _dense_limit_gb(max_dense_gb=None):
+    if max_dense_gb is not None:
+        return float(max_dense_gb)
+    try:
+        return float(os.environ.get(DENSE_EIGEN_ENV) or DENSE_EIGEN_MAX_GB)
+    except ValueError:
+        return DENSE_EIGEN_MAX_GB
+
+
+def _system_size():
+    try:
+        return int(ops.systemSize())
+    except Exception:
+        return 6 * len(ops.getNodeTags())
+
+
+def _unconnected_nodes(limit=6):
+    """Free nodes that no element connects (diaphragm masters / CoM nodes are constraint-only and are skipped)."""
+    used = set()
+    for e in ops.getEleTags():
+        used.update(ops.eleNodes(e))
+    out = []
+    for t in ops.getNodeTags():
+        if t in used or t % 100000 in (99999, 99998):
+            continue
+        try:
+            if all(ops.nodeDOFs(t)[q] < 0 for q in range(6)):          # fully restrained: harmless
+                continue
+        except Exception:
+            pass
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _replay(path):
@@ -33,11 +83,27 @@ def _replay(path):
                 exec(t, ns)
 
 
-def _periods(n=3):
+def _periods(n=3, max_dense_gb=None, which="model"):
     ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
     try:
         w2 = ops.eigen("-genBandArpack", n)
-    except Exception:
+        if not w2 or len(w2) < n:
+            raise RuntimeError("ARPACK returned %d of %d eigenvalues" % (len(w2 or []), n))
+    except Exception as ex:
+        # NL-R2-23: ARPACK fails ("starting vector is zero") when K is singular -- a model defect, not a solver issue.
+        # The dense fallback is only attempted when it is small enough; otherwise the gate fails with the reason.
+        ndof = _system_size()
+        gb, lim = dense_eigen_gb(ndof), _dense_limit_gb(max_dense_gb)
+        if gb > lim:
+            free = _unconnected_nodes()
+            raise SingularModelError(
+                "%s: stiffness matrix singular -- ARPACK eigen solve failed (%s); the dense -fullGenLapack fallback would "
+                "need ~%.1f GB for %d DOF (limit %.1f GB, param max_dense_gb / env %s) and is refused. Check the model, "
+                "e.g. unconnected nodes%s, a lost rigid-diaphragm membership or a missing restraint."
+                % (which, str(ex).strip() or type(ex).__name__, gb, ndof, lim, DENSE_EIGEN_ENV,
+                   (" (%s)" % ", ".join(str(t) for t in free)) if free else ""))
+        print("   note %s: ARPACK eigen failed (%s) -- dense -fullGenLapack fallback, %d DOF (~%.2f GB); a singular "
+              "stiffness usually means a model defect" % (which, str(ex).strip() or type(ex).__name__, ndof, gb), flush=True)
         w2 = ops.eigen("-fullGenLapack", n)
     return [2 * math.pi / math.sqrt(max(w, 1e-12)) for w in w2]
 
@@ -55,19 +121,23 @@ def _lateral_disp(masters, lat, dirn):
     return ok, d
 
 
-def run(nm, cfg, lat_x, lat_y, tol=0.05, nsub=(2, 2, 2)):
-    """lat_x / lat_y: {level: (fx, fy, mz)} unit lateral patterns (e.g. the ELF pattern)."""
+def run(nm, cfg, lat_x, lat_y, tol=0.05, nsub=(2, 2, 2), max_dense_gb=None):
+    """lat_x / lat_y: {level: (fx, fy, mz)} unit lateral patterns (e.g. the ELF pattern).
+    max_dense_gb: memory limit for the dense eigen fallback (default env STELTIC_DDM_DENSE_EIGEN_GB or 2 GB)."""
     replay = nm.job_dir + "/model_opensees.py"
     masters = sorted(t for t in nm.nodes if t % 100000 == 99999)
-    # --- Steltic elastic model
-    _replay(replay)
-    T_ref = _periods(3)
+    g = GMNIAModel(nm, cfg, nsub=nsub, elastic=True, residual="none", out_of_plumb=(None, 0.0), bow=0.0, brace_bow=0.0)
+    try:
+        # --- Steltic elastic model
+        _replay(replay)
+        T_ref = _periods(3, max_dense_gb, "Steltic replay model")
+        # --- GMNIA topology, elastic
+        g.build(with_mass=True)
+        T_new = _periods(3, max_dense_gb, "GMNIA rebuild")
+    except SingularModelError as ex:                 # NL-R2-23: fail the gate with the reason instead of thrashing
+        return dict(ok=False, rows=[], tol=tol, hint=str(ex), singular=True, elements_steltic=len(nm.members), elements_gmnia=len(g.elems))
     _replay(replay); okx, dx_ref = _lateral_disp(masters, lat_x, "X")
     _replay(replay); oky, dy_ref = _lateral_disp(masters, lat_y, "Y")
-    # --- GMNIA topology, elastic
-    g = GMNIAModel(nm, cfg, nsub=nsub, elastic=True, residual="none", out_of_plumb=(None, 0.0), bow=0.0, brace_bow=0.0)
-    g.build(with_mass=True)
-    T_new = _periods(3)
     g.build(); _, dx_new = _lateral_disp(masters, lat_x, "X")
     g.build(); _, dy_new = _lateral_disp(masters, lat_y, "Y")
     rows = []

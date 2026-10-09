@@ -13,7 +13,41 @@ from .model_gmnia import GMNIAModel
 
 
 def _worker(args):
-    """One sweep in its own process (openseespy is a process singleton)."""
+    """One sweep in its own process (openseespy is a process singleton). NL-R2-11: never raises -- a sweep that
+    fails (e.g. 'elastic probe failed', Ex30 1.4D) comes back as dict(failed=True, error=...) so the other
+    sweeps of the run are kept and the combination is reported NOT EVALUATED."""
+    t0 = time.time()
+    try:
+        return _sweep_one(args)
+    except Exception as ex:                                            # noqa: BLE001
+        job, engine_dir, combo_label, imp, opts = args
+        return dict(label=combo_label, imp=imp["tag"], failed=True, error="%s: %s" % (type(ex).__name__, ex),
+                    seconds=round(time.time() - t0, 1))
+
+
+def _done_line(r):
+    if r.get("failed"):
+        return "   FAILED %-38s imp %-3s -- %s (%.0f s) -> NOT EVALUATED" % (r["label"][:38], r["imp"], r["error"][:90], r["seconds"])
+    return "   done %-40s imp %-3s lambda_u %.3f  (%d steps, %.0f s) %s" % (r["label"][:40], r["imp"], r["res"]["lambda_u"], r["res"]["steps"], r["res"]["seconds"], r["cls"]["mechanism"][:60])
+
+
+def not_evaluated(kept, results):
+    """NL-R2-11: combinations with at least one failed sweep. The failed imperfection case may be the governing
+    one, so the combination is NOT EVALUATED (conservative) even when other cases finished; their lambda_u is
+    kept for information. -> list of dict(label, kind, failed, reasons, completed)."""
+    out = []
+    for c in kept:
+        rs = [r for r in results if r["label"] == c[0]]
+        bad = [r for r in rs if r.get("failed")]
+        if not bad and rs:
+            continue
+        out.append(dict(label=c[0], kind=loads.combo_summary(c)["kind"], failed=[r["imp"] for r in bad],
+                        reasons=sorted({r["error"] for r in bad}) or ["no sweep result"],
+                        completed={r["imp"]: round(r["res"]["lambda_u"], 3) for r in rs if not r.get("failed")}))
+    return out
+
+
+def _sweep_one(args):
     job, engine_dir, combo_label, imp, opts = args
     if engine_dir and engine_dir not in sys.path:
         sys.path.insert(0, engine_dir)
@@ -113,9 +147,11 @@ def run(args):
     else:
         latx = [c for c in cases if "EX+t+" in c[0] and c[1] > 1.0][0][4]
         laty = [c for c in cases if "EY+t+" in c[0] and c[1] > 1.0][0][4]
-        gate = transfer_gate.run(nm, cfg, latx, laty, tol=args.gate_tol)
+        gate = transfer_gate.run(nm, cfg, latx, laty, tol=args.gate_tol, max_dense_gb=args.dense_eigen_gb)
     for r in gate["rows"]:
         print("   gate %-36s steltic %.4f gmnia %.4f ratio %.3f %s" % (r["quantity"], r["steltic"], r["gmnia"], r["ratio"], "ok" if r["ok"] else "FAIL"))
+    if gate.get("singular"):                          # NL-R2-23: a singular model is never analysed, --force or not
+        print("!! transfer gate FAILED --", gate["hint"]); sys.exit(2)
     if not gate["ok"] and not args.force:
         print("!! transfer gate FAILED --", gate["hint"]); sys.exit(2)
 
@@ -133,15 +169,20 @@ def run(args):
         with mp.get_context("spawn").Pool(args.workers) as pool:
             for r in pool.imap_unordered(_worker, tasks):
                 results.append(r)
-                print("   done %-40s imp %-3s lambda_u %.3f  (%d steps, %.0f s) %s" % (r["label"][:40], r["imp"], r["res"]["lambda_u"], r["res"]["steps"], r["res"]["seconds"], r["cls"]["mechanism"][:60]), flush=True)
+                print(_done_line(r), flush=True)
     else:
         for t in tasks:
             r = _worker(t); results.append(r)
-            print("   done %-40s imp %-3s lambda_u %.3f  (%d steps, %.0f s) %s" % (r["label"][:40], r["imp"], r["res"]["lambda_u"], r["res"]["steps"], r["res"]["seconds"], r["cls"]["mechanism"][:60]), flush=True)
+            print(_done_line(r), flush=True)
 
+    # NL-R2-11: a combination with a failed sweep is NOT EVALUATED (recorded with its reason), the rest carry on
+    nev = not_evaluated(kept, results)
+    nev_labels = {n["label"] for n in nev}
     # keep the governing imperfection case per combination
     by_label = {}
     for r in results:
+        if r.get("failed") or r["label"] in nev_labels:
+            continue
         if r["label"] not in by_label or r["res"]["lambda_u"] < by_label[r["label"]]["res"]["lambda_u"]:
             by_label[r["label"]] = r
     R = cfg.get("seis", {}).get("R")
@@ -156,8 +197,8 @@ def run(args):
         summ = loads.combo_summary(c)
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
         mat = "CFS-P" if portal else "HR"
-        ph = phi_s.choose(summ["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)
-        runs.append(dict(combo=c, summary=summ, res=r["res"], cls=r["cls"], phi=ph, check=phi_s.check(ph["phi_s"], r["res"]["lambda_u"]),
+        ph = phi_s.choose(summ["kind"], phi_s.system_R(cfg, summ.get("lateral_dir")), r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)   # NL-R2-17
+        runs.append(dict(combo=c, summary=summ, res=r["res"], cls=r["cls"], phi=ph, check=phi_s.check(ph["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"]),
                          imp=r["imp"], state=r["state"]))
     # member table from the governing strength combination per group
     member_table = []
@@ -184,7 +225,7 @@ def run(args):
     # sensitivity on the governing strength combination
     sens = []
     if args.sensitivity and runs:
-        strength = [r for r in runs if r["phi"]["phi_s"] is not None]
+        strength = [r for r in runs if r["phi"]["phi_s"] is not None and r["check"][0] is not None]
         gov = min(strength, key=lambda r: r["phi"]["phi_s"] * r["res"]["lambda_u"]) if strength else runs[0]
         lab, ref = gov["combo"][0], gov["res"]["lambda_u"]
         variants = []
@@ -203,13 +244,21 @@ def run(args):
         else:
             sres = [_worker(t) for t in stasks]
         for (case, _, _), r in zip(variants, sres):
+            if r.get("failed"):                                        # NL-R2-11
+                sens.append(dict(case=case, combo=lab, lambda_u=None, ref=ref, mechanism="FAILED -- " + r["error"]))
+                print("   sensitivity %-34s FAILED -- %s" % (case, r["error"][:90]), flush=True)
+                continue
             sens.append(dict(case=case, combo=lab, lambda_u=round(r["res"]["lambda_u"], 3), ref=ref, mechanism=r["cls"]["mechanism"]))
             print("   sensitivity %-34s lambda_u %.3f (ref %.3f)" % (case, r["res"]["lambda_u"], ref), flush=True)
 
     # exports
-    opts_rep = dict(opts, nsub=tuple(opts["nsub"]), section_log=(results[0]["section_log"] if results else []), Fy=(args.fy or cfg.get("Fy", 50.0)),
+    ok_results = [r for r in results if not r.get("failed")]
+    opts_rep = dict(opts, nsub=tuple(opts["nsub"]), section_log=(ok_results[0]["section_log"] if ok_results else []), Fy=(args.fy or cfg.get("Fy", 50.0)),
                     gravity_dirs={"one": "+X only", "two": "+X and +Y", "all": "±X and ±Y"}[args.gravity_dirs], risk_category=rc, n_cases=len(cases))
-    rep, block = _finish(job, out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, t0)
+    rep, block = _finish(job, out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, t0, not_evaluated=nev)
+    for n in nev:
+        print("!! NOT EVALUATED %-40s failed sweep(s) %s -- %s" % (n["label"][:40], ",".join(n["failed"]) or "-", "; ".join(n["reasons"])[:160]))
+    print(">> DDM verdict: %s (%d combination(s) checked, %d NOT EVALUATED)" % (block["verdict"], len(runs), len(nev)))
     if not args.no_block:
         report_ddm.write_block(job, block)
     # model export (nominal, +X lean)
@@ -240,10 +289,12 @@ def _notes(runs, n_cases):
     ]
 
 
-def _finish(job, out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, t0, elapsed=None):
-    """ddm_report.html + ddm_analysis block + ddm_results.json from the assembled runs (shared by `run` and `report`)."""
-    rep = report_ddm.build(out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, _notes(runs, opts_rep.get("n_cases", len(runs))))
-    block = report_ddm.ddm_block(nm, gate, runs, sens, opts_rep, member_table)
+def _finish(job, out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, t0, elapsed=None, not_evaluated=None):
+    """ddm_report.html + ddm_analysis block + ddm_results.json from the assembled runs (shared by `run` and `report`).
+    not_evaluated: NL-R2-11 combinations whose sweep failed (label, kind, failed, reasons, completed)."""
+    nev = list(not_evaluated or [])
+    rep = report_ddm.build(out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, _notes(runs, opts_rep.get("n_cases", len(runs))), not_evaluated=nev)
+    block = report_ddm.ddm_block(nm, gate, runs, sens, opts_rep, member_table, not_evaluated=nev)
     opts_json = {k: v for k, v in opts_rep.items() if k != "section_log"}
     opts_json["section_log"] = [list(x) for x in opts_rep.get("section_log", [])]
     json.dump(dict(job=job, options=opts_json, gate=gate, runs=[dict(label=r["combo"][0], imp=r["imp"], kind=r["summary"]["kind"], lambda_u=r["res"]["lambda_u"],
@@ -252,6 +303,7 @@ def _finish(job, out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, t0,
                                                                    seconds=r["res"]["seconds"], log=r["res"]["log"], state=r["state"],
                                                                    snapshot=r["res"]["snapshot"], control=r["res"].get("control"), lateral=r["res"].get("lateral"),
                                                                    d_at_max=r["res"].get("d_at_max"), frames=r["res"].get("frames", [])) for r in runs],
+                   not_evaluated=nev, verdict=block["verdict"],
                    sensitivity=sens, member_table=member_table, elapsed_s=(elapsed if elapsed is not None else round(time.time() - t0))),
               open(os.path.join(out_dir, "ddm_results.json"), "w"), indent=1, default=str)
     return rep, block
@@ -285,8 +337,8 @@ def report(args):
     for r in runs:
         gov_braces = bool(r["cls"]["buckled_braces"]) or (r["cls"]["mechanism"].startswith("brace"))
         mat = "CFS-P" if PA.is_portal(cfg) else "HR"
-        r["phi"] = phi_s.choose(r["summary"]["kind"], R, r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)
-        r["check"] = phi_s.check(r["phi"]["phi_s"], r["res"]["lambda_u"])
+        r["phi"] = phi_s.choose(r["summary"]["kind"], phi_s.system_R(cfg, r["summary"].get("lateral_dir")), r["cls"]["cls"], governed_by_braces=gov_braces, hss_braces=hss, material=mat, risk_category=rc)   # NL-R2-17
+        r["check"] = phi_s.check(r["phi"]["phi_s"], r["res"]["lambda_u"], r["cls"]["cls"])
         print("   %-40s lambda_u %.3f  %-7s phi_s %s  -> %s" % (r["combo"][0][:40], r["res"]["lambda_u"], r["phi"]["cls"], r["phi"]["phi_s"], r["check"][1]))
     opts_rep = dict(d.get("options", {}))
     opts_rep["nsub"] = tuple(opts_rep.get("nsub", (2, 2, 4)))
@@ -294,7 +346,8 @@ def report(args):
     if opts_rep.get("Fy") is None: opts_rep["Fy"] = cfg.get("Fy", 50.0)
     opts_rep.setdefault("gravity_dirs", "+X and +Y"); opts_rep["risk_category"] = rc
     opts_rep.setdefault("n_cases", len(loads.steltic_combos(cfg)))
-    rep, block = _finish(job, out_dir, nm, cfg, d.get("gate", {}), runs, d.get("sensitivity", []), opts_rep, d.get("member_table", []), None, elapsed=d.get("elapsed_s"))
+    rep, block = _finish(job, out_dir, nm, cfg, d.get("gate", {}), runs, d.get("sensitivity", []), opts_rep, d.get("member_table", []), None, elapsed=d.get("elapsed_s"),
+                         not_evaluated=d.get("not_evaluated", []))
     if not args.no_block:
         report_ddm.write_block(job, block)
     print(">> report:", rep)
@@ -347,6 +400,9 @@ def main(argv=None):
     r.add_argument("--fast", action="store_true", help="dispBeamColumn instead of forceBeamColumn")
     r.add_argument("--sensitivity", action="store_true")
     r.add_argument("--gate-tol", type=float, default=0.05)
+    r.add_argument("--dense-eigen-gb", type=float, default=None,
+                   help="memory limit (GB) for the dense eigen fallback of the transfer gate when ARPACK fails "
+                        "(default env STELTIC_DDM_DENSE_EIGEN_GB or 2.0); above it the gate fails: singular stiffness")
     r.add_argument("--risk-category", default=None, choices=["I", "II", "III", "IV"], help="ASCE 7 Risk Category (default: from cfg / Ie)")
     r.add_argument("--force", action="store_true", help="continue even if the transfer / CFS fidelity gate fails")
     r.add_argument("--rigid-end-offset", type=float, default=None, metavar="FRAC",

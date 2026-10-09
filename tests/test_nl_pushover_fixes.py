@@ -106,6 +106,11 @@ def test_fibre_registers_beam_and_column_hinges_and_acceptance_evaluates():
     assert beams and beams[0]["n_yielded"] >= 1 and beams[0]["theta_pl_max"] > 0.005
     # the P-695 component limit can now fire on fibre beams / columns (grav list is no longer empty)
     assert max(run["rec"]["b_ratio"]) > 0.0
+    # NL-R2-12: the eigen solve carries the modes for the 7.3.2.1 higher-mode test (1 storey: ratio 1.0)
+    pat = run["pattern"]
+    assert pat["modes"] and pat["modes_cum_frac"] >= 0.9 and any(m["mode"] == pat["mode"] for m in pat["modes"])
+    hm = PP.higher_mode_check(pat, 1.0, 0.6)
+    assert hm["status"] == "not_significant" and abs(hm["max_ratio"] - 1.0) < 1e-6
 
 
 def test_ex22_example_fibre_monitors_every_fr_end():
@@ -160,12 +165,41 @@ def test_acceptance_at_first_step_reaching_target_and_target_not_reached():
     a = PP.acceptance(run, hinges, 1.5, "BSE-1N")                  # first u >= 1.5 is step 2
     assert a["step"] == 2 and a["roof_disp_in"] == 2.0 and abs(a["worst_DC"]["IO"] - 1.2) < 1e-12
     assert PP.level_verdict(a, "IO") is False and PP.level_verdict(a, "LS") is True
+    run["rec"]["V"] = [0.0, 100.0, 90.0, 70.0]                    # NL-R2-24: strength loss (V <= 0.8 Vmax) before delta_t
     b = PP.acceptance(run, hinges, 3.5, "BSE-2N")                  # never reached
-    assert b["status"] == PP.TARGET_NOT_REACHED and b["acceptable"] is False
+    assert b["status"] == PP.TARGET_NOT_REACHED and b["acceptable"] is False and b["shortfall"]["kind"] == PP.SHORT_STRENGTH
     assert b["worst_DC"]["CP"] is None and b["max_story_drift"] is None and b["roof_disp_in"] is None
     assert b["at_last_converged"]["roof_disp_in"] == 3.0          # diagnostic only, labelled
     assert PP.level_verdict(b, "CP") is False
     assert PP.step_at(run, 3.5) is None and PP.step_at(run, 0.0) == 0
+
+
+def test_numerical_stop_at_peak_before_target_is_not_evaluated_not_unacceptable():
+    """NL-R2-24 (Ex8 EBF: solver stop at 12.18 in, V/Vmax = 1.000, delta_t 12.98 in): NOT EVALUATED, never NOT ACCEPTABLE.
+    NOT ACCEPTABLE stays for a genuine strength loss (V <= 0.8 Vmax) or rotation b before the target."""
+    from pushover import postprocess as PP
+    run, hinges = _run([(1, "beam"), (2, "col")], [0.0, 4.0, 8.0, 12.18], [0.02, 0.005])
+    run["rec"]["V"] = [0.0, 900.0, 990.0, 1000.0]                 # still rising / at peak when the solver gave up
+    run["stop_reason"] = "solver non-convergence at roof u=12.18 in (after 9 step halvings)"
+    run["tail"] = dict(status="lower_bound", tried=[dict(strategy="fine_step"), dict(strategy="arclength")])
+    a = PP.acceptance(run, hinges, 12.98, "BSE-2N")
+    assert a["status"] == PP.NOT_EVALUATED and a["acceptable"] is None and a["reason"] == "stopped_before_target"
+    assert a["shortfall"]["kind"] == PP.SHORT_NUMERICAL and a["shortfall"]["V_end_over_Vmax"] == 1.0
+    assert "NOT EVALUATED -- analysis stopped numerically at V/Vmax = 1.000 before the target displacement" in a["note"]
+    assert "NOT ACCEPTABLE" not in a["note"] and a["worst_DC"]["CP"] is None and a["max_story_drift"] is None
+    assert PP.level_verdict(a, "CP") is None                       # not a pass, not a fail
+    run["rec"]["V"] = [0.0, 900.0, 1000.0, 850.0]                  # descending but still above 0.8 Vmax: numerical
+    assert PP.target_shortfall(run, 12.98)["kind"] == PP.SHORT_NUMERICAL
+    run["tail"] = dict(status="component_limit", u_component_limit=8.0)   # rotation b before delta_t: a mechanism
+    b = PP.acceptance(run, hinges, 12.98, "BSE-2N")
+    assert b["status"] == PP.TARGET_NOT_REACHED and b["acceptable"] is False and PP.level_verdict(b, "CP") is False
+    run["tail"] = dict(status="max_drift"); run["stop_reason"] = "reached max roof drift 8.0% of H"
+    assert PP.target_shortfall(run, 12.98)["kind"] == PP.SHORT_DRIFT_CAP
+    assert PP.acceptance(run, hinges, 12.98, "BSE-2N")["status"] == PP.NOT_EVALUATED
+    assert PP.target_shortfall(run, 12.0) is None
+    from pushover import report_supplement as RS
+    txt = RS._reached_txt(dict(reached_target=False, target_shortfall=PP.target_shortfall(run, 12.98)))
+    assert "NOT EVALUATED" in txt and "NOT ACCEPTABLE" not in txt
 
 
 def _example_job():
@@ -175,7 +209,7 @@ def _example_job():
     return job
 
 
-@pytest.mark.parametrize("mode", ["not_evaluated", "legacy_empty", "target_not_reached", "evaluated"])
+@pytest.mark.parametrize("mode", ["not_evaluated", "legacy_empty", "target_not_reached", "evaluated", "stopped_numerically", "partial"])
 def test_compare_bpon_never_turns_missing_into_pass(mode):
     from snl import compare
     job = _example_job()
@@ -190,8 +224,13 @@ def test_compare_bpon_never_turns_missing_into_pass(mode):
             elif mode == "target_not_reached" and lvl == "BSE-2N":
                 a.update(status="target_not_reached", groups=[], worst_DC=dict(IO=None, LS=None, CP=None),
                          max_story_drift=None, story_drifts=[], census=[], roof_disp_in=None)
-            elif mode == "evaluated":
+            elif mode == "stopped_numerically" and lvl == "BSE-2N":      # NL-R2-24
+                a.update(status="not_evaluated", reason="stopped_before_target", shortfall=dict(kind="numerical", V_end_over_Vmax=1.0),
+                         groups=[], worst_DC=dict(IO=None, LS=None, CP=None), max_story_drift=None, story_drifts=[], census=[], roof_disp_in=None)
+            elif mode in ("evaluated", "partial"):
                 a.update(worst_DC=dict(IO=0.5, LS=0.2, CP=0.1))
+    if mode == "partial":                                          # NL-R2-14: Y still running
+        po["directions_pending"] = ["Y"]; po["complete"] = False
     json.dump(po, open(pj, "w"))
     compare.build(job)
     s = json.load(open(os.path.join(job, "snl_summary.json")))["pushover"]
@@ -200,8 +239,15 @@ def test_compare_bpon_never_turns_missing_into_pass(mode):
         assert s["bpon_ok"] is None and "NOT EVALUATED" in t and "both pass" not in t
     elif mode == "target_not_reached":
         assert s["bpon_ok"] is False and "target displacement not reached" in t
+    elif mode == "partial":
+        assert s["bpon_ok"] is None and s["directions_pending"] == ["Y"] and "PARTIAL pushover" in t and "both pass" not in t
+    elif mode == "stopped_numerically":
+        assert s["bpon_ok"] is None and s["bpon_stopped_before_target"] and "stopped numerically" in t
+        assert "target displacement not reached" not in t and "both pass" not in t
     else:
         assert s["bpon_ok"] is True and "both pass" in t
+        # NL-R2-12: the example package predates the 7.3.2.1 higher-mode test -> never "NSP permitted"
+        assert s["nsp_status"] == "not_evaluated" and not s["nsp_permitted"] and "applicability NOT EVALUATED" in t
 
 
 # --------------------------------------------------------------------------- NL-16: idealisation and coefficients
@@ -251,6 +297,162 @@ def test_nsp_coefficients_asce41_23():
     assert PP._cm(b, prm, 3, 0.8)[0] == 0.9
     assert PP._cm(PR.DesignBasis(system="BRBF"), prm, 3, 0.8)[0] == 1.0
     assert PP._cm(b, prm, 3, 1.2)[0] == 1.0
+
+
+# --------------------------------------------------------------------------- NL-R2-12: 7.3.2.1 higher-mode test
+def _shear_building(n, T1, m=1.0):
+    """Uniform n-storey shear building (level masses m, equal storey stiffness) scaled to period T1; returns the
+    pattern dict modal_pattern would produce (modes in ascending-frequency order, phi in the push direction)."""
+    K = np.zeros((n, n)); k = 1.0
+    for i in range(n):
+        K[i, i] += k
+        if i + 1 < n:
+            K[i, i] += k; K[i, i + 1] -= k; K[i + 1, i] -= k
+    w2, V = np.linalg.eigh(K / m)
+    w2 = w2 * (2 * math.pi / T1) ** 2 / w2[0]
+    modes = []
+    for j in range(n):
+        phi = {i + 1: float(V[i, j]) for i in range(n)}
+        Ln = sum(m * phi[i] for i in phi); Mn = sum(m * phi[i] ** 2 for i in phi)
+        modes.append(dict(mode=j + 1, T=2 * math.pi / math.sqrt(w2[j]), gamma=Ln / Mn, meff_frac=Ln ** 2 / Mn / (n * m), phi=phi))
+    return dict(T1=T1, mode=1, modes=modes, masses={i + 1: m for i in range(n)}, phi=modes[0]["phi"])
+
+
+def test_higher_mode_check_asce41_7321():
+    from pushover import postprocess as PP
+    # closed form, 4 storeys (mode 1 = 88 % < 90 % -> modes 1+2): CQC story shears from the modal level forces,
+    # recomputed here independently of the module
+    pat = _shear_building(4, 0.6)
+    SXS, SX1 = 1.0, 0.6
+    hm = PP.higher_mode_check(pat, SXS, SX1)
+    assert pat["modes"][0]["meff_frac"] < 0.9 <= pat["modes"][0]["meff_frac"] + pat["modes"][1]["meff_frac"]
+    assert hm["n_modes_used"] == 2 and hm["cum_mass_frac"] >= 0.9
+    vs = []
+    for md in pat["modes"][:2]:
+        sa = PP.spectrum_sa(md["T"], SXS, SX1) * 386.4
+        F = [md["gamma"] * md["phi"][k] * sa for k in (1, 2, 3, 4)]
+        vs.append([sum(F[i:]) for i in range(4)])
+    T1, T2 = pat["modes"][0]["T"], pat["modes"][1]["T"]
+    r = T2 / T1; xi = 0.05
+    rho = 8 * xi ** 2 * (1 + r) * r ** 1.5 / ((1 - r * r) ** 2 + 4 * xi ** 2 * r * (1 + r) ** 2)
+    for i in range(4):
+        exp = math.sqrt(vs[0][i] ** 2 + vs[1][i] ** 2 + 2 * rho * vs[0][i] * vs[1][i]) / abs(vs[0][i])
+        assert hm["ratios"][i]["ratio"] == pytest.approx(exp, rel=1e-9)
+        assert hm["ratios"][i]["V_mode1_kip"] == pytest.approx(abs(vs[0][i]), rel=1e-9)
+    assert hm["status"] == "not_significant" and hm["max_ratio"] <= 1.30                  # stiff 4-storey: first mode governs
+    hm1 = PP.higher_mode_check(_shear_building(2, 0.5), SXS, SX1)                         # mode 1 alone >= 90 %: ratio 1
+    assert hm1["n_modes_used"] == 1 and hm1["max_ratio"] == pytest.approx(1.0) and hm1["status"] == "not_significant"
+    # 20 storeys, T1 = 3.5 s (Ex29-like): the 2nd and 3rd modes sit on a higher spectral ordinate -> significant
+    hm = PP.higher_mode_check(_shear_building(20, 3.5), 1.0, 0.6)
+    assert hm["status"] == "significant" and hm["max_ratio"] > 1.30 and hm["story_max"] > 10 and hm["cum_mass_frac"] >= 0.9
+    assert PP.nsp_status(True, hm) == "permitted_with_LDP" and PP.nsp_status(False, hm) == "not_permitted"
+    # too few modes for 90 % mass, or no modal data: NOT EVALUATED, never "permitted"
+    p = _shear_building(20, 3.5); p["modes"] = p["modes"][:1]
+    hm = PP.higher_mode_check(p, 1.0, 0.6)
+    assert hm["status"] == "not_evaluated" and "90%" in hm["reason"]
+    assert PP.higher_mode_check(dict(T1=1.0, phi={1: 1.0}, masses={1: 1.0}), 1.0, 0.6)["status"] == "not_evaluated"
+    assert PP.nsp_status(True, hm) == "not_evaluated" and PP.nsp_status(True, None) == "not_evaluated"
+    assert PP.nsp_status(True, dict(status="not_significant")) == "permitted"
+
+
+def test_nsp_target_gates_permitted_on_both_7321_tests():
+    from pushover import postprocess as PP, package_reader as PR, hinge_models as HM
+    import copy
+    u, V = _curve(Ke=200.0, Vy=500.0, a1=0.02, umax=40.0)
+    prm = copy.deepcopy(HM.load_params())
+    b = PR.DesignBasis(SDS=1.0, SD1=0.45, W_kip=1000.0, system="SMF")
+    def run_for(pat):
+        return dict(rec=dict(u=list(u), V=list(V), story_u=[[x * 0.5, x] for x in u]), pattern=pat, H=240.0,
+                    heights=[120.0, 120.0], gravity_table_QG=[100.0, 100.0])
+    pat = _shear_building(2, 0.5)
+    n = PP.nsp_target(run_for(pat), b, prm, 1.0)
+    assert n["nsp_strength_ok"] and n["higher_modes"]["status"] == "not_significant"
+    assert n["nsp_status"] == "permitted" and n["nsp_permitted"] is True
+    n = PP.nsp_target(run_for(dict(T1=0.5, phi=pat["phi"], masses=pat["masses"])), b, prm, 1.0)   # pre-NL-R2-12 pattern
+    assert n["nsp_strength_ok"] and n["nsp_status"] == "not_evaluated" and n["nsp_permitted"] is False
+    assert "NOT EVALUATED" in n["nsp_status_text"]
+    # Ex29-like: the 20-storey modes on the same curve -> not permitted alone
+    p20 = _shear_building(20, 3.5)
+    r = run_for(p20); r["pattern"]["T1"] = 0.5
+    n = PP.nsp_target(r, b, prm, 1.0)
+    assert n["nsp_status"] == "permitted_with_LDP" and n["nsp_permitted"] is False and "supplementary LDP" in n["nsp_status_text"]
+
+
+def _portal_results(d="X"):
+    """A short real push of the portal and the per-direction results the CLI builds (nsp / p695 / acceptance)."""
+    from pushover import nonlinear_model as NM, postprocess as PP, performance as PF
+    pkg = _portal(); prm = _fr_params()
+    loads, table = NM.gravity_loads(pkg, prm, verbose=False)
+    PG = NM.column_gravity_axials(pkg, loads)
+    hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False, plasticity="fibre", member_nseg=2)
+    run = NM.pushover(pkg, hinges, d, loads, prm, max_roof_drift=0.03, verbose=False, gravity_table=table, tail_strategies=())
+    nsp = {lvl: PP.nsp_target(run, pkg.basis, prm, f) for lvl, f in prm["nsp"]["hazard_levels"].items()}
+    acc = {lvl: PF.augment(PP.acceptance(run, hinges, n["target_disp_in"], lvl), run, hinges) for lvl, n in nsp.items()}
+    return pkg, prm, table, stats, run, dict(nsp=nsp, p695=PP.p695_factors(run, pkg.basis, nsp["BSE-1N"]), acc=acc, hinges=hinges)
+
+
+def test_report_states_both_7321_tests(tmp_path):
+    from pushover import report_supplement as RS
+    pkg, prm, table, stats, run, R = _portal_results()
+    n = R["nsp"]["BSE-1N"]
+    assert n["higher_modes"]["status"] == "not_significant" and n["nsp_status"] in ("permitted", "not_permitted")
+    html = open(RS.write(str(tmp_path), pkg, prm, {"X": run}, {"X": R}, table, stats, 1.0), encoding="utf-8").read()
+    assert "Higher-mode significance — ASCE 41-23 §7.3.2.1 item 2" in html and "NSP applicability (§7.3.2.1)" in html
+    assert "perform with the linear package's RS results" not in html                  # no longer left as a to-do note
+    po = json.load(open(tmp_path / "pushover_package.json"))
+    hm = po["directions"]["X"]["nsp"]["BSE-1N"]["higher_modes"]
+    assert hm["ratios"] and hm["clause"] == "ASCE 41-23 7.3.2.1 item 2"
+
+
+def test_each_direction_written_when_done_and_progress_lines(tmp_path, capsys):
+    """NL-R2-14 (no time limit, user decision): X is on disk, marked partial, before Y starts -- a Y that hangs or dies
+    never loses X -- and the push prints progress lines (step, roof drift, V/Vmax, elapsed)."""
+    import time
+    from pushover import cli, nonlinear_model as NM
+    pkg = _portal(); prm = _fr_params()
+    loads, table = NM.gravity_loads(pkg, prm, verbose=False)
+    PG = NM.column_gravity_axials(pkg, loads)
+    seen = {}
+
+    def push(pkg_, hinges, d, loads_, prm_, **kw):
+        if d == "Y":                                       # X must already be written when Y starts
+            seen["po"] = json.load(open(tmp_path / "pushover_package.json"))
+            seen["html"] = (tmp_path / "pushover_report.html").read_text(encoding="utf-8")
+            seen["csv"] = (tmp_path / "curve_X.csv").exists()
+            raise KeyboardInterrupt("Y stopped by hand after 90 min")
+        kw.update(max_roof_drift=0.03, tail_strategies=())
+        return NM.pushover(pkg_, hinges, d, loads_, prm_, progress_s=0, **kw)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.run_directions(pkg, prm, ["X", "Y"], str(tmp_path), loads, table, PG, time.time(), site_class="D", push=push)
+    po = seen["po"]
+    assert list(po["directions"]) == ["X"] and po["directions_pending"] == ["Y"] and po["complete"] is False
+    assert po["directions"]["X"]["curve_u_in"] and seen["csv"] and "PARTIAL RESULTS" in seen["html"]
+    out = capsys.readouterr().out
+    lines = [l for l in out.splitlines() if l.startswith("[pushover X push] step ")]
+    assert lines and all("roof u" in l and "drift" in l and "V/Vmax" in l and "elapsed" in l for l in lines)
+    assert ">> [X] results written" in out and "still to run: Y" in out and "[X NSP 7.3.2.1]" in out
+    # the finished X survives on disk; a later complete run clears the partial flag
+    assert json.load(open(tmp_path / "pushover_package.json"))["directions_pending"] == ["Y"]
+    capsys.readouterr()
+    runs, results, stats = cli.run_directions(pkg, prm, ["X"], str(tmp_path), loads, table, PG, time.time(), push=push)
+    po = json.load(open(tmp_path / "pushover_package.json"))
+    assert po["complete"] is True and po["directions_pending"] == [] and "PARTIAL" not in (tmp_path / "pushover_report.html").read_text(encoding="utf-8")
+
+
+def test_progress_line_throttled_by_wall_clock():
+    from pushover import nonlinear_model as NM
+    import io, contextlib
+    clock = [0.0]
+    p = NM._Progress("Y", 1200.0, every_s=60.0)
+    p._time = lambda: clock[0]; p.t0 = p.last = 0.0
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        for k in range(1, 400):                            # one step per second for 400 s -> 6 lines, not 400
+            clock[0] = float(k)
+            p("push", k, 0.01 * k, 900.0, 1000.0)
+    lines = buf.getvalue().splitlines()
+    assert len(lines) == 6 and lines[0] == "[pushover Y push] step 60  roof u 0.60 in (drift 0.05% H)  V/Vmax 0.900  elapsed 1m00s"
 
 
 # --------------------------------------------------------------------------- NL-11: memory stays flat

@@ -1,0 +1,238 @@
+"""R6 DDM fixes (NL-R2-02, -03, -11, -23) on small synthetic models -- no building package, no Steltic engine."""
+import os, sys
+import pytest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+
+def _frame(H=144.0, S=300.0):
+    """One storey, one bay each way: four W14X90 columns (fixed bases), four rigid W18X35 beams, rigid diaphragm."""
+    from steltic_ddm.ingest import NeutralModel, Member, _assign_roles
+    nm = NeutralModel(job_dir=".", name="t")
+    for k in (0, 1):
+        for i in (1, 2):
+            for j in (1, 2):
+                t = k * 100000 + i * 100 + j
+                nm.nodes[t] = ((i - 1) * S, (j - 1) * S, k * H)
+                if k == 0:
+                    nm.fixes[t] = (1, 1, 1, 1, 1, 1)
+    nm.nodes[199999] = (S / 2, S / 2, H)
+    nm.diaphragms[199999] = [100101, 100102, 100201, 100202]
+    tg = 1
+    for i in (1, 2):
+        for j in (1, 2):
+            nm.members.append(Member(tg, "col", "W14X90", i * 100 + j, 100000 + i * 100 + j, transf=1 + (i + j) % 2, dirn="Z")); tg += 1
+    for j in (1, 2):
+        nm.members.append(Member(tg, "beam", "W18X35", 100100 + j, 100200 + j, transf=3, dirn="X")); tg += 1
+    for i in (1, 2):
+        nm.members.append(Member(tg, "beam", "W18X35", 100000 + i * 100 + 1, 100000 + i * 100 + 2, transf=3, dirn="Y")); tg += 1
+    nm.levels = [0.0, H]
+    _assign_roles(nm)
+    cfg = dict(heights=[H], NX=1, NY=1, SX=S, SY=S, D_floor=80.0, D_roof=30.0, L_floor=50.0, snow=20.0, Fy=50.0)
+    return nm, cfg
+
+
+def test_nl_r2_02_control_direction_ignores_lambda_independent_state():
+    """A lambda-independent +Y state (stand-in for the Lehigh locked-in state, Ex13 roof +0.011 in) under a -Y wind
+    pattern: the old code took the control sign from the TOTAL probe displacement (+Y), lambda fell and the sweep
+    stopped at the probe as a false 'geometric instability'. Now the control follows the -Y pattern and lambda rises."""
+    import openseespy.opensees as ops
+    from steltic_ddm.model_gmnia import GMNIAModel
+    from steltic_ddm import solver, phi_s, report_ddm
+    nm, cfg = _frame()
+
+    class Locked(GMNIAModel):
+        def apply_lateral(self, lat):
+            super().apply_lateral(lat)
+            ops.timeSeries("Constant", 2); ops.pattern("Plain", 2, 2)           # NOT scaled by lambda
+            ops.load(199999, 0.0, 30.0, 0.0, 0.0, 0.0, 0.0)
+
+    g = Locked(nm, cfg, nsub=(2, 2, 2))
+    combo = ("0.9D+1.0WY-", 0.9, 0.0, 0.0, {1: (0.0, -20.0, 0.0)}, False)
+    pres = {1: {(1, 1), (1, 2), (2, 1), (2, 2)}}
+    r = solver.sweep(g, combo, pres, dlam=0.05, max_steps=12, verbose=False)
+    assert r["control"] == (199999, 2) and r["lateral"] == ("Y", -1)
+    assert r["d_zero"] > 0.1                                     # the locked-in state is measured at lambda = 0 ...
+    assert r["probe_slope"] < 0                                  # ... and the load-proportional part is -Y
+    lams = [l for l, _ in r["hist"]]; ds = [d for _, d in r["hist"]]
+    assert all(b > a for a, b in zip(lams, lams[1:]))            # lambda rises step after step
+    assert all(b < a for a, b in zip(ds, ds[1:]))                # the roof is pushed in -Y
+    assert r["lambda_u"] > 0.5 and r["step_at_max"] > 0
+    # a run whose lambda never rose above the probe is NUMERICAL / NOT EVALUATED, never a structural FAIL
+    stuck = dict(r, step_at_max=0, lambda_u=0.05, snapshot=dict(yield_ratio={}, braces={}))
+    c = solver.classify(stuck, g)
+    assert c["cls"] == "numerical" and "NUMERICAL" in c["mechanism"]
+    assert phi_s.check(0.85, 0.05, c["cls"]) == (None, "NOT EVALUATED")
+    assert phi_s.check(0.85, 0.05, "instability") == (0.043, "FAIL")
+    runs = [dict(check=(1.2, "PASS")), dict(check=(None, "NOT EVALUATED"))]
+    assert report_ddm.verdict(runs) == "INCOMPLETE"
+    assert report_ddm.verdict(runs + [dict(check=(0.9, "FAIL"))]) == "FAIL"
+    assert report_ddm.verdict(runs[:1]) == "PASS"
+
+
+ENGINE = os.environ.get("STELTIC_ENGINE_DIR")
+needs_engine = pytest.mark.skipif(not ENGINE, reason="STELTIC_ENGINE_DIR not set")
+
+
+def _hr_box(deck_span="X", infill_spacing=90.0, SX=360.0, SY=300.0, H=144.0):
+    """Two storeys, one 30 x 25 ft bay, HR grid conventions (i, j from 0, node k*1e5+i*100+j), pinned beams, a
+    one-way deck spanning `deck_span` with virtual infill at `infill_spacing` -- the cfg is a valid HR cfg."""
+    from steltic_ddm.ingest import NeutralModel, Member, _assign_roles
+    cfg = dict(NX=1, NY=1, SX=SX, SY=SY, heights=[H, H], col="W14X90", beam="W18X35", base="fixed",
+               D_floor=80.0, D_roof=30.0, L_floor=50.0, Lr=20.0, snow=0.0, clad=0.0, Fy=50.0,
+               floor_system="one-way", deck_span=deck_span, infill_spacing=infill_spacing)
+    nm = NeutralModel(job_dir=".", name="box")
+    for k in (0, 1, 2):
+        for i in (0, 1):
+            for j in (0, 1):
+                t = k * 100000 + i * 100 + j
+                nm.nodes[t] = (i * SX, j * SY, k * H)
+                if k == 0:
+                    nm.fixes[t] = (1, 1, 1, 1, 1, 1)
+        if k:
+            nm.nodes[k * 100000 + 99999] = (SX / 2, SY / 2, k * H)
+            nm.diaphragms[k * 100000 + 99999] = [k * 100000 + i * 100 + j for i in (0, 1) for j in (0, 1)]
+    tg = 1
+    for k in (1, 2):
+        for i in (0, 1):
+            for j in (0, 1):
+                nm.members.append(Member(tg, "col", "W14X90", (k - 1) * 100000 + i * 100 + j, k * 100000 + i * 100 + j,
+                                         transf=2, dirn="Z")); tg += 1
+        for j in (0, 1):
+            nm.members.append(Member(tg, "beam", "W18X35", k * 100000 + j, k * 100000 + 100 + j, transf=3, relz=3, dirn="X")); tg += 1
+        for i in (0, 1):
+            nm.members.append(Member(tg, "beam", "W18X35", k * 100000 + i * 100, k * 100000 + i * 100 + 1, transf=3, relz=3, dirn="Y")); tg += 1
+    nm.levels = [0.0, H, 2 * H]
+    _assign_roles(nm)
+    return nm, cfg
+
+
+@needs_engine
+def test_nl_r2_03_gravity_follows_hr_one_way_load_path():
+    """Deck spanning X with infill @ 90 in: the Y column-line beams carry a HALF infill strip (45 in), the X girders
+    the infill reactions as point loads -- exactly HR static_model (Ex13 member 133: 58.8 kip two-way vs HR 39.2)."""
+    if ENGINE not in sys.path:
+        sys.path.insert(0, ENGINE)
+    import openseespy.opensees as ops
+    import static_model as SM
+    from steltic_ddm.model_gmnia import GMNIAModel
+    from steltic_ddm import loads
+    nm, cfg = _hr_box()
+    fD, fL, fLr = 1.2, 1.6, SM.RoofFactors(Lr=0.5, cfg=cfg)
+    w_floor = (1.2 * 80.0 + 1.6 * 50.0) / 144000.0                 # kip/in2 on level 1
+    # HR reference total for the same case
+    M = SM.build_static(cfg, "Linear", 6); ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
+    hr_total = SM.apply_case_gravity(cfg, M, fD, fL, fLr)["total"]
+
+    g = GMNIAModel(nm, cfg, nsub=(2, 2, 2), rigid_end_offset=0.05)
+    g.build().prepare()
+    assert g._grav_geo, g._grav_fail
+    ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
+    W = g.apply_gravity(fD, fL, fLr, loads.present_sets(nm))
+    assert abs(W - hr_total) < 1e-6 * hr_total and not g.gravity_notes
+    by = g.gravity_by_member
+    lvl1 = [m for m in nm.members if m.kind == "beam" and m.n1 // 100000 == 1]
+    for m in lvl1:
+        if m.dirn == "Y":                                        # infill-type column-line beam: half strip
+            assert abs(by[m.tag] - w_floor * 45.0 * 300.0) < 1e-6
+        else:                                                    # girder: 3 infill reactions of a 90 in strip
+            assert abs(by[m.tag] - 3 * w_floor * 90.0 * 300.0 / 2.0) < 1e-6
+    # the loads really are in the OpenSees domain (uniform + point): base reactions balance them
+    ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack"); ops.test("NormDispIncr", 1e-8, 25, 0)
+    ops.algorithm("Newton"); ops.integrator("LoadControl", 0.1); ops.analysis("Static")
+    assert ops.analyze(1) == 0
+    ops.reactions()
+    Rz = sum(ops.nodeReaction(t, 3) for t in nm.fixes)
+    assert abs(Rz - 0.1 * W) < 1e-3 * W
+    # the legacy two-way tributary (what the DDM used before) overloads the Y beams
+    w_two = sum(loads.beam_udl(cfg, nm, loads.present_sets(nm), lvl1[2], s, 8, fD, fL, fLr) * 300.0 / 8 for s in range(8))
+    assert w_two > 1.5 * w_floor * 45.0 * 300.0
+
+
+def test_nl_r2_03_no_hr_geometry_falls_back_loudly():
+    """A cfg the HR static model cannot build (or no engine) keeps the legacy distribution and says so in the log."""
+    from steltic_ddm.model_gmnia import GMNIAModel
+    nm, cfg = _frame()
+    g = GMNIAModel(nm, cfg, nsub=(2, 2, 2))
+    g.build().prepare()
+    assert g._grav_geo is False
+    assert any("legacy two-way" in str(row[-1]) for row in g.builder.log)
+
+
+def test_nl_r2_23_singular_gate_refuses_dense_eigen(tmp_path):
+    """ARPACK fails on a singular K (an unconnected node): above the memory limit the dense -fullGenLapack fallback
+    is refused and the gate fails with 'stiffness matrix singular' naming the node (Ex12: 1.5 h, OOM at 6 GB)."""
+    from steltic_ddm import transfer_gate as TG
+    assert abs(TG.dense_eigen_gb(12000) - 3.456) < 1e-3 and TG.dense_eigen_gb(12000) > TG.DENSE_EIGEN_MAX_GB
+    lines = ["import openseespy.opensees as ops", "ops.wipe()", "ops.model('basic', '-ndm', 3, '-ndf', 6)",
+             "ops.node(1, 0.0, 0.0, 0.0)", "ops.node(2, 0.0, 0.0, 144.0)", "ops.node(7, 300.0, 0.0, 144.0)",
+             "ops.fix(1, 1, 1, 1, 1, 1, 1)", "ops.geomTransf('Linear', 1, 1.0, 0.0, 0.0)",
+             "ops.element('elasticBeamColumn', 1, 1, 2, 26.5, 29000.0, 11200.0, 4.06, 362.0, 999.0, 1)",
+             "ops.mass(2, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)", "ops.mass(7, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)"]
+    (tmp_path / "model_opensees.py").write_text("\n".join(lines) + "\n")
+    nm, cfg = _frame()
+    nm.job_dir = str(tmp_path)
+    g = TG.run(nm, cfg, {1: (1.0, 0.0, 0.0)}, {1: (0.0, 1.0, 0.0)}, max_dense_gb=1e-9)
+    assert g["ok"] is False and g.get("singular") and g["rows"] == []
+    assert "stiffness matrix singular" in g["hint"] and "unconnected nodes (7)" in g["hint"] and "Steltic replay" in g["hint"]
+    # the limit: param > env STELTIC_DDM_DENSE_EIGEN_GB > 2 GB default
+    os.environ[TG.DENSE_EIGEN_ENV] = "1e-9"
+    try:
+        assert TG._dense_limit_gb() == 1e-9 and TG._dense_limit_gb(4.0) == 4.0
+    finally:
+        del os.environ[TG.DENSE_EIGEN_ENV]
+    assert TG._dense_limit_gb() == TG.DENSE_EIGEN_MAX_GB
+
+
+PKG18 = os.path.join(os.path.dirname(HERE), "examples", "Ex18_R3")
+
+
+def _fake_ok(label, imp, lam):
+    res = dict(lambda_u=lam, first_yield=None, lam_at_1p25d=None, hist=[(0.05, 0.01), (lam, 0.2)], steps=2, fails=0, log=[],
+               seconds=1.0, snapshot=dict(drifts=None, step=1, disp={}, member_ratio={}, braces={}), control=(1, 1),
+               lateral=(None, 0), d_at_max=0.2, frames=[], step_at_max=1)
+    cls = dict(mechanism="beam yielding (1 beam member at hinge level)", cls="ductile", hinge_members=[], yielded_members=[],
+               hinges_by_role={}, buckled_braces=[], ductile_post_peak=True)
+    return dict(label=label, imp=imp, res=res, cls=cls, state={}, section_log=[])
+
+
+@needs_engine
+def test_nl_r2_11_failed_sweep_is_recorded_not_fatal(tmp_path, monkeypatch):
+    """Ex30: the 1.4D sweep raised 'elastic probe failed' inside a worker and the whole run ended rc 1 with no
+    results. Now that combination is NOT EVALUATED with its reason, the others are kept, and the verdict is never PASS."""
+    import json, shutil
+    from steltic_ddm import cli, transfer_gate, model_gmnia
+    if ENGINE not in sys.path:
+        sys.path.insert(0, ENGINE)
+    # the worker itself never raises: a broken task comes back as failed=True with the reason
+    bad = cli._worker((str(tmp_path / "missing_job"), ENGINE, "1.4D", dict(tag="+X"), {}))
+    assert bad["failed"] and "model_opensees.py missing" in bad["error"]
+    job = tmp_path / "Ex18_R3"
+    shutil.copytree(PKG18, job, ignore=shutil.ignore_patterns("__pycache__", "*.pkl", "nlrha", "pushover", "*_viewer_3d.html",
+                                                              "steltic_viewer_bundle.html", "four_analyses.html", "ddm_*"))
+
+    def fake_worker(t):
+        label, imp = t[2], t[3]["tag"]
+        if label == "1.4D":
+            return dict(label=label, imp=imp, failed=True, error="RuntimeError: elastic probe failed for 1.4D", seconds=0.5)
+        return _fake_ok(label, imp, 1.5)
+    monkeypatch.setattr(cli, "_worker", fake_worker)
+    monkeypatch.setattr(transfer_gate, "run", lambda *a, **k: dict(ok=True, rows=[], tol=0.05, hint=None, elements_steltic=1, elements_gmnia=1))
+    monkeypatch.setattr(model_gmnia.GMNIAModel, "export_py", lambda self, *a, **k: None)
+    monkeypatch.setattr(cli, "_viewer", lambda *a, **k: None)
+    rep = cli.main(["run", str(job), "--workers", "1", "--no-block", "--only", "1.4D", "1.2D+1.6L"])
+    d = json.load(open(job / "ddm_results.json"))
+    assert [n["label"] for n in d["not_evaluated"]] == ["1.4D"] and "elastic probe failed" in d["not_evaluated"][0]["reasons"][0]
+    assert d["runs"] and all(r["label"] != "1.4D" for r in d["runs"])            # the other sweeps were kept
+    assert all(r["check"][1] == "PASS" for r in d["runs"]) and d["verdict"] == "INCOMPLETE"
+    html = open(rep).read()
+    assert "NOT EVALUATED" in html and "elastic probe failed" in html and "INCOMPLETE" in html
+    # `report` (phi_s re-application) keeps the failed combination and the verdict
+    cli.main(["report", str(job), "--no-block"])
+    d = json.load(open(job / "ddm_results.json"))
+    assert d["verdict"] == "INCOMPLETE" and d["not_evaluated"][0]["label"] == "1.4D"
+    # one imperfection case failing is enough: the combination is NOT EVALUATED (the failed case may govern)
+    nev = cli.not_evaluated([("X", 1.2, 1.6, 0.0, {}, False)], [_fake_ok("X", "+X", 1.4),
+                                                                  dict(label="X", imp="+Y", failed=True, error="E: boom", seconds=1)])
+    assert nev[0]["failed"] == ["+Y"] and nev[0]["completed"] == {"+X": 1.4}

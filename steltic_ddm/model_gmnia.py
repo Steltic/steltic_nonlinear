@@ -78,6 +78,11 @@ class GMNIAModel:
         self.nonbuckling = set() # member tags excluded from the brace-buckling census (BRBs)
         self.links = {}          # member tag -> link info (NL-03)
         self.special_log = []    # BRB / link modelling notes (also appended to builder.log)
+        self._grav_geo = None    # NL-R2-03: HR static-model load-path geometry (False = unavailable -> legacy two-way)
+        self._grav_fail = None
+        self._grav_loc = {}
+        self.gravity_by_member = {}
+        self.gravity_notes = []
 
     # ------------------------------------------------------------------ geometry helpers
     def _coord(self, tag):
@@ -110,8 +115,25 @@ class GMNIAModel:
         return (0.0, 0.0, 0.0), 0.0
 
     # ------------------------------------------------------------------ build
+    def _gravity_geometry(self):
+        """NL-R2-03: HR static-model geometry for the gravity distribution, built once per model (it wipes the
+        OpenSees domain, so it runs before the GMNIA build)."""
+        if self._grav_geo is None:
+            from . import portal_adapter as PA
+            from .loads import hr_gravity_geometry
+            if PA.is_portal(self.cfg):
+                self._grav_geo = False; self._grav_fail = "portal frame (portal_adapter loads)"
+            else:
+                try:
+                    self._grav_geo = hr_gravity_geometry(self.cfg)
+                except Exception as ex:                                   # never silent: logged in builder.log
+                    self._grav_geo = False; self._grav_fail = "%s: %s" % (type(ex).__name__, ex)
+        return self._grav_geo
+
     def build(self, with_mass=False):
         nm = self.nm
+        if not self.elastic:
+            self._gravity_geometry()             # NL-R2-03 (before ops.wipe: builds the HR static model)
         self.elems, self.sub_nodes, self.secs, self.sec_props, self.pins = [], {}, {}, {}, []
         ops.wipe(); ops.model("basic", "-ndm", 3, "-ndf", 6)
         for t in nm.nodes:
@@ -132,6 +154,9 @@ class GMNIAModel:
                                            residual=self.residual, elastic=self.elastic, mat_tag0=1000)
         self.nonbuckling, self.special_log, self._spring_mat = set(), [], SPRING_MAT0
         self._prepare_special()
+        if self._grav_geo is False and not self.elastic:
+            self.special_log.append("gravity: HR static-model distribution unavailable (%s) -- legacy two-way 45-degree "
+                                    "tributary used (ignores one-way decks / infill)" % self._grav_fail)
         for m in nm.members:
             self._add_member(m)
         for note in self.special_log:
@@ -213,7 +238,7 @@ class GMNIAModel:
         from pushover import hinge_models as HM
         prm = self._hm_params()
         mem = [dict(tag=m.tag, kind=m.kind, section=m.section, n1=m.n1, n2=m.n2, released=bool(m.relz)) for m in self.nm.members]
-        system = (self.cfg or {}).get("system")
+        system = " / ".join(str(v) for v in dict.fromkeys((self.cfg or {}).get(k) for k in ("system", "system_X", "system_Y")) if v)   # NL-R2-13
         try:
             self.links = {t: v for t, v in HM.find_links(self.nm.nodes, mem, prm, system).items() if not v.get("skipped")}
         except Exception as ex:                                   # never silent: a census failure is logged and links stay beams
@@ -222,7 +247,7 @@ class GMNIAModel:
         if self.links:
             self.special_log.append("EBF links: %d shear springs (Vn = 0.6 Fy Alw, Ks = G d tw / e)%s" % (
                 len(self.links), " -- RIGID in this elastic build (Steltic model is shear-rigid)" if self.elastic else ""))
-        self._brb_pkg = HM.brb_package_data(self.nm.calc_package or {})
+        self._brb_pkg = HM.brb_package_data(self.nm.calc_package or {}, self.cfg)     # NL-R2-10: + cfg['brb'] / BRB_adjusted_strengths
 
     def _next_spring_mat(self):
         self._spring_mat += 1
@@ -398,8 +423,20 @@ class GMNIAModel:
                                    secTag=secTag, s=s, n1=chain[s], n2=chain[s + 1], L=L / nsub, dirn=m.dirn))
 
     # ------------------------------------------------------------------ loads
+    def _frac(self, m, n):
+        """Position of GMNIA node n along member m as a fraction of its length (pins, stubs, links included)."""
+        p1, p2 = self._coord(m.n1), self._coord(m.n2)
+        c = ops.nodeCoord(n)
+        d = [p2[q] - p1[q] for q in range(3)]
+        L2 = sum(v * v for v in d) or 1.0
+        return min(max(sum((c[q] - p1[q]) * d[q] for q in range(3)) / L2, 0.0), 1.0)
+
     def apply_gravity(self, fD, fL, fLr, pres):
-        """Two-way tributary UDL on every grid beam sub-element (kip/in, local z down)."""
+        """Gravity of one combination on every beam element (kip/in and kip, local z down). NL-R2-03: distributed
+        by the HR static model (floor_system / deck_span / infill one-way load path, roof bays, cladding); the
+        legacy two-way tributary only when that geometry is unavailable."""
+        if self._grav_geo:
+            return self._apply_gravity_hr(fD, fL, fLr)
         from .loads import beam_udl
         total = 0.0
         for e in self.elems:
@@ -410,6 +447,53 @@ class GMNIAModel:
             if w:
                 ops.eleLoad("-ele", e["tag"], "-type", "-beamUniform", 0.0, -w, 0.0)
                 total += w * e["L"]
+        return total
+
+    def _apply_gravity_hr(self, fD, fL, fLr):
+        import static_model as SM
+        from .loads import hr_member_location
+        geo = self._grav_geo
+        bt = self._bt if hasattr(self, "_bt") else self.nm.by_tag()
+        pcs = SM._case_pieces(self.cfg, geo["model"], fD, fL, fLr, None, geo["modes"])
+        total = 0.0; by_mem = {}; on_span = {}; notes = []
+        for e in self.elems:
+            if e["kind"] != "beam":
+                continue
+            m = bt[e["mtag"]]
+            if m.tag not in self._grav_loc:
+                self._grav_loc[m.tag] = hr_member_location(geo, self.nm, m)
+            loc = self._grav_loc[m.tag]
+            if loc is None:
+                continue
+            what, key, sa, sb, Lp = loc
+            ua = sa + (sb - sa) * self._frac(m, e["n1"]); ub = sa + (sb - sa) * self._frac(m, e["n2"])
+            u0, u1 = min(ua, ub), max(ua, ub)
+            if what == "span":
+                plist = [pc for pc, _o in pcs["span"].get(key, [])]
+                on_span.setdefault(key, []).append((u0, u1, ua, e))
+            else:
+                plist = list(pcs["infill"].get(key, []))
+            W = sum(SM._piece_int(pc, u0, u1, Lp) for pc in plist if pc[0] != "pt")
+            if u1 - u0 > 1e-9 and W:
+                ops.eleLoad("-ele", e["tag"], "-type", "-beamUniform", 0.0, -W / (u1 - u0), 0.0)
+                total += W; by_mem[m.tag] = by_mem.get(m.tag, 0.0) + W
+        # point pieces (virtual-infill reactions on the girders): each to exactly ONE element of its span
+        for key, plist in pcs["span"].items():
+            pts = [pc for pc, _o in plist if pc[0] == "pt"]
+            if not pts:
+                continue
+            els = on_span.get(key, [])
+            hmax = max((u1 for _u0, u1, _ua, _e in els), default=None)
+            for (_t, s, P) in pts:
+                hit = next(((u0, u1, ua, e) for (u0, u1, ua, e) in els
+                            if u0 - 1e-9 <= s < u1 - 1e-9 or (abs(s - hmax) <= 1e-9 and abs(u1 - hmax) <= 1e-9)), None)
+                if hit is None:
+                    notes.append("point load %.1f kip at s = %.0f in on span %s not applied (no GMNIA beam there)" % (P, s, key)); continue
+                u0, u1, ua, e = hit
+                xL = min(max(abs(s - ua) / max(u1 - u0, 1e-9), 0.0), 1.0)
+                ops.eleLoad("-ele", e["tag"], "-type", "-beamPoint", 0.0, -P, xL)
+                total += P; by_mem[e["mtag"]] = by_mem.get(e["mtag"], 0.0) + P
+        self.gravity_by_member, self.gravity_notes = by_mem, notes
         return total
 
     def apply_lateral(self, lat):
@@ -430,6 +514,7 @@ class GMNIAModel:
     def export_py(self, path, header=""):
         """Write a standalone replay of this model (same style as Steltic's model_opensees.py)."""
         rec = []
+        self._gravity_geometry()                 # NL-R2-03: the HR static build must not be recorded into the export
         funcs = ["wipe", "model", "node", "fix", "mass", "geomTransf", "uniaxialMaterial", "section",
                  "fiber", "beamIntegration", "element", "rigidDiaphragm"]
         orig = {f: getattr(ops, f) for f in funcs}

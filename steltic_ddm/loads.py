@@ -3,9 +3,13 @@ loads.py -- factored load combinations and their application to the GMNIA model.
 
 Combinations come from Steltic's own design_pipeline.combos(cfg) so the DDM sweeps scale EXACTLY the
 ASCE 7-22 §2.3 cases the member design used: (label, fD, fL, fLr, lateral{k:(fx,fy,mz)}, col_only).
-Gravity is applied as the same two-way (45-degree) tributary line loads static_model.apply_gravity
-uses (per beam sub-element, plus cladding on single-bay perimeter beams); lateral forces and
-accidental-torsion moments go to the rigid-diaphragm master nodes, as in Steltic.
+Gravity (NL-R2-03) is distributed by Steltic's own static_model (hr_gravity_geometry + _case_pieces): bay by bay
+with the package's floor_system / deck_span / infill_dir / infill_spacing (one-way strips onto the lines
+perpendicular to the deck span, modelled infill beams, virtual-infill reactions as point loads on the girders),
+roof bays from roof_levels / setbacks, level live/roof factors and cladding exactly as the member design; each
+GMNIA beam element takes the pieces over its own range on the parent span. beam_udl (two-way 45-degree
+tributary) is the fallback when the static model cannot be built (portal frames, synthetic cfgs). Lateral forces
+and accidental-torsion moments go to the rigid-diaphragm master nodes, as in Steltic.
 
 Pruning (default): 1.4D ; 1.2D+1.6L+0.5Lr ; 1.2D+1.6Lr+0.5L ; the +/-X and +/-Y strength lateral cases
 for wind (if present) and for the rho*E seismic pattern with the accidental-torsion sign the elastic
@@ -81,8 +85,54 @@ def _bays_adjacent(present_k, i, j, dirn):
     return n
 
 
+def hr_gravity_geometry(cfg):
+    """NL-R2-03: the HR static model's load-path geometry -- parent grid spans, framed bays with roof flags,
+    modelled infill beams and the per-bay distribution mode (static_model.bay_modes: two-way / one-way with the
+    declared deck span and infill lines / default). Builds the static model in OpenSees (wipes the domain), so call
+    it BEFORE the GMNIA build. Raises when the HR engine is not importable or the cfg cannot be built."""
+    import static_model as SM
+    model = SM.build_static(cfg, "Linear", 1)
+    return dict(model=model, modes=SM.bay_modes(cfg, model))
+
+
+def hr_member_location(geo, nm, member):
+    """Where a DDM beam member sits in the HR load path: ('span', (k, dir, i, j), sA, sB, Lp) on a parent grid
+    span, ('infill', etag, sA, sB, L) for a modelled infill beam, or None (sloped / off-level: no floor load,
+    as in HR). sA / sB are the positions of member.n1 / n2 along the span (in)."""
+    import static_model as SM
+    M = geo["model"]
+    if member.n1 not in nm.nodes or member.n2 not in nm.nodes:
+        return None
+    (x1, y1, z1), (x2, y2, z2) = nm.nodes[member.n1], nm.nodes[member.n2]
+    k = SM._level_of(z1, M["z"])
+    if k is None or k == 0 or k != SM._level_of(z2, M["z"]):
+        return None
+    for key, sp in M["spans"].get(k, {}).items():
+        sa = SM._on_span(x1, y1, sp)
+        if sa is None:
+            continue
+        sb = SM._on_span(x2, y2, sp)
+        if sb is None or abs(sb - sa) < 1e-6:
+            continue
+        return ("span", (k,) + key, sa, sb, sp[6])
+    tol = SM._TOL
+    for (kk, _i, _j), lst in M["infill"].items():
+        if kk != k:
+            continue
+        for (_run, _u, bm) in lst:
+            A, B = bm["xyzA"], bm["xyzB"]
+            near = lambda p, x, y: abs(p[0] - x) <= tol and abs(p[1] - y) <= tol
+            Lb = bm["L"]
+            if near(A, x1, y1) and near(B, x2, y2):
+                return ("infill", bm["etag"], 0.0, Lb, Lb)
+            if near(B, x1, y1) and near(A, x2, y2):
+                return ("infill", bm["etag"], Lb, 0.0, Lb)
+    return None
+
+
 def beam_udl(cfg, nm, pres, member, seg_index, nseg, fD, fL, fLr):
-    """kip/in on sub-element seg_index (0..nseg-1) of a grid beam -- Steltic static_model.apply_gravity."""
+    """kip/in on sub-element seg_index (0..nseg-1) of a grid beam -- LEGACY two-way 45-degree tributary, used only
+    when hr_gravity_geometry is unavailable (NL-R2-03: it ignores one-way decks / infill and overloads such beams)."""
     from . import portal_adapter as PA
     if PA.is_portal(cfg):
         return PA.portal_beam_udl(cfg, nm, member, seg_index, nseg, fD, fL, fLr)

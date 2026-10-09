@@ -124,7 +124,7 @@ def gather(job: str) -> dict:
             d[k] = {"T1": _r(x.get("T1")), "meff_frac": _r(x.get("meff_frac")), "stop_reason": x.get("stop_reason"),
                     "tail": {kk: (x.get("tail") or {}).get(kk) for kk in ("status", "captured", "message")},
                     "p695": {kk: _r((x.get("p695") or {}).get(kk)) for kk in ("Vmax_kip", "V_design_kip", "Omega", "Omega0_design", "delta_u_in", "delta_u_basis", "delta_y_eff_in", "mu_T", "Vmax_over_W")},
-                    "nsp": {lvl: {kk: _r(v.get(kk)) for kk in ("Te", "Vy", "Sa", "C0", "C1", "C2", "mu_strength", "mu_max", "nsp_permitted", "target_disp_in", "target_over_H", "reached_target")}
+                    "nsp": {lvl: {kk: _r(v.get(kk)) for kk in ("Te", "Vy", "Sa", "C0", "C1", "C2", "mu_strength", "mu_max", "nsp_permitted", "nsp_status", "target_disp_in", "target_over_H", "reached_target")}
                             for lvl, v in nsp.items() if isinstance(v, dict)},
                     "acceptance": {lvl: {"roof_disp_in": _r(a.get("roof_disp_in")), "max_story_drift": _r(a.get("max_story_drift")), "worst_DC": _r(a.get("worst_DC")),
                                          "groups": [{kk: _r(g.get(kk)) for kk in ("kind", "section", "z_in", "n", "n_yielded", "theta_pl_max", "IO", "LS", "CP", "DC_IO", "DC_LS", "DC_CP")}
@@ -215,11 +215,21 @@ def results_verdict(ev: dict) -> dict:
         status = str(sp.get("bpon_status") or sp.get("bpon") or "")
         evaluated = sp.get("bpon_evaluated")
         if evaluated is False or "NOT EVALUATED" in status.upper() or sp.get("bpon_ok") is None or (po and not groups):
-            notev.append("pushover BPON (%s) NOT EVALUATED -- no component group was checked" % "/".join(sp.get("bpon_levels") or []))
+            notev.append("pushover BPON (%s) NOT EVALUATED -- %s" % ("/".join(sp.get("bpon_levels") or []),
+                         "the pushover is PARTIAL: direction %s not finished" % ", ".join(sp["directions_pending"])
+                         if sp.get("directions_pending") else
+                         "the push stopped numerically before the target displacement (V above 0.8 Vmax; not a collapse)"
+                         if sp.get("bpon_stopped_before_target") else "no component group was checked"))
         elif not sp.get("bpon_ok"):
             fails.append("pushover BPON %s NOT satisfied" % "/".join(sp.get("bpon_levels") or []))
-        if sp.get("nsp_permitted") is False:
+        nst = sp.get("nsp_status")                                    # NL-R2-12: both tests of ASCE 41-23 7.3.2.1
+        if nst == "not_permitted" or (nst is None and sp.get("nsp_permitted") is False):
             fails.append("NSP not permitted (mu_strength > mu_max): an NDP is required")
+        elif nst == "permitted_with_LDP":
+            notev.append("NSP not permitted alone: higher-mode effects significant (ASCE 41-23 7.3.2.1, story-shear ratio > 1.30) "
+                         "-- a supplementary LDP is required and is not in the run")
+        elif nst == "not_evaluated":
+            notev.append("NSP applicability not evaluated: the higher-mode test of ASCE 41-23 7.3.2.1 was not completed")
         if (po.get("params_verified") is False) or (sp.get("params_verified") is False):
             cav.append("component parameters are UNVERIFIED (not all user-supplied): no acceptance ratio can be relied on")
     else:
@@ -474,7 +484,9 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
         lines.append("Chapter 16: not in the run.")
     if sp:
         lines.append("Pushover: Ω = %s (Ω₀ = %s); BPON %s — %s; NSP %s." % ("/".join(_f(x, 1) for x in (sp.get("Omega") or {}).values()), _f((s.get("basis") or {}).get("Om0"), 1),
-                                                                            "/".join(sp.get("bpon_levels") or []), ("NOT EVALUATED" if any("BPON" in x for x in _rv["not_evaluated"]) else "both pass" if sp.get("bpon_ok") else "NOT satisfied"), "permitted" if sp.get("nsp_permitted") else "not permitted"))
+                                                                            "/".join(sp.get("bpon_levels") or []), ("NOT EVALUATED" if any("BPON" in x for x in _rv["not_evaluated"]) else "both pass" if sp.get("bpon_ok") else "NOT satisfied"), {"permitted": "permitted", "permitted_with_LDP": "not permitted alone (higher modes significant: supplementary LDP required)",
+                                                                             "not_permitted": "not permitted (NDP required)", "not_evaluated": "applicability not evaluated (higher-mode test)"}.get(
+                                                                                sp.get("nsp_status"), "permitted" if sp.get("nsp_permitted") else "not permitted")))
     if sd:
         lines.append("DDM: governing %s, λᵤ = %s, φₛλᵤ = %s, %s of %s combinations pass, transfer gate %s." % (sd.get("governing"), _f(sd.get("lambda_u")), _f(sd.get("phi_lambda")), sd.get("n_pass"), sd.get("n_checked"), "ok" if sd.get("gate_ok") else "FAILED"))
     lines += ["", "## 2. What the run measured", ""]
@@ -487,7 +499,9 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
         lines.append("- Mean storey drift %s vs %s (2 × %s, Risk Category %s) — %s %s" % (_pct(v.get("mean_drift_max")), _pct(L.get("mean_limit")), _pct(L.get("table_12_12_1"), 1), L.get("risk_category"), "OK" if v.get("mean_drift_ok") else "NOT OK", cite["16.4.1.2"]))
         lines.append("- Unacceptable responses %s of %s (allowed %s) — %s %s" % (v.get("n_unacceptable"), v.get("n_records"), v.get("unacceptable_allowed"), "OK" if v.get("unacceptable_ok") else "NOT OK", cite["16.4.1.1"]))
         lines.append("- Deformation-controlled actions: worst CP D/C %s — %s; valid range %s" % (_f(sn.get("worst_DC_CP")), "OK" if v.get("deformation_ok") else "NOT OK", "OK" if v.get("valid_range_ok") else "NOT OK"))
-        lines.append("- Force-controlled columns: worst D/C %s — %s %s" % (_f(sn.get("worst_DC_force_controlled")), "OK" if v.get("force_controlled_ok") else "NOT OK", cite["16.4.2.1"]))
+        lines.append("- Force-controlled columns: worst D/C %s — %s %s%s" % (_f(sn.get("worst_DC_force_controlled")), "OK" if v.get("force_controlled_ok") else "NOT OK", cite["16.4.2.1"],
+                     ("; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4) used for %s (default check D/C %s)" % ("; ".join((v.get("FC_exception_2") or {}).get("members") or []), _f(v.get("worst_FC_DC_default"))))
+                     if (v.get("FC_exception_2") or {}).get("used") else ""))       # NL-R2-16
         lines.append("- Residual drift: %s" % ("not applicable at this height" if not v.get("residual_applicable") else ("OK" if v.get("residual_ok") else "NOT OK")))
     else:
         lines.append("Not in the run.")

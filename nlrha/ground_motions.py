@@ -40,9 +40,10 @@ def library(set_dir=None):
 
 
 # --------------------------------------------------------------------------- spectra
-def sdof_peak(acc_g, dt, periods, xi=0.05):
+def sdof_peak(acc_g, dt, periods, xi=0.05, hist=False):
     """Peak pseudo-acceleration (g) of 5%-damped linear SDOFs -- piecewise-exact (Nigam-Jennings) integration,
-    vectorised over periods."""
+    vectorised over periods. hist=True also returns the displacement histories (n x periods, in) and w (NL-R2-18: the
+    maximum-direction spectrum of a pair then follows from two passes, by linearity, instead of one per angle)."""
     T = np.asarray(periods, float); w = 2 * np.pi / T; wd = w * np.sqrt(1 - xi ** 2)
     e = np.exp(-xi * w * dt); s, c = np.sin(wd * dt), np.cos(wd * dt)
     A11 = e * (c + xi / np.sqrt(1 - xi ** 2) * s); A12 = e * s / wd
@@ -54,11 +55,26 @@ def sdof_peak(acc_g, dt, periods, xi=0.05):
     B22 = -e * ((2 * xi ** 2 - 1) / (w2 * dt)) * (c - xi / np.sqrt(1 - xi ** 2) * s) + e * (2 * xi / (w3 * dt)) * (wd * s + xi * w * c) - 1 / (w2 * dt)
     ag = np.asarray(acc_g, float) * G_IN
     u = np.zeros_like(T); v = np.zeros_like(T); umax = np.zeros_like(T)
+    U = np.zeros((max(len(ag), 1), len(T))) if hist else None
     for i in range(len(ag) - 1):
         u, v = (A11 * u + A12 * v + B11 * ag[i] + B12 * ag[i + 1],
                 A21 * u + A22 * v + B21 * ag[i] + B22 * ag[i + 1])
         umax = np.maximum(umax, np.abs(u))
+        if hist:
+            U[i + 1] = u
+    if hist:
+        return umax * w2 / G_IN, U, w
     return umax * w2 / G_IN                 # pseudo-acceleration in g
+
+
+def pair_spectra(a1, a2, dt, periods, xi=0.05, step_deg=10):
+    """(Sa comp 1, Sa comp 2, maximum-direction Sa) in g of a component pair -- the same values as sdof_peak and
+    rotd100 (rotation angles step_deg), from two SDOF passes: the response to a1 cos th + a2 sin th is u1 cos th + u2 sin th."""
+    s1, U1, w = sdof_peak(a1, dt, periods, xi, hist=True); s2, U2, _ = sdof_peak(a2, dt, periods, xi, hist=True)
+    best = np.zeros(len(w))
+    for th in np.deg2rad(np.arange(0, 180, step_deg)):
+        best = np.maximum(best, np.abs(U1 * math.cos(th) + U2 * math.sin(th)).max(axis=0))
+    return s1, s2, best * w ** 2 / G_IN
 
 
 def rotd100(a1, a2, dt, periods, step_deg=10):

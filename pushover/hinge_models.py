@@ -365,11 +365,13 @@ def _hss_outside_and_tdes(section: str):
     return max(B, H), tdes
 
 
-def brace_spec(section: str, L_in: float, prm: dict) -> BraceSpec:
+def brace_spec(section: str, L_in: float, prm: dict, Lc_in: float = None) -> BraceSpec:
+    """Lc_in (NL-R2-19): the buckling length the HR design used (brace_length / brace_length_factor, X crossing);
+    default K_effective x L_in. L_in (work-point length) still sets the axial stiffness."""
     p = SDB.props(section); bp = prm["brace_axial"]
     Fye = bp["Fy_ksi"] * bp["Ry_expected"]
     A, r = p["A"], min(p["rx"], p["ry"])
-    KLr = bp["K_effective"] * L_in / r
+    KLr = (Lc_in if Lc_in else bp["K_effective"] * L_in) / r
     Fe = math.pi ** 2 * E_KSI / KLr ** 2
     Fcre = (0.658 ** (Fye / Fe)) * Fye if KLr <= 4.71 * math.sqrt(E_KSI / Fye) else 0.877 * Fe     # AISC 360 E3 form with Fye
     Pye = A * Fye; Pcre = bp["Pcr_expected_factor"] * Fcre * A
@@ -596,40 +598,95 @@ class BRBSpec(BraceSpec):
     sources: tuple = ()
 
 
-def brb_package_data(calc: dict) -> dict:
-    """Structured BRB data from the HR calc package (design/calc_package.json):
-      per label  -> {Asc, Fysc_ksi, KF, model_area}  from members[*].inputs (kind brace, section BRB-*)
-      "_global"  -> {omega, beta, Ry, basis} from capacity_design.adjusted_brace_strengths:
-                    beta = adjusted_C / adjusted_T (F4.2a: C = beta*omega*Ry*Pysc, T = omega*Ry*Pysc),
-                    omega*Ry = adjusted_T / Pysc, omega parsed from the basis text ("omega=1.36") -> Ry = (omega*Ry)/omega.
-    Missing items are simply absent (the caller falls back to hinge_params and says so)."""
+def brb_package_data(calc: dict, cfg: dict = None) -> dict:
+    """Structured BRB data from the HR package. Sources, most specific first (a value found earlier is kept):
+      1. calc_package members[*].inputs (kind brace, section BRB-*): Asc_in2, Fysc_ksi, KF, model_area_in2
+      2. NL-R2-10: cfg['brb'] -- the HR engine's own BRB input (static_model reads it for F4.2a): Asc (number or
+         {label: in2}), Fysc (the adjusted-strength value; Fysc_min the design value), Ry, omega, beta, KF
+      3. NL-R2-10: calc_package capacity_design.BRB_adjusted_strengths (HR engine output): by_group[*] {label, Asc_in2,
+         Fysc_ksi (number or the coupon range [min, max]), omega, beta, T_adj_kip}, top-level omega / beta / KF
+      4. capacity_design.adjusted_brace_strengths.by_story (older agent field names): beta = C/T, omega*Ry = T/Pysc,
+         omega from the basis text -> Ry.
+    A Fysc range is taken at its UPPER end (Fysc,max) -- the end HR's adjusted strengths (T = omega Ry Fysc,max Asc,
+    AISC 341-22 F4.2a) use, conservative for the capacity-designed / force-controlled actions -- and the source says so.
+      per label -> {Asc, Fysc_ksi, KF, model_area, omega, beta, Ry, src: {key: where}}; "_global" -> {omega, beta, Ry, KF, basis}
+    Missing items are simply absent (brb_spec falls back to hinge_params, or refuses, and says so)."""
     import re
     out = {}
+    norm = lambda lab: str(lab or "").strip().upper().replace(" ", "")
+
+    def put(lab, key, v, src):
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            d = out.setdefault(norm(lab), {})
+            if key not in d:
+                d[key] = float(v); d.setdefault("src", {})[key] = src
+
     for m in (calc or {}).get("members") or []:
         inp = m.get("inputs") or {}
         sec = str(inp.get("section") or "")
         if not SDB.is_brb(sec):
             continue
-        d = out.setdefault(sec.strip().upper().replace(" ", ""), {})
+        out.setdefault(norm(sec), {})
         for k_src, k in (("Asc_in2", "Asc"), ("Fysc_ksi", "Fysc_ksi"), ("KF", "KF"), ("model_area_in2", "model_area")):
-            if isinstance(inp.get(k_src), (int, float)):
-                d[k] = float(inp[k_src])
+            put(sec, k, inp.get(k_src), "calc_package members[%s].inputs.%s" % (m.get("id"), k_src))
     g = {}
-    adj = ((calc or {}).get("capacity_design") or {}).get("adjusted_brace_strengths") or {}
+    cb = (cfg or {}).get("brb") if isinstance(cfg, dict) else None
+    labels = set(out)
+    if isinstance(cb, dict):                                               # 2. cfg['brb'] (NL-R2-10)
+        asc = cb.get("Asc")
+        labels |= {norm(k) for k in asc} if isinstance(asc, dict) else set()
+        fy = cb.get("Fysc")
+        fy_txt = ("cfg['brb']['Fysc'] = %.1f ksi%s -- the HR adjusted-strength value" % (fy, (" (Fysc_min %.1f ksi = design phi Pysc; Fysc,max used)" % cb["Fysc_min"]) if isinstance(cb.get("Fysc_min"), (int, float)) else "")) if isinstance(fy, (int, float)) else None
+        for lab in labels:
+            put(lab, "Asc", asc.get(lab, {norm(k): v for k, v in asc.items()}.get(lab)) if isinstance(asc, dict) else asc, "cfg['brb']['Asc']")
+            put(lab, "Fysc_ksi", fy, fy_txt)
+            put(lab, "KF", cb.get("KF"), "cfg['brb']['KF']")
+        for k in ("omega", "beta", "Ry", "KF"):
+            if isinstance(cb.get(k), (int, float)) and cb[k] > 0:
+                g[k] = float(cb[k]); g.setdefault("src", {})[k] = "cfg['brb']['%s']" % k
+        if cb.get("basis"):
+            g["basis"] = str(cb["basis"])[:300]
+    cd = (calc or {}).get("capacity_design") or {}
+    bas = cd.get("BRB_adjusted_strengths") or {}
+    if isinstance(bas, dict):                                              # 3. BRB_adjusted_strengths (NL-R2-10)
+        for gid, r in (bas.get("by_group") or {}).items():
+            if not isinstance(r, dict) or not r.get("label"):
+                continue
+            lab = r["label"]; where = "capacity_design.BRB_adjusted_strengths.by_group[%s]" % gid
+            put(lab, "Asc", r.get("Asc_in2"), where + ".Asc_in2")
+            fy = r.get("Fysc_ksi"); fy_used = None
+            if isinstance(fy, (list, tuple)) and fy and all(isinstance(v, (int, float)) for v in fy):
+                fy_used = float(max(fy)); put(lab, "Fysc_ksi", fy_used, where + ".Fysc_ksi range %s ksi -> Fysc,max %.1f (the end the HR adjusted strengths use)" % (list(fy), fy_used))
+            elif isinstance(fy, (int, float)):
+                fy_used = float(fy); put(lab, "Fysc_ksi", fy_used, where + ".Fysc_ksi")
+            put(lab, "omega", r.get("omega"), where + ".omega"); put(lab, "beta", r.get("beta"), where + ".beta")
+            d = out.get(norm(lab)) or {}
+            om, fyl, a = d.get("omega") or bas.get("omega"), d.get("Fysc_ksi"), d.get("Asc")
+            if isinstance(r.get("T_adj_kip"), (int, float)) and om and fyl and a:     # T = omega Ry Fysc Asc -> Ry
+                put(lab, "Ry", round(r["T_adj_kip"] / (om * fyl * a), 3), where + ".T_adj_kip / (omega Fysc Asc)")
+        for k in ("omega", "beta", "KF"):
+            if k not in g and isinstance(bas.get(k), (int, float)) and bas[k] > 0:
+                g[k] = float(bas[k]); g.setdefault("src", {})[k] = "capacity_design.BRB_adjusted_strengths.%s" % k
+        if "basis" not in g and (bas.get("Fysc_range_ksi") or bas.get("note")):
+            g["basis"] = str(bas.get("Fysc_range_ksi") or bas.get("note"))[:300]
+        if "KF" in g:
+            for lab in list(out):
+                put(lab, "KF", g["KF"], g["src"]["KF"])
+    adj = cd.get("adjusted_brace_strengths") or {}                         # 4. older field names
     rows = [r for r in adj.get("by_story") or [] if all(isinstance(r.get(k), (int, float)) and r.get(k) for k in ("Pysc_kip", "adjusted_T_kip", "adjusted_C_kip"))]
     basis = str(adj.get("basis") or "")
     if rows:
         r = rows[0]
-        g["beta"] = r["adjusted_C_kip"] / r["adjusted_T_kip"]
+        g.setdefault("beta", r["adjusted_C_kip"] / r["adjusted_T_kip"])
         g["omega_Ry"] = r["adjusted_T_kip"] / r["Pysc_kip"]
         mo = re.search(r"omega\s*=\s*([0-9]+(?:\.[0-9]+)?)", basis, re.I)
         if mo:
-            g["omega"] = float(mo.group(1))
-            g["Ry"] = g["omega_Ry"] / g["omega"]
+            g.setdefault("omega", float(mo.group(1)))
+            g.setdefault("Ry", g["omega_Ry"] / float(mo.group(1)))
         mb = re.search(r"beta\s*=\s*([0-9]+(?:\.[0-9]+)?)", basis, re.I)
         if mb:
             g["beta_text"] = float(mb.group(1))
-        g["basis"] = basis[:300]
+        g.setdefault("basis", basis[:300])
     if g:
         out["_global"] = g
     return out
@@ -656,28 +713,30 @@ def brb_spec(section: str, L_in: float, prm: dict, A_model: float = None, pkg_da
     if tmpl:
         flags.append("brb_axial group not in this params file -> repository TEMPLATE values (AISC 342-22 Table C3.3 as transcribed; verify)")
 
-    def pick(key, pkg_val=None, what=""):
+    def pick(key, pkg_val=None, pkg_src=None):
         for src, v in (("hinge_params sections[%s]" % lab, per.get(key)), ("hinge_params brb_axial", g.get(key)),
-                       ("HR package", pkg_val)):
+                       ("HR package" + (": " + pkg_src if pkg_src else ""), pkg_val)):
             if v is not None:
                 return float(v), src
         return None, None
+    psrc = pkd.get("src") or {}; gsrc = glob.get("src") or {}             # NL-R2-10: where each package value came from
+    pk = lambda key: (pkd.get(key), psrc.get(key)) if pkd.get(key) is not None else (glob.get(key), gsrc.get(key))
 
-    Asc, src = pick("Asc", pkd.get("Asc"))
+    Asc, src = pick("Asc", *pk("Asc"))
     if Asc is None:
         Asc = SDB.parse_brb_label(lab); src = "label %s" % section if Asc else None
     if not Asc:
         raise ValueError("BRB %r: core area Asc unknown (no number in the label, no package Asc_in2, no "
                          "brb_axial.sections[%r].Asc) -- cannot build the BRB (NL-02)" % (section, section))
     flags.append("Asc=%.3f in2 (%s)" % (Asc, src))
-    Fysc, src = pick("Fysc_ksi", pkd.get("Fysc_ksi"))
+    Fysc, src = pick("Fysc_ksi", *pk("Fysc_ksi"))
     if Fysc is None:
-        raise ValueError("BRB %r: core yield stress Fysc unknown (set brb_axial.Fysc_ksi or a package Fysc_ksi) -- refusing to "
-                         "guess (NL-02)" % section)
+        raise ValueError("BRB %r: core yield stress Fysc unknown (set brb_axial.Fysc_ksi, or a package Fysc: members inputs "
+                         "Fysc_ksi, cfg['brb']['Fysc'] or capacity_design.BRB_adjusted_strengths) -- refusing to guess (NL-02)" % section)
     flags.append("Fysc=%.1f ksi (%s)" % (Fysc, src))
-    omega, s_om = pick("omega", glob.get("omega"))
-    beta, s_be = pick("beta", glob.get("beta"))
-    Ry, s_ry = pick("Ry", glob.get("Ry"))
+    omega, s_om = pick("omega", *pk("omega"))
+    beta, s_be = pick("beta", *pk("beta"))
+    Ry, s_ry = pick("Ry", *pk("Ry"))
     fb = g.get("omega_beta_fallback") or (template_params().get("brb_axial") or {}).get("omega_beta_fallback") or {}
     if omega is None:
         omega, s_om = float(fb.get("omega", 1.3)), "FALLBACK AISC 342-22 C3.3a.1 linear-analysis value (no test data supplied)"
@@ -695,7 +754,7 @@ def brb_spec(section: str, L_in: float, prm: dict, A_model: float = None, pkg_da
                  from_template=tmpl)
     Fye = Ry * Fysc
     Qce = Fye * Asc                                                       # C3.3a.1: P_CE = T_CE = A_core * Fye
-    KF, s_kf = pick("KF", pkd.get("KF"))
+    KF, s_kf = pick("KF", *pk("KF"))
     Lc_L = g.get("Lcore_over_L", per.get("Lcore_over_L")); Ac_r = g.get("Aconn_over_Acore", per.get("Aconn_over_Acore"))
     if Lc_L and Ac_r:
         Lcore = float(Lc_L) * L_in; Lconn = 0.5 * (L_in - Lcore); Aconn = float(Ac_r) * Asc
@@ -892,12 +951,54 @@ def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
     return "Hysteretic+MinMax"
 
 
-def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dict:
+# NL-R2-13: lateral systems this module has no element model for. A package declaring one is REFUSED (NOT EVALUATED)
+# instead of being modelled with the wrong mechanism: an STMF's truss chords between web joints otherwise look exactly
+# like EBF links (both ends are brace work points), and Ex28 ran as an EBF with 1248 chord "links" and a complete-looking
+# verdict. The special segment of an STMF (AISC 341-22 E4: chord flexure/shear + X-diagonal yielding/buckling within
+# the segment) has no nonlinear model here.
+import re as _re
+UNSUPPORTED_SYSTEMS = (
+    (_re.compile(r"\bSTMF\b|SPECIAL\s+TRUSS\s+MOMENT", _re.I),
+     "special truss moment frame (STMF): the special segment (AISC 341-22 E4) has no nonlinear element model in this "
+     "module, and its truss chords would otherwise be taken as EBF links -- the analysis is NOT EVALUATED"),
+)
+
+
+def declared_systems(basis) -> list:
+    """Every system string the design basis declares: system, and system_X / system_Y where the reader carries them."""
+    out = []
+    for k in ("system", "system_X", "system_Y"):
+        v = getattr(basis, k, None) if basis is not None else None
+        if v and str(v) not in out:
+            out.append(str(v))
+    return out
+
+
+def unsupported_system(basis) -> str | None:
+    """NL-R2-13: the refusal message when the declared system is one this module cannot model, else None."""
+    for s in declared_systems(basis):
+        for rx, why in UNSUPPORTED_SYSTEMS:
+            if rx.search(s):
+                return "system %r not supported: %s." % (s, why)
+    return None
+
+
+class UnsupportedSystem(RuntimeError):
+    """Raised by the model builder for a system in UNSUPPORTED_SYSTEMS (NL-R2-13)."""
+
+
+def is_ebf_system(system) -> bool:
+    return bool(system) and any(t in str(system).upper() for t in ("EBF", "ECCENTRIC"))
+
+
+def find_links(nodes: dict, members: list, prm: dict, system: str = None, notes: list = None) -> dict:
     """EBF link census (NL-03). members: iterable of dicts {tag, kind ('col'|'beam'|'brace'|...), section, n1, n2,
     released (bool: major-axis end release present)}. Returns {tag: info} for the beam segments taken as links:
 
-      split-K / V EBF (centre link): an unreleased beam segment whose BOTH end nodes are brace work points and neither
-        end is a column node -- 'the component between these points' of AISC 342-22 E2.1;
+      split-K / V EBF (centre link, only when the system is declared eccentrically braced -- NL-R2-13): an unreleased
+        beam segment whose BOTH end nodes are brace work points and neither end is a column node -- 'the component
+        between these points' of AISC 342-22 E2.1. In any other system (truss chords, stacked chevrons) such a segment
+        is a beam; it is counted in `notes` and never turned into a link silently;
       D / column-adjacent EBF (only when the system is declared eccentrically braced): an unreleased beam segment from a
         column node to a node where exactly one brace lands and no column, with e <= 2.6 Mp/Vp (a longer segment is a
         flexure-controlled beam and is modelled as one);
@@ -914,7 +1015,8 @@ def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dic
             braces_at[m["n1"]] += 1; braces_at[m["n2"]] += 1
         elif m["kind"] == "col":
             col_nodes.update((m["n1"], m["n2"]))
-    ebf = bool(system) and any(t in str(system).upper() for t in ("EBF", "ECCENTRIC"))
+    ebf = is_ebf_system(system)
+    n_not_ebf = 0
     mt = prm.get("material") or {}
     Fye = float(mt.get("Fy_ksi", 50.0)) * float(mt.get("Ry_expected", 1.1))
     out = {}
@@ -933,7 +1035,11 @@ def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dic
             b1, b2 = braces_at[m["n1"]], braces_at[m["n2"]]
             c1, c2 = m["n1"] in col_nodes, m["n2"] in col_nodes
             if b1 and b2 and not c1 and not c2:
-                rule = "between brace work points"
+                if ebf:
+                    rule = "between brace work points"
+                else:                                   # NL-R2-13: not an EBF -> a beam, never a silent link
+                    n_not_ebf += 1
+                    continue
             elif ebf and ((c1 and not c2 and b2 == 1) or (c2 and not c1 and b1 == 1)):
                 try:
                     lp = SDB.link_shear_props(sec, Fye)
@@ -953,10 +1059,14 @@ def find_links(nodes: dict, members: list, prm: dict, system: str = None) -> dic
         rho = e / (lp["Mp"] / lp["Vp"])
         out[m["tag"]] = dict(tag=m["tag"], section=sec, e_in=round(e, 2), rule=rule, rho=round(rho, 3),
                              link_class="shear" if rho <= 1.6 else ("flexure" if rho >= 2.6 else "intermediate"))
+    if n_not_ebf and notes is not None:
+        notes.append("%d beam segments between two brace work points modelled as BEAMS, not EBF links: the system (%s) is not "
+                     "declared eccentrically braced (NL-R2-13); list real links in hinge_params ebf_link.element_tags"
+                     % (n_not_ebf, system or "not declared"))
     return out
 
 
-def find_links_pkg(pkg, prm: dict, member_kind) -> dict:
+def find_links_pkg(pkg, prm: dict, member_kind, notes: list = None) -> dict:
     """find_links on a pushover Package (elasticBeamColumn beams; braces may be raw trusses)."""
     mem = []
     for e in pkg.model.elements:
@@ -964,7 +1074,8 @@ def find_links_pkg(pkg, prm: dict, member_kind) -> dict:
         rel = e.get("release") or []
         mem.append(dict(tag=e["tag"], kind=k, section=pkg.schedule.get(e["tag"], {}).get("section"), n1=e["n1"], n2=e["n2"],
                         released=("-releasey" in rel and int(rel[rel.index("-releasey") + 1]) != 0)))
-    return find_links(pkg.model.nodes, mem, prm, pkg.basis.system)
+    sysd = " / ".join(declared_systems(pkg.basis))                 # NL-R2-13: system, system_X, system_Y
+    return find_links(pkg.model.nodes, mem, prm, sysd, notes=notes)
 
 
 def link_census_summary(links: dict) -> dict:
@@ -1010,7 +1121,7 @@ def brace_fatigue_params(section: str, KLr: float, Fye: float, prm: dict) -> dic
     m = float(pt.get("m", -0.3))
     return dict(eps0=eps0, m=m, camber=float(pt.get("camber_over_L", 1.0 / 1000.0)), nseg=int(pt.get("nseg", 4)),
                 nip=int(pt.get("nip", 4)), b=float(pt.get("hardening", 0.003)), R0=float(pt.get("R0", 20.0)), flags=flags,
-                element="dispBeamColumn" if str(pt.get("element", "forceBeamColumn")).lower().startswith("disp") else "forceBeamColumn")
+                element="forceBeamColumn" if str(pt.get("element", "dispBeamColumn")).lower().startswith("force") else "dispBeamColumn")
 
 
 def brace_axial_force(tag: int, h: dict) -> float:

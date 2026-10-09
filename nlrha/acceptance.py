@@ -23,9 +23,12 @@ def risk_category(pkg, override=None):
     return "IV" if Ie >= 1.5 - 1e-9 else ("III" if Ie >= 1.25 - 1e-9 else "I_II")
 
 
-def drift_limits(ch16, hn_in, H_story_in, rc="I_II"):
+def drift_limits(ch16, hn_in, H_story_in, rc="I_II", systems=None):
     """16.4.1.2: mean limit = 2 x Table 12.12-1 ('all other structures' row for the Risk Category); for hn > 100 ft also the
-    tall-building cap hsx(4.71e-2 - 7.14e-5 hn) >= 0.03 hn (as a ratio: 0.0471 - 7.14e-5*hn_ft, floor 0.03). Ratio limits."""
+    tall-building cap hsx(4.71e-2 - 7.14e-5 hn) >= 0.03 hn (as a ratio: 0.0471 - 7.14e-5*hn_ft, floor 0.03). Ratio limits.
+    systems (NL-R2-17): {"X": system, "Y": system} of a mixed-system building -> the limits are also given per direction
+    (`by_dir`), each from the Table 12.12-1 row of that direction's system. 16.4.1.2 sends masonry shear-wall systems to
+    the 'other structures' row too, so every system in this tool's scope takes the 'all other structures' row."""
     d = ch16["transient_drift"]
     tab = d.get("table_12_12_1_all_other", {}).get(rc, d["table_12_12_1_all_other_RC_I_II"])
     lim = d["factor_on_table_12_12_1"] * tab
@@ -34,8 +37,18 @@ def drift_limits(ch16, hn_in, H_story_in, rc="I_II"):
     if hn_ft > d["tall_height_ft"]:
         tall = max(d["tall_a"] - d["tall_b"] * hn_ft, d["tall_floor"])
         lim = min(lim, tall)
-    return dict(mean_limit=lim, tall_limit=tall, table_12_12_1=tab, risk_category=rc,
-                unacceptable_peak=ch16["unacceptable_response"]["peak_drift_factor_of_mean_limit"] * lim)
+    out = dict(mean_limit=lim, tall_limit=tall, table_12_12_1=tab, risk_category=rc,
+               unacceptable_peak=ch16["unacceptable_response"]["peak_drift_factor_of_mean_limit"] * lim)
+    if systems:
+        out["by_dir"] = {d: dict(system=sy, table_row="all other structures", table_12_12_1=tab, mean_limit=lim,
+                                 unacceptable_peak=out["unacceptable_peak"]) for d, sy in systems.items()}
+    return out
+
+
+def _dir_limit(lim, j, key="mean_limit"):
+    """NL-R2-17: the limit for direction index j (0 = X, 1 = Y) -- per direction for a mixed-system building."""
+    bd = lim.get("by_dir") or {}
+    return (bd.get("XY"[j]) or {}).get(key, lim[key])
 
 
 def record_status(r):
@@ -202,6 +215,184 @@ def _column_caps(pkg, c, prm, phi_col, B):
                                        MCEx=Mcx, MCEy=Mcy, Pye=Ry * Fy * A, Pn=Pn, Fy=Fy)
 
 
+# --------------------------------------------------------------------------- NL-R2-16: ASCE 7-22 16.4.2.1 Exception 2
+# Exception 2 of 16.4.2.1: a force-controlled action limited by the formation of a yield mechanism (other than shear
+# in structural walls) need only satisfy Eqs. (16.4-3) (1.2 + 0.12 SMS) D + 0.5 L + 0.2 S + Emc <= phi B Rn and
+# (16.4-4) (0.9 - 0.12 SMS) D + Emc <= phi B Rn -- load factor 1.0 on Emc, the capacity-limited earthquake effect of
+# the yielding components developing their plastic capacity (material standard, or rational analysis with expected
+# properties and strain hardening). phi and B are those of 16.4.2.1 (unchanged). Implemented for COLUMN AXIAL FORCE:
+# Emc = statics of the column line above the column with every yielding component that frames into it at its
+# capacity in the model (beam hinges at their capping moment Mc = (Mc/My) Mpe, Fye = Ry Fy; braces at h x Pye in
+# tension and Pcre / 0.3 Pcre in compression = AISC 341-22 F2.3 analyses (a) / (b); BRBs at omega Qce / beta omega
+# Qce), one sway direction per analysis, X, Y and both together (AISC 341-22 D1.4a / F2.3, columns common to
+# intersecting frames). Applied moments are neglected in this axial check as AISC 341-22 D1.4a(b) permits (no
+# member loads act on the columns between lateral supports in this model); the column's flexural hinging stays a
+# deformation-controlled action (16.4.2.2).
+_SWAYS = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
+
+
+def _released_major(pkg, e, slot="Iy"):
+    """(i_released, j_released) for the strong axis, the same reading nonlinear_model uses (beams: -releasey)."""
+    rel = e.get("release") or []
+    flag = "-releasey" if slot == "Iy" else "-releasez"
+    code = int(rel[rel.index(flag) + 1]) if flag in rel else 0
+    return code in (1, 3), code in (2, 3)
+
+
+def mechanism_axial_bounds(pkg, hinges_meta, specs, prm, plasticity=None):
+    """NL-R2-16 / 16.4.2.1 Exception 2: capacity-limited seismic axial force Emc of every column.
+
+    Returns {col_tag: dict(qualifies, reason, Emc_c, Emc_t, n_fuses, governing_c, governing_t)}: Emc_c / Emc_t =
+    largest compression / tension (kip, seismic part only) delivered to the column by the components framing into
+    its column line at and above its top, every component at its capacity in the model. A column does NOT qualify
+    (default 16.4-1/16.4-2 check stays) when anything delivering vertical force to that line is not a yielding
+    component with a bounded backbone (elastic moment-connected beam end, elastic brace, unknown element, vertical
+    equalDOF), when no yielding component delivers seismic force at all (e.g. gravity columns), when the column is
+    inclined. Fibre plasticity: the beam capacity is still taken as (Mc/My) Mpe of the AISC 342 backbone; the fibres
+    harden without a cap (1 %), so evaluate() never lets Emc fall below the analysed suite maximum."""
+    from pushover import nonlinear_model as NM
+    nodes = pkg.model.nodes
+    beam_end, brace, links = {}, {}, set()
+    for t, m in (hinges_meta or {}).items():
+        k = m.get("kind")
+        if k == "beam":
+            beam_end[(m["ele"], m.get("end"))] = (specs[t], float(m.get("rbs_offset_in") or 0.0))
+        elif k == "brace":
+            brace[m["ele"]] = specs[t]
+        elif k == "link":
+            links.add(m["ele"])
+    bp = (prm or {}).get("beam_flexure") or {}
+    old_meta = not any("rbs_offset_in" in m for m in (hinges_meta or {}).values())
+    if old_meta and (plasticity == "fibre" or int(bp.get("rbs_segments") or 0) == 7):
+        # results recorded before the hinge offset was kept: RBS-centre hinges (fibre RBS / 7-segment remesh) sit at
+        # a + b/2 from the joint -> the same package geometry the model builder used (NM.beam_params_for)
+        for kk, (s, off) in list(beam_end.items()):
+            try:
+                geo = NM.beam_params_for(pkg, prm, s.section, fr=True)[1].get("rbs")
+            except Exception:                                       # noqa: BLE001
+                geo = None
+            if geo:
+                beam_end[kk] = (s, geo["a_in"] + 0.5 * geo["b_in"])
+    h_t = float((((prm or {}).get("brace_axial") or {}).get("tension") or {}).get("hardening_ratio", 1.0) or 1.0)
+    kind = {e["tag"]: NM.member_kind(pkg, e) for e in pkg.model.elements}
+    at_node = {}
+    for e in pkg.model.elements:
+        at_node.setdefault(e["n1"], []).append(e); at_node.setdefault(e["n2"], []).append(e)
+    vert_tied = set()
+    for a in (getattr(pkg.model, "equal_dofs", None) or []):          # equalDOF(master, slave, dofs...) tying vertical DOF 3
+        if len(a) > 2 and 3 in [int(x) for x in a[2:] if str(x).lstrip("-").isdigit()]:
+            vert_tied.update((int(a[0]), int(a[1])))
+    cols = [e for e in pkg.model.elements if "etype" not in e and kind[e["tag"]] == "col"]
+    key = lambda n: (round(nodes[n][0], 1), round(nodes[n][1], 1))
+    stack_nodes = {}
+    for e in cols:
+        if key(e["n1"]) == key(e["n2"]):
+            stack_nodes.setdefault(key(e["n1"]), set()).update((e["n1"], e["n2"]))
+
+    def contributions(n, line, analysis):
+        """[(component tag, f(d) -> downward force on node n under sway d)] for one node; raises ValueError with the
+        reason when a component delivering vertical force there is not a bounded yielding component."""
+        out = []
+        pn = nodes[n]
+        for e in at_node.get(n, []):
+            t = e["tag"]; m = e["n2"] if e["n1"] == n else e["n1"]; pm = nodes[m]
+            k = kind[t]
+            if k == "col" and "etype" not in e:
+                if m in line and key(m) == key(n):
+                    continue                                         # the column line itself
+                raise ValueError("inclined or offset column %s frames into the column line" % t)
+            L = math.dist(pn, pm)
+            u = ((pm[0] - pn[0]) / L, (pm[1] - pn[1]) / L)
+            if k == "beam" and "etype" not in e:
+                caps = []
+                ri, rj = _released_major(pkg, e)
+                for end, rel in ((1, ri), (2, rj)):
+                    h = beam_end.get((t, end))
+                    if h is not None:
+                        s, off = h
+                        caps.append((s.Mc_over_My * s.Mpe_kipin, off))
+                    elif rel:
+                        caps.append((0.0, 0.0))
+                    else:
+                        raise ValueError("beam %s end %d is moment-connected but has no yielding hinge (elastic or force-controlled)" % (t, end))
+                Mtot = caps[0][0] + caps[1][0]
+                if Mtot <= 0.0:
+                    continue                                         # pinned both ends: gravity shear only (in Qns)
+                V = Mtot / max(L - caps[0][1] - caps[1][1], 1e-6)   # plastic shear of the beam (hinges at the RBS centres)
+                out.append((t, (lambda d, V=V, u=u: -V * float(np.sign(u[0] * d[0] + u[1] * d[1])))))
+            elif k == "brace":
+                s = brace.get(t)
+                if s is None:
+                    raise ValueError("brace %s has no nonlinear axial model (elastic brace)" % t)
+                bot, top = (n, m) if pn[2] < pm[2] else (m, n)
+                p_bt = (nodes[top][0] - nodes[bot][0], nodes[top][1] - nodes[bot][1])
+                if hasattr(s, "omega"):                              # BRB: AISC 342 C3.3 adjusted strengths
+                    Nt = s.omega * s.Pye_kip; Nc = s.beta * s.omega * s.Pye_kip
+                else:                                                # AISC 341-22 F2.3 (a) expected / (b) post-buckling
+                    Nt = h_t * s.Pye_kip; Nc = s.Pcre_kip * (0.3 if analysis == "b" else 1.0)
+                dz = (pn[2] - pm[2]) / L
+                out.append((t, (lambda d, Nt=Nt, Nc=Nc, p=p_bt, dz=dz:
+                                (Nt if (p[0] * d[0] + p[1] * d[1]) > 1e-9 else (-Nc if (p[0] * d[0] + p[1] * d[1]) < -1e-9 else 0.0)) * dz)))
+            else:
+                raise ValueError("element %s (%s) frames into the column line and is not a modelled yielding component" % (t, e.get("etype") or k))
+        return out
+
+    res = {}
+    for c in cols:
+        t = c["tag"]
+        if key(c["n1"]) != key(c["n2"]):
+            res[t] = dict(qualifies=False, reason="inclined column: no vertical column line to take the mechanism statics on"); continue
+        line = stack_nodes[key(c["n1"])]
+        z_top = max(nodes[c["n1"]][2], nodes[c["n2"]][2])
+        above = sorted(n for n in line if nodes[n][2] >= z_top - 1e-6)
+        try:
+            if any(n in vert_tied for n in above):
+                raise ValueError("a node of the column line carries a vertical equalDOF")
+            best_c = (0.0, None); best_t = (0.0, None); fuses = set()
+            for analysis in (("a", "b") if brace else ("a",)):
+                comps = [cc for n in above for cc in contributions(n, line, analysis)]
+                fuses.update(tg for tg, _ in comps)
+                for d in _SWAYS:
+                    F = sum(f(d) for _, f in comps)
+                    lab = "sway %s%s%s" % ("+X" if d[0] > 0 else ("-X" if d[0] < 0 else ""), "+Y" if d[1] > 0 else ("-Y" if d[1] < 0 else ""),
+                                           (", F2.3 analysis (%s)" % analysis) if brace else "")
+                    if F > best_c[0]:
+                        best_c = (F, lab)
+                    if -F > best_t[0]:
+                        best_t = (-F, lab)
+        except ValueError as ex:
+            res[t] = dict(qualifies=False, reason=str(ex)); continue
+        if not fuses:
+            res[t] = dict(qualifies=False, reason="no yielding component delivers seismic axial force to this column line: the action is not limited by a yield mechanism")
+            continue
+        res[t] = dict(qualifies=True, reason=None, Emc_c=best_c[0], Emc_t=best_t[0], governing_c=best_c[1], governing_t=best_t[1],
+                      n_fuses=len(fuses), links=bool(links & fuses))
+    return res, None
+
+
+def _exc2_column_check(Emc_c, Emc_t, Qns, cap, frac_D, SMS, S_kip=0.0):
+    """16.4.2.1 Exception 2 for a column axial force limited by a yield mechanism (NL-R2-16):
+    Eq. (16.4-3): (1.2 + 0.12 SMS) D + 0.5 L + 0.2 S + Emc <= phi B Rn   (compression, Rn = Pn of AISC 360 E3)
+    Eq. (16.4-4): (0.9 - 0.12 SMS) D + Emc <= phi B Rn                   (Emc counteracting gravity: net tension vs
+                                                                          phi B Fy Ag, AISC 360 D2)
+    load factor 1.0 on Emc; phi, B as in 16.4.2.1. D and 0.5 L split from the model's gravity state Qns as in the
+    default check. AISC 342-22 C3-10 (|P| / Pye <= 0.75) is kept on the Exception-2 compression (conservative)."""
+    k1 = 1.2 + 0.12 * SMS; k2 = 0.9 - 0.12 * SMS
+    Pns = Qns.get("P", 0.0) or 0.0
+    D = Pns * frac_D; hL = Pns - D
+    Pr3 = k1 * D + hL + 0.2 * (S_kip or 0.0) + Emc_c
+    Pr4 = k2 * D - Emc_t                                            # compression +; < 0 = net tension
+    dc3 = Pr3 / cap["phiPn"]
+    dc4 = (-Pr4 / cap["phiTn"]) if Pr4 < 0 else None
+    dc310 = max(Pr3, 0.0) / (0.75 * cap["Pye"])
+    cands = [(dc3, "16.4.2.1 Exception 2, Eq. (16.4-3) (1.2+0.12SMS)D+0.5L+0.2S+Emc <= phi B Pn"),
+             (dc4, "16.4.2.1 Exception 2, Eq. (16.4-4) (0.9-0.12SMS)D+Emc (net tension) <= phi B Tn"),
+             (dc310, "AISC 342 C3-10 |P|/Pye <= 0.75 on the Eq. (16.4-3) compression")]
+    DC, gov = max([c for c in cands if c[0] is not None], key=lambda c: c[0])
+    return dict(Pr_16_4_3=Pr3, Tr_16_4_4=(-Pr4 if Pr4 < 0 else 0.0), DC_16_4_3=dc3, DC_16_4_4=dc4, DC_C3_10=dc310, DC=DC, governing=gov,
+                Emc_c=Emc_c, Emc_t=Emc_t, S_kip=S_kip or 0.0)
+
+
 def _per_record_fc_and_governing(results, per, col_table, grav_split, SMS, Ie, ch16, caps=None):
     """Per-record FC D/C on suite force-controlled columns + ordered governing refine candidates.
 
@@ -274,13 +465,14 @@ def _per_record_fc_and_governing(results, per, col_table, grav_split, SMS, Ie, c
 
 
 def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1.0, rc="I_II", prm=None, planned=None, suite_size=None,
-             early_abort=None):
+             early_abort=None, snow_col=None):
     """results: list of run_record outputs. Returns the 16.4 scorecard.
 
     planned    : the records the suite was meant to run (list of dicts with `record`/`id` and `label`); any not in
                  `results` are listed as not run (early abort) -- never silently dropped (NL-17).
     suite_size : number of motions in the scaled suite (16.2.2 needs >= 11).
     early_abort: dict(basis=..) when the CLI stopped the suite early.
+    snow_col   : {column tag: roof snow axial S, kip} for Eq. (16.4-3) (NL-R2-16); None -> from cfg.py (gravity.column_snow_axial).
     Verdict status: ACCEPTABLE | NOT ACCEPTABLE | INCOMPLETE. NOT ACCEPTABLE is reported as soon as it is decided
     (more unacceptable records than 16.4.1.1 permits, or a failed criterion over the completed records); otherwise any
     record not completed or not run, a suite below 11 motions or a check that could not be computed gives INCOMPLETE.
@@ -291,7 +483,8 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         zs = [z for k, z, m, sl in NM.levels(pkg)]
         heights = [b - a for a, b in zip([0.0] + zs[:-1], zs)]
     hn = sum(heights)
-    lim = drift_limits(ch16, hn, heights, rc)
+    by_dir = getattr(getattr(pkg, "basis", None), "by_dir", None) or {}          # NL-R2-17: mixed systems (12.2.2)
+    lim = drift_limits(ch16, hn, heights, rc, systems=({d: v.get("system") for d, v in by_dir.items()} if by_dir else None))
     n_story = len(heights)
     # ---- per-record unacceptable-response screen (16.4.1.1)
     per = []
@@ -303,8 +496,15 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         if st == "nonconvergence":
             flags.append("non-convergence (%s)" % r.get("reason"))
         pk = _f(np.max(r["peak_story_drift"])) if (has_peaks and st in ("completed", "incomplete")) else None
-        if pk is not None and pk > lim["unacceptable_peak"]:
+        if pk is not None and not lim.get("by_dir") and pk > lim["unacceptable_peak"]:
             flags.append("peak story drift %.2f%% > 150%% of mean limit (%.2f%%)%s" % (100 * pk, 100 * lim["unacceptable_peak"], " -- lower bound, record incomplete" if lower else ""))
+        elif pk is not None and lim.get("by_dir"):                  # NL-R2-17: each direction against its own limit
+            pkd = np.asarray(r["peak_story_drift"], float).reshape(len(r["peak_story_drift"]), -1)
+            for j in range(min(2, pkd.shape[1])):
+                pj = _f(np.max(pkd[:, j])); uj = _dir_limit(lim, j, "unacceptable_peak")
+                if pj is not None and pj > uj:
+                    flags.append("peak story drift %.2f%% (%s, %s) > 150%% of mean limit (%.2f%%)%s" % (100 * pj, "XY"[j], lim["by_dir"]["XY"[j]].get("system"), 100 * uj,
+                                                                                               " -- lower bound, record incomplete" if lower else ""))
         beyond = []
         if st in ("completed", "incomplete") and r.get("peak_def"):
             for t, v in r["peak_def"].items():
@@ -344,7 +544,8 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
     story_rows = [dict(story=i + 1, h_in=heights[i],
                        mean_X=(_f(mean_drift[i, 0]) if acc_runs else None), mean_Y=(_f(mean_drift[i, 1]) if acc_runs else None),
                        max_X=(_f(drifts[:, i, 0].max()) if acc_runs else None), max_Y=(_f(drifts[:, i, 1].max()) if acc_runs else None),
-                       ok=(bool(max(mean_drift[i]) <= lim["mean_limit"]) if acc_runs else None)) for i in range(n_story)]
+                       ok=((bool(all(mean_drift[i][j] <= _dir_limit(lim, j) for j in range(len(mean_drift[i])))) if lim.get("by_dir") else
+                            bool(max(mean_drift[i]) <= lim["mean_limit"])) if acc_runs else None)) for i in range(n_story)]
     resid_ok_runs = [r for r in acc_runs if all(_f(x) is not None for x in r.get("residual_drift", []))]
     resid = np.array([r["residual_drift"] for r in resid_ok_runs]); mean_resid = suite_stat(resid) if len(resid_ok_runs) else None
     tall240 = hn / 12.0 > ch16["residual_drift"]["height_ft"]
@@ -411,6 +612,25 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         for c, fl in (r.get("col_flexure") or {}).items():
             flexmap.setdefault(c, fl)
     col_rows = []; caps = {}; fc_notes = set(); moments_missing = False
+    # NL-R2-16: ASCE 7-22 16.4.2.1 Exception 2 for column axial force limited by a yield mechanism (user decision 7 Oct;
+    # ch16_params force_controlled.exception_2.apply). Default check (16.4-1/16.4-2 with H1-1) reported beside it.
+    ex2_cfg = fc.get("exception_2") or {}
+    ex2_on = bool(ex2_cfg.get("apply", True))
+    ex2, ex2_note, snow_basis = {}, None, None
+    if ex2_on and acc_runs:
+        r0 = next((r for r in acc_runs if r.get("hinges_meta") is not None), acc_runs[0])
+        try:
+            ex2, ex2_note = mechanism_axial_bounds(pkg, r0.get("hinges_meta") or {}, r0.get("specs") or {}, prm, plasticity=(r0.get("stats") or {}).get("plasticity"))
+        except Exception as ex:                                     # noqa: BLE001 -- never lose the default check
+            ex2, ex2_note = {}, "Exception 2 not evaluated (%s: %s)" % (type(ex).__name__, ex)
+        if snow_col is None:
+            try:
+                from . import gravity as GR
+                snow_col, snow_basis = GR.column_snow_axial(pkg)
+            except Exception as ex:                                 # noqa: BLE001
+                snow_col, snow_basis = {}, "S not computed (%s) -- taken as 0" % ex
+        else:
+            snow_basis = "S per column supplied by the caller"
     for c, vals in colN.items():
         sec, e, L, KLr, notes, cap = _column_caps(pkg, c, prm, phi_col, B)
         fc_notes.update(notes); caps[c] = cap
@@ -427,7 +647,40 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
             env_info = dict(DC_envelope=chk["DC"], governing_envelope=chk["governing"])
             chk = dict(chk, DC=dc_conc, governing="16.4 mean of the per-record interaction at concurrent (P, M) instants (both 16.4.2.1 equations, H1-1); "
                        "non-concurrent envelope of mean peaks: %.2f (%s)" % (env_info["DC_envelope"], env_info["governing_envelope"]), **env_info)
-        if not chk["moments_recorded"]:
+        chk = dict(chk, DC_default=chk["DC"], governing_default=chk["governing"], fc_basis="16.4.2.1 Eqs. (16.4-1)/(16.4-2) with H1-1")
+        if ex2_on:
+            eb = ex2.get(c) or dict(qualifies=False, reason=ex2_note or "no mechanism bound for this column")
+            info = dict(qualifies=bool(eb.get("qualifies")), reason=eb.get("reason"))
+            if info["qualifies"] and (flex.get("major") != "deformation" or flex.get("minor") != "deformation"):
+                info.update(qualifies=False, reason="flexure is force-controlled (P_G/P_ye > 0.6, AISC 342 C3.4): the moment is not a yielding-component action, the H1-1 interaction stays")
+            if info["qualifies"] and chk.get("flags"):
+                info.update(qualifies=False, reason="a deformation-controlled axis modelled elastic exceeds M_CE: the yield mechanism is not represented by the model (16.3.1)")
+            if info["qualifies"]:
+                pns = Qns.get("P", 0.0) or 0.0
+                pc_max = max([ev["Pc"] for ev in evs if ev.get("Pc") is not None] or [max(vals)])
+                pt_min = min([ev["Pt"] for ev in evs if ev.get("Pt") is not None] or [pns])
+                a_c, a_t = max(pc_max - pns, 0.0), max(pns - pt_min, 0.0)
+                # Emc: the mechanism statics with the model capacities, never below what the analysis delivered (suite max
+                # of the record peaks: dynamic effects, fibre hardening beyond Mc/My) -- conservative.
+                info.update(Emc_mech_c=eb["Emc_c"], Emc_mech_t=eb["Emc_t"], governing_c=eb.get("governing_c"), governing_t=eb.get("governing_t"), n_fuses=eb.get("n_fuses"),
+                            analysed_max_c=a_c, analysed_max_t=a_t, Emc_c=max(eb["Emc_c"], a_c), Emc_t=max(eb["Emc_t"], a_t),
+                            Emc_basis=("mechanism statics" if (a_c <= eb["Emc_c"] + 1e-6 and a_t <= eb["Emc_t"] + 1e-6) else
+                                       "analysed suite maximum (above the mechanism statics %.0f / %.0f kip: dynamic effects or hardening beyond Mc/My)" % (eb["Emc_c"], eb["Emc_t"])))
+            if info["qualifies"]:
+                x = _exc2_column_check(info["Emc_c"], info["Emc_t"], Qns, cap, frac_D, SMS, (snow_col or {}).get(c, 0.0))
+                info.update(x)
+                # An exception RELAXES the requirement ("need only satisfy"): a qualifying column is acceptable when it meets
+                # EITHER the default equations or Eqs. (16.4-3)/(16.4-4). Exception 2 is used only where it gives the
+                # lower D/C; where the full-mechanism E_mc exceeds the analysed demand (e.g. braces far from their capacity in
+                # a low-seismic building) the default check governs and Exception 2 is reported for information.
+                info["used"] = bool(x["DC"] < chk["DC_default"])
+                if info["used"]:
+                    chk = dict(chk, DC=x["DC"], governing=x["governing"] + " [default 16.4-1/16.4-2 + H1-1: %.2f]" % chk["DC_default"],
+                               fc_basis="16.4.2.1 Exception 2, Eqs. (16.4-3)/(16.4-4)")
+                else:
+                    chk = dict(chk, governing=chk["governing"] + " [Exception 2 not needed: 16.4-3/16.4-4 D/C %.2f >= default]" % x["DC"])
+            chk["exception_2"] = info
+        if not chk["moments_recorded"] and not (chk.get("exception_2") or {}).get("qualifies"):
             moments_missing = True
         col_rows.append(dict(ele=c, section=sec, z_in=pkg.model.nodes[e["n1"]][2], Qu=Q["Pc"], Qu_tension=Q["Pt"], Qns=Qns.get("P", 0.0),
                              Mu_maj=Q["Mmaj"], Mu_min=Q["Mmin"], Mns_maj=Qns.get("Mmaj"), Mns_min=Qns.get("Mmin"),
@@ -435,11 +688,14 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
                              phiMnx=cap["phiMnx"], phiMny=cap["phiMny"], MCEx=cap["MCEx"], MCEy=cap["MCEy"], Fy=cap["Fy"], KLr=KLr,
                              _Qns=Qns, _flex=flex, **chk))
     # group the worst per (section, z)
-    best = {}
+    best = {}; dflt = {}
     for r in col_rows:
         k = (r["section"], round(r["z_in"]))
         if k not in best or r["DC"] > best[k]["DC"]:
             best[k] = r
+        dflt[k] = max(dflt.get(k, 0.0), r.get("DC_default", r["DC"]))
+    for k, r in best.items():
+        r["DC_default_group_max"] = dflt[k]                        # NL-R2-16: worst default-check D/C of the group
     col_table = sorted(best.values(), key=lambda r: (r["z_in"], r["section"]))
     per_record_fc, governing_fc_records = _per_record_fc_and_governing(
         results, per, col_table, grav_split, SMS, Ie, ch16, caps=caps)
@@ -485,6 +741,8 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         deformation_ok=(all(r["DC_CP"] <= 1.0 for r in rows) if acc_runs else None), valid_range_ok=(all(r["DC_valid"] <= 1.0 for r in rows) if acc_runs else None),
         force_controlled_ok=fc_ok,
         worst_FC_DC=(max((r["DC"] for r in col_table), default=None)),
+        worst_FC_DC_default=(max((r.get("DC_default_group_max", r["DC"]) for r in col_table), default=None)),
+        FC_exception_2=_exc2_summary(col_table, ex2_on, ex2_note, snow_basis),
         residual_applicable=tall240, residual_ok=(None if not tall240 else (bool(np.max(mean_resid) <= ch16["residual_drift"]["limit"]) if mean_resid is not None else None)))
     crit_fail = [k for k in ("mean_drift_ok", "deformation_ok", "force_controlled_ok") if verdict[k] is False] + (["residual_ok"] if (tall240 and verdict["residual_ok"] is False) else [])
     if not verdict["unacceptable_ok"]:
@@ -507,6 +765,16 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
                 fc_notes=sorted(fc_notes), drift_method=("aligned_points" if all(r.get("drift_method") == "aligned_points" for r in results if record_status(r) == "completed") else "legacy_corner_nodes"))
 
 
+def _exc2_summary(col_table, on, note, snow_basis):
+    """NL-R2-16: which columns were accepted under 16.4.2.1 Exception 2, for the verdict, the report and the 16.1.4 document."""
+    used = [r for r in col_table if (r.get("exception_2") or {}).get("qualifies") and (r.get("exception_2") or {}).get("used", True)]
+    return dict(clause="ASCE 7-22 16.4.2.1 Exception 2, Eqs. (16.4-3)/(16.4-4)", apply=bool(on), used=bool(used), n_columns=len(used),
+                members=["%s @ z %.0f in" % (r["section"], r["z_in"]) for r in used],
+                not_applied=["%s @ z %.0f in: %s" % (r["section"], r["z_in"], (r.get("exception_2") or {}).get("reason")) for r in col_table
+                             if on and not (r.get("exception_2") or {}).get("qualifies")],
+                note=note, snow_basis=snow_basis)
+
+
 def combine_no_live(acc, acc_nl, required):
     """16.3.2: both gravity cases govern. `acc` is the 1.0D + 0.5L evaluation, `acc_nl` the 1.0D one (None if not
     run). Returns acc with acc["no_live_case"] and the verdict updated: NOT ACCEPTABLE if either case fails, INCOMPLETE
@@ -517,7 +785,7 @@ def combine_no_live(acc, acc_nl, required):
         vn = acc_nl["verdict"]
         info.update(verdict=vn, story=acc_nl["story"], per_record=acc_nl["per_record"], force_controlled_columns=acc_nl["force_controlled_columns"],
                     deformation_groups=acc_nl["deformation_groups"], records_not_run=acc_nl.get("records_not_run"))
-        for k in ("mean_drift_max", "worst_FC_DC"):
+        for k in ("mean_drift_max", "worst_FC_DC", "worst_FC_DC_default"):
             a, b = v.get(k), vn.get(k)
             v[k + "_with_live"] = a
             v[k] = max([x for x in (a, b) if x is not None], default=None)

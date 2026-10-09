@@ -36,20 +36,63 @@ def _text(path):
     return re.sub(r"\s+", " ", t)
 
 
+# NL-R2-08: the HR report's Chapter 8 drift table. Current HR (October fixes, per-direction C_d / I_e, HR-01/HR-02):
+#   "Story δ xe /h X % Δ/h X % δ xe /h Y % Δ/h Y % ≤ limit (X 2.00% / Y 2.00%)", rows "1 0.177 0.974 0.190 1.047 OK"
+#   or "2 0.064 0.207 0.091 0.297 exempt: split-level ..." (cfg drift_exempt_stories);
+# older HR: "Story δe X % δ X % δe Y % δ Y % ≤2.00%". Both are accepted; columns are the same (story, elastic X, design X,
+# elastic Y, design Y).
+_DRIFT_HDR_NEW = re.compile(r"Story δ\s*xe\s*/\s*h X % Δ\s*/\s*h X % δ\s*xe\s*/\s*h Y % Δ\s*/\s*h Y % ≤\s*limit \(X ([\d.]+)% / Y ([\d.]+)%\)")
+_DRIFT_HDR_OLD = re.compile(r"Story δe X % δ X % δe Y % δ Y % ≤\s*([\d.]+)%")
+_DRIFT_ROW = re.compile(r"(\d+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) (OK|NG|FAIL|EXCEEDS|exempt)")
+_DRIFT_END = re.compile(r"Same analysis as|Wind drift|Story δ")
+
+
+def _drift_table(t, out):
+    m = _DRIFT_HDR_NEW.search(t)
+    if m:
+        lx, ly = float(m.group(1)), float(m.group(2))
+    else:
+        m = _DRIFT_HDR_OLD.search(t)
+        if not m:
+            return
+        lx = ly = float(m.group(1))
+    out["drift_limit_X_pct"], out["drift_limit_Y_pct"] = lx, ly
+    out["drift_limit_pct"] = min(lx, ly)                         # one number for the loops: the tighter direction
+    tail = t[m.end():m.end() + 8000]
+    e = _DRIFT_END.search(tail)
+    tail = tail[:e.start()] if e else tail
+    rows, exempt = [], []
+    for r in _DRIFT_ROW.finditer(tail):                           # storeys 1, 2, 3 ... in order; anything else is prose
+        if int(r.group(1)) != len(rows) + 1:
+            continue
+        rows.append(r)
+        if r.group(6) == "exempt":
+            exempt.append(len(rows))
+    if rows:
+        out["drift_X"] = [float(r.group(3)) for r in rows]; out["drift_Y"] = [float(r.group(5)) for r in rows]
+        out["drift_exempt"] = exempt
+
+
+def design_drift_max(st, dirn=None):
+    """NL-R2-08: max design drift (%) over the storeys the HR design checked against the limit (drift-exempt storeys --
+    e.g. split-level inter-diaphragm offsets -- are left out), for one direction or both; None when not read."""
+    if not st.get("drift_X"):
+        return None
+    ex = set(st.get("drift_exempt") or [])
+    vals = [v for d in ((dirn,) if dirn else ("X", "Y")) for i, v in enumerate(st.get("drift_" + d) or [], start=1) if i not in ex]
+    return max(vals) if vals else None
+
+
 def steltic_facts(job):
     """Design drift table (C_d delta_e / I_e per storey), drift limit, design V and W from report.html; D/C from calc_package."""
     t = _text(os.path.join(job, "report.html"))
-    out = dict(drift_limit_pct=None, drift_X=None, drift_Y=None, V_kip=None, W_kip=None, Cs=None, wind_X=None, wind_Y=None)
-    m = re.search(r"Story δe X % δ X % δe Y % δ Y % ≤([\d.]+)%(.{0,1200})", t)
-    if m:
-        out["drift_limit_pct"] = float(m.group(1))
-        rows = re.findall(r"(\d+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) (?:OK|NG|FAIL|EXCEEDS)", m.group(2))
-        if rows:
-            out["drift_X"] = [float(r[2]) for r in rows]; out["drift_Y"] = [float(r[4]) for r in rows]
+    out = dict(drift_limit_pct=None, drift_limit_X_pct=None, drift_limit_Y_pct=None, drift_X=None, drift_Y=None, drift_exempt=[],
+               V_kip=None, W_kip=None, Cs=None, wind_X=None, wind_Y=None)
+    _drift_table(t, out)
     m = re.search(r"Design base shear V = C s W = ([\d.]+) × ([\d,]+) = ([\d,]+) kip", t)
     if m:
         out["Cs"] = float(m.group(1)); out["W_kip"] = float(m.group(2).replace(",", "")); out["V_kip"] = float(m.group(3).replace(",", ""))
-    m = re.search(r"Wind base shear: X = ([\d,]+) kip, Y = ([\d,]+) kip", t)
+    m = re.search(r"Wind base shear(?: \(frame\))?: X = ([\d,]+) kip, Y = ([\d,]+) kip", t)       # NL-R2-08: "(frame)" in current HR
     if m:
         out["wind_X"] = float(m.group(1).replace(",", "")); out["wind_Y"] = float(m.group(2).replace(",", ""))
     cp = _load_json(os.path.join(job, "design", "calc_package.json"), {})
@@ -82,17 +125,20 @@ def pill(cls, txt):
 
 # --------------------------------------------------------------------------------------------- figures
 def svg_curves(po, V_design):
+    """V_design: one design base shear, or {direction: V} for a mixed-system building (NL-R2-17)."""
     dirs = po["directions"]
+    Vd = V_design if isinstance(V_design, dict) else ({"": V_design} if V_design else {})
     W, H = 560, 270; ml, mr, mt, mb = 54, 16, 16, 34; pw, ph = W - ml - mr, H - mt - mb
-    umax = max(max(d["curve_u_in"]) for d in dirs.values()) * 1.05; vmax = max(max(max(d["curve_V_kip"]) for d in dirs.values()), V_design or 0) * 1.12
+    umax = max(max(d["curve_u_in"]) for d in dirs.values()) * 1.05; vmax = max(max(max(d["curve_V_kip"]) for d in dirs.values()), max([v or 0 for v in Vd.values()] or [0])) * 1.12
     X = lambda u: ml + u / umax * pw; Y = lambda v: mt + ph - v / vmax * ph
     o = [f'<svg viewBox="0 0 {W} {H}" width="100%" style="max-width:{W}px;display:block">']
     for i in range(5):
         v = vmax * i / 4; o.append(f'<line x1="{ml}" y1="{Y(v):.1f}" x2="{ml+pw}" y2="{Y(v):.1f}" stroke="var(--grid)"/><text class="ax" x="{ml-6}" y="{Y(v)+4:.1f}" text-anchor="end">{v:,.0f}</text>')
         u = umax * i / 4; o.append(f'<text class="ax" x="{X(u):.1f}" y="{H-14}" text-anchor="middle">{u:.0f}</text>')
     o.append(f'<text class="lab" x="{ml+pw}" y="{H-2}" text-anchor="end">roof displacement (in)</text><text class="lab" x="{ml}" y="{mt-4}">base shear (kip)</text>')
-    if V_design:
-        o.append(f'<line x1="{ml}" y1="{Y(V_design):.1f}" x2="{ml+pw}" y2="{Y(V_design):.1f}" stroke="var(--muted)" stroke-dasharray="2,4"/><text class="lab" x="{ml+pw-2}" y="{Y(V_design)-4:.1f}" text-anchor="end">design V = {V_design:,.0f} kip (R-reduced)</text>')
+    for dn, v in Vd.items():
+        if v:
+            o.append(f'<line x1="{ml}" y1="{Y(v):.1f}" x2="{ml+pw}" y2="{Y(v):.1f}" stroke="var(--muted)" stroke-dasharray="2,4"/><text class="lab" x="{ml+pw-2}" y="{Y(v)-4:.1f}" text-anchor="end">design V{(" " + dn) if dn else ""} = {v:,.0f} kip (R-reduced)</text>')
     cols = {"X": "var(--hot)", "Y": "var(--steel)"}
     for k, (name, d) in enumerate(dirs.items()):
         col = cols.get(name, "var(--teal)")
@@ -172,7 +218,7 @@ def build(job, out_name="four_analyses.html", title=None):
         st_v = f"D/C {dcm['DC']:.2f}"; st_vl = f"governing member {dcm['id']} ({sec}), {dcm['inputs'].get('governing_combo', '')}"
     else:
         st_v, st_vl = "—", "calc_package.json has no D/C values"
-    drift_max_st = max(max(st["drift_X"] or [0]), max(st["drift_Y"] or [0])) if st["drift_X"] else None
+    drift_max_st = design_drift_max(st)                                            # NL-R2-08: exempt storeys left out
     st_foot = []
     if st["V_kip"]: st_foot.append(f"Design base shear V = {st['V_kip']:,.0f} kip (C<sub>s</sub> {st['Cs']:.4f}, W = {st['W_kip']:,.0f} kip)")
     if st["wind_X"]: st_foot.append(f"wind base shear {st['wind_X']:,.0f} / {st['wind_Y']:,.0f} kip")
@@ -196,6 +242,8 @@ def build(job, out_name="four_analyses.html", title=None):
             st = a.get("status")
             if st == "target_not_reached":
                 return "target not reached"
+            if a.get("reason") == "stopped_before_target":           # NL-R2-24: numerical stop, not a collapse
+                return "not evaluated (stopped numerically at V/Vmax %.2f before δ<sub>t</sub>)" % ((a.get("shortfall") or {}).get("V_end_over_Vmax") or float("nan"))
             v = level_verdict(a, key)
             if v is None:
                 return "not evaluated"
@@ -206,25 +254,50 @@ def build(job, out_name="four_analyses.html", title=None):
                    [level_verdict(d["acceptance"].get("BSE-2N"), lv2) for d in dirs.values()]
         reached = not any((d["acceptance"].get(l) or {}).get("status") == "target_not_reached" for d in dirs.values() for l in ("BSE-1N", "BSE-2N"))
         bpon_ok = False if any(v is False for v in verdicts) else (None if any(v is None for v in verdicts) else True)
-        bpon_word = {True: "both pass", False: ("NOT satisfied" if reached else "NOT ACCEPTABLE — target displacement not reached (ASCE 41-23 7.4.3.3.1)"),
-                     None: "NOT EVALUATED (no monitored beam/column components at δ<sub>t</sub>; no pass can be claimed)"}[bpon_ok]
-        nsp_ok = all(n.get("nsp_permitted", True) for d in dirs.values() for n in d["nsp"].values())
+        po_pending = list(po.get("directions_pending") or [])         # NL-R2-14: a partial package (a direction still running)
+        if po_pending and bpon_ok is True:
+            bpon_ok = None
+        stopped = any((d["acceptance"].get(l) or {}).get("reason") == "stopped_before_target" for d in dirs.values() for l in ("BSE-1N", "BSE-2N"))
+        bpon_word = {True: "both pass", False: ("NOT satisfied" if reached else "NOT ACCEPTABLE — target displacement not reached after strength loss (ASCE 41-23 7.4.3.3.1)"),
+                     None: ("NOT EVALUATED — analysis stopped numerically before the target displacement (V still above 0.8 V<sub>max</sub>; "
+                            "not evidence of collapse); no pass can be claimed" if stopped else
+                            "NOT EVALUATED (no monitored beam/column components at δ<sub>t</sub>; no pass can be claimed)")}[bpon_ok]
+        if po_pending:
+            bpon_word = (("NOT EVALUATED" if bpon_ok is None else bpon_word)
+                         + " — PARTIAL pushover: direction %s still running, results so far only" % ", ".join(po_pending))
+        # NL-R2-12: both tests of ASCE 41-23 7.3.2.1; a package without the higher-mode test is never "permitted"
+        def _nst(n):
+            return n.get("nsp_status") or ("not_permitted" if n.get("nsp_permitted") is False else "not_evaluated")
+        _sts = [_nst(n) for d in dirs.values() for n in d["nsp"].values()]
+        nsp_st = next((x for x in ("not_permitted", "not_evaluated", "permitted_with_LDP") if x in _sts), "permitted")
+        if po_pending and nsp_st == "permitted":
+            nsp_st = "not_evaluated"
+        nsp_ok = nsp_st == "permitted"
+        _hm = {k: (d["nsp"].get("BSE-1N") or {}).get("higher_modes") or {} for k, d in dirs.items()}
+        _hm_txt = ", ".join(f"{k} {h['max_ratio']:.2f}" for k, h in _hm.items() if isinstance(h.get("max_ratio"), (int, float)))
+        nsp_word = {"permitted": "permitted (μ<sub>strength</sub> &lt; μ<sub>max</sub>; higher modes not significant, max story-shear ratio %s ≤ 1.30)" % _hm_txt,
+                    "permitted_with_LDP": "NOT permitted alone — higher-mode effects significant (story-shear ratio %s > 1.30, ASCE 41-23 7.3.2.1): a supplementary LDP is required" % _hm_txt,
+                    "not_permitted": "NOT permitted (μstrength > μmax) — NDP required",
+                    "not_evaluated": "applicability NOT EVALUATED (higher-mode test of ASCE 41-23 7.3.2.1 not completed)"}[nsp_st]
         tails = {k: d.get("tail", {}).get("status", "") for k, d in dirs.items()}
         stats = po.get("hinge_stats", {})
-        po_v = f"Ω {om}"; po_vl = f"V<sub>max</sub> {vmx} kip vs V = {fmt(po['basis'].get('V_design_kip'), 0)} kip ({' / '.join(dirs)})"
+        vdes = " / ".join(fmt(d["p695"].get("V_design_kip", po["basis"].get("V_design_kip")), 0) for d in dirs.values())   # NL-R2-17: per direction
+        po_v = f"Ω {om}"; po_vl = f"V<sub>max</sub> {vmx} kip vs V = {vdes} kip ({' / '.join(dirs)})"
         mon = {k: (d["acceptance"].get("BSE-2N") or {}).get("monitored") for k, d in dirs.items()}
         mon_txt = "; ".join(f"{k}: " + ", ".join(f"{n} {kind}" for kind, n in (m or {}).items() if n) for k, m in mon.items() if m)
         po_foot = (f"BPON for Risk Category {rc.replace('_', '/')}: {lv1} at BSE-1N D/C {bpon1}; {lv2} at BSE-2N D/C {bpon2} — {bpon_word}. "
                    + (f"Monitored components ({mon_txt}). " if mon_txt else "")
-                   + f"δ<sub>t</sub> BSE-2N {dt2} in. NSP {'permitted' if nsp_ok else 'NOT permitted (μstrength > μmax) — NDP required'}; "
+                   + f"δ<sub>t</sub> BSE-2N {dt2} in. NSP {nsp_word}; "
                    f"{'members' if stats.get('plasticity') == 'fibre' else 'hinges'}: {stats.get('col', 0)} column, {stats.get('beam', 0)} beam, {stats.get('brace_nonlinear', 0) - stats.get('brb', 0)} brace"
                    f"{(', %d BRB' % stats['brb']) if stats.get('brb') else ''}{(', %d EBF link' % stats['links']) if stats.get('links') else ''}; descending branch {', '.join(f'{k} {v}' for k, v in tails.items())}. "
                    f"Component parameters {'verified' if po.get('params_verified') else 'UNVERIFIED placeholders'}.")
         summary["pushover"] = dict(Omega={k: d["p695"].get("Omega") for k, d in dirs.items()}, Vmax={k: d["p695"]["Vmax_kip"] for k, d in dirs.items()},
-                                   target_disp_BSE2N={k: d["nsp"]["BSE-2N"]["target_disp_in"] for k, d in dirs.items()}, bpon_levels=[lv1, lv2], bpon_ok=bpon_ok, nsp_permitted=nsp_ok,
+                                   target_disp_BSE2N={k: d["nsp"]["BSE-2N"]["target_disp_in"] for k, d in dirs.items()}, bpon_levels=[lv1, lv2], bpon_ok=bpon_ok, nsp_permitted=nsp_ok, nsp_status=nsp_st,
+                                   higher_mode_ratio={k: h.get("max_ratio") for k, h in _hm.items()},
                                    max_story_drift_BSE2N={k: d["acceptance"]["BSE-2N"]["max_story_drift"] for k, d in dirs.items()}, tail=tails, params_verified=po.get("params_verified"),
                                    bpon_status={k: {l: (d["acceptance"].get(l) or {}).get("status", "evaluated" if (d["acceptance"].get(l) or {}).get("groups") else "not_evaluated")
                                                     for l in ("BSE-1N", "BSE-2N")} for k, d in dirs.items()},
+                                   bpon_stopped_before_target=stopped, directions_pending=po_pending,
                                    monitored=mon)
     else:
         po_v, po_vl, po_foot = "not run", "", "pushover/pushover_package.json not found in the job folder."
@@ -284,9 +357,13 @@ def build(job, out_name="four_analyses.html", title=None):
     Q.append(row("Fundamental periods (s)", T_st or "—", (" / ".join(f"{d['T1']:.2f}" for d in po["directions"].values()) if po else "—"), (f"{nl['modal']['T1x']:.2f} / {nl['modal']['T1y']:.2f}" if nl else "—"),
                  (f"gate {'ok' if dd.get('gate', {}).get('ok') else 'FAIL'}" if dd else "—"), "Independent model builds of the same package; the hinge model is the design model with springs added."))
     if st["V_kip"]:
-        Q.append(row("Design lateral force (kip)", f"{st['V_kip']:,.0f} seismic" + (f" · {st['wind_X']:,.0f} / {st['wind_Y']:,.0f} wind" if st["wind_X"] else ""),
+        # NL-R2-17: a mixed-system building has its own design V per direction (from the pushover package's per-direction basis)
+        _pd = {k: d["p695"].get("V_design_kip") for k, d in po["directions"].items()} if (po and any(d["p695"].get("per_direction_basis") for d in po["directions"].values())) else None
+        _vd = lambda k: (_pd or {}).get(k) or st["V_kip"]
+        Q.append(row("Design lateral force (kip)", (f"{st['V_kip']:,.0f} seismic" if not _pd else " / ".join(f"{v:,.0f}" for v in _pd.values()) + " seismic (" + " / ".join(_pd) + ", per direction)")
+                     + (f" · {st['wind_X']:,.0f} / {st['wind_Y']:,.0f} wind" if st["wind_X"] else ""),
                      (" / ".join(f"V<sub>y</sub> {d['nsp']['BSE-2N']['Vy']:,.0f}" for d in po["directions"].values()) if po else "—"), "—", "λ = 1.0 on each combination" if dd else "—",
-                     ("Effective yield strength is " + " / ".join(f"{d['nsp']['BSE-2N']['Vy']/st['V_kip']:.1f}" for d in po["directions"].values()) + " × the R-reduced design shear.") if po else ""))
+                     ("Effective yield strength is " + " / ".join(f"{d['nsp']['BSE-2N']['Vy']/_vd(k):.1f}" for k, d in po["directions"].items()) + " × the R-reduced design shear.") if po else ""))
     if po:
         Q.append(row("System strength / overstrength", f"Ω<sub>0</sub> = {fmt(po['basis'].get('Om0'), 1)}", f"V<sub>max</sub> {vmx} kip · Ω {om}", "—",
                      (f"λ<sub>u</sub> {min(r['lambda_u'] for r in dd['runs'] if r['kind'] != 'gravity'):.2f}–{max(r['lambda_u'] for r in dd['runs'] if r['kind'] != 'gravity'):.2f} (lateral cases)" if dd and any(r['kind'] != 'gravity' for r in dd['runs']) else "—"),
@@ -299,7 +376,7 @@ def build(job, out_name="four_analyses.html", title=None):
             rd = "The coefficient-method δ<sub>t</sub> sits " + " and ".join(f"{abs(v):.0f}% {'above' if v > 0 else 'below'}" for v in devs) + " the record mean (X, Y); the suite adds the record-to-record scatter."
         Q.append(row("MCE<sub>R</sub>-level roof displacement (in)", "—", f"δ<sub>t</sub> {dt_row}", nl_roof, "—", rd))
     if st["drift_X"] or po or nl:
-        Q.append(row("Max storey drift", (f"design {max(st['drift_X']):.2f}% / {max(st['drift_Y']):.2f}% (DE, C<sub>d</sub>δ<sub>e</sub>/I<sub>e</sub>)" if st["drift_X"] else "—"),
+        Q.append(row("Max storey drift", (f"design {design_drift_max(st, 'X'):.2f}% / {design_drift_max(st, 'Y'):.2f}% (DE, C<sub>d</sub>δ<sub>e</sub>/I<sub>e</sub>)" if design_drift_max(st) is not None else "—"),
                      (" / ".join((f"{100*d['acceptance']['BSE-2N']['max_story_drift']:.2f}%" if d['acceptance']['BSE-2N'].get('max_story_drift') is not None else "δ<sub>t</sub> not reached") for d in po["directions"].values()) + " at δ<sub>t</sub> BSE-2N" if po else "—"),
                      (f"mean {max(mean_X):.2f}% / {max(mean_Y):.2f}% (peaks {max(max_X):.2f}% / {max(max_Y):.2f}%)" if mean_X else ("not computed — no acceptable record" if nl else "—")), "—",
                      (f"Chapter 16 mean limit {pct(nl['limits']['mean_limit'])} for Risk Category {rc.replace('_','/')}" + (f"; ASCE 7 design limit {st['drift_limit_pct']:.2f}%." if st["drift_limit_pct"] else ".") if nl else "")))
@@ -307,14 +384,18 @@ def build(job, out_name="four_analyses.html", title=None):
         Q.append(row("Deformation-controlled components", "—", (" / ".join(f"CP D/C {lv_txt(d, 'BSE-2N', 'CP')}" for d in po["directions"].values()) if po else "—"),
                      f"mean CP D/C {worst_def['DC_CP']:.2f} · valid-range {worst_def['DC_valid']:.2f}" if worst_def else "—", "—", "Both nonlinear seismic methods use the same hinge and brace backbones; NLRHA checks the mean of the record peaks per group (16.4.2.2)."))
         Q.append(row("Force-controlled columns", (f"D/C ≤ {max(x['DC'] for x in st['members'] if 'col' in x['id']):.2f}" if any('col' in x['id'] for x in st['members']) else "—"), "P<sub>G</sub>/P<sub>ye</sub> screened (> 0.6 → force-controlled)",
-                     f"D/C {worst_fc['DC']:.2f} ({worst_fc['section']})" if worst_fc else "—", (f"λ<sub>u</sub> {summary['ddm']['lambda_u']:.2f} ({html.escape(summary['ddm']['governing'])})" if dd else "—"), "Chapter 16 16.4.2.1 (both equations, γ = 1.3) on the mean column axial force with concurrent flexure (H1-1); the DDM asks the gravity-system question directly."))
+                     f"D/C {worst_fc['DC']:.2f} ({worst_fc['section']})" if worst_fc else "—", (f"λ<sub>u</sub> {summary['ddm']['lambda_u']:.2f} ({html.escape(summary['ddm']['governing'])})" if dd else "—"), "Chapter 16 16.4.2.1 (both equations, γ = 1.3) on the mean column axial force with concurrent flexure (H1-1)"
+                     + ((f"; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4, E<sub>mc</sub>, factor 1.0) for {x2['n_columns']} column group(s) whose axial force is limited by the yield mechanism (default check D/C {nl['verdict'].get('worst_FC_DC_default') or 0:.2f})")
+                        if (x2 := (nl.get('verdict') or {}).get('FC_exception_2') or {}).get('used') else "")      # NL-R2-16
+                     + "; the DDM asks the gravity-system question directly."))
     Q.append(row("Component parameters", "AISC 360/341 cited per member", ("verified · " + html.escape(str(prm.get("source", ""))[:90])) if po and po.get("params_verified") else ("UNVERIFIED placeholders" if po else "—"),
                  ("same file" if nl else "—"), (f"φ<sub>s</sub> {gov['phi'].get('status', '')}" if dd and checked else "—"), "Parameters live with the job outputs (pushover/hinge_params_used.json); the bots query the standards through Query file manager."))
 
     # ---------------- figures
     figs = []
     if po:
-        figs.append(f"<figure>{svg_curves(po, st['V_kip'] or po['basis'].get('V_design_kip'))}<figcaption>Capacity curves with the ASCE 41 target displacements and the R-reduced design base shear.</figcaption></figure>")
+        _vd = {k: d["p695"].get("V_design_kip") for k, d in po["directions"].items()} if any(d["p695"].get("per_direction_basis") for d in po["directions"].values()) else None
+        figs.append(f"<figure>{svg_curves(po, _vd or st['V_kip'] or po['basis'].get('V_design_kip'))}<figcaption>Capacity curves with the ASCE 41 target displacements and the R-reduced design base shear.</figcaption></figure>")
     if po or nl or st["drift_X"]:
         # direction with the larger NLRHA mean drift (else pushover, else Y)
         dirn = "Y"

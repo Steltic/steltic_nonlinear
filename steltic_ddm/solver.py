@@ -3,7 +3,8 @@ solver.py -- load-factor sweep to collapse (proportional loading), peak detectio
 
 sweep(model, combo, pres, ...) applies the factored combination at lambda = 1, probes the elastic
 response, picks the control DOF (largest displacement -- roof drift for lateral cases, a beam
-mid-span or column shortening for gravity cases), then drives the structure with adaptive
+mid-span or column shortening for gravity cases; NL-R2-02: measured from the lambda = 0 equilibrium, and pushed in
+the direction of the applied lateral pattern), then drives the structure with adaptive
 DisplacementControl: Newton -> ModifiedNewton(-initial) -> KrylovNewton fallbacks, step halving on
 failure, step growth on recovery. lambda_u is the peak load factor; the run continues into the
 post-peak branch (to `post_peak` * lambda_u) to characterise ductility for the phi_s classification.
@@ -132,16 +133,31 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
           verbose=True, snapshot_every=3, time_limit=None, post_peak_steps=8, plateau_frac=0.02, frame_every=2):
     label, fD, fL, fLr, lat, col_only = combo
     t0 = time.time()
-    model.build().prepare()
-    ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
-    W = model.apply_gravity(fD, fL, fLr, pres)
-    model.apply_lateral(lat)
-    _solver_settings()
+    def _setup():
+        model.build().prepare()
+        ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
+        W = model.apply_gravity(fD, fL, fLr, pres)
+        model.apply_lateral(lat)
+        _solver_settings()
+        ops.integrator("LoadControl", 0.0); ops.analysis("Static")
+        return W
+    W = _setup()
     ldir, lsgn = lateral_direction(lat)
     eps_y = model.Fy / model.builder.E
 
+    # NL-R2-02: equilibrium at lambda = 0 first. The GMNIA model can carry a lambda-INDEPENDENT state (Lehigh residual
+    # stresses with bows/out-of-plumb: Ex13 roof +0.011 in, brace -27 kip at zero load); the control DOF, its sign and
+    # the step size must come from the load-proportional part d(lam) - d(0), never from the total displacement.
+    def _zero_state():
+        ops.integrator("LoadControl", 0.0)
+        if ops.analyze(1) != 0:
+            return None
+        return {t: ops.nodeDisp(t) for t in ops.getNodeTags()}
+    u_zero = _zero_state()
+    if u_zero is None:                           # rewind; the probe then measures from the unloaded geometry
+        W = _setup(); u_zero = {}
+
     # ---- elastic probe (adaptive: soft systems may fail at 0.05) ------------------------------
-    ops.analysis("Static")
     lam_probe = None
     for trial in (0.05, 0.02, 0.01, 0.005, 0.002):
         ops.integrator("LoadControl", trial)
@@ -149,16 +165,15 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
             lam_probe = trial
             break
         # rewind failed attempt before retrying a smaller step
-        model.build().prepare()
-        ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
-        W = model.apply_gravity(fD, fL, fLr, pres)
-        model.apply_lateral(lat)
-        _solver_settings()
-        ops.analysis("Static")
+        W = _setup()
+        if u_zero and _zero_state() is None:
+            W = _setup(); u_zero = {}
     if lam_probe is None:
         raise RuntimeError("elastic probe failed for %s" % label)
     if verbose and lam_probe < 0.05:
         print("   note %-40s elastic probe used lambda=%.3f (0.05 failed)" % (label[:40], lam_probe))
+    def _inc(t, dof):                            # load-proportional displacement at the probe
+        return ops.nodeDisp(t, dof) - (u_zero.get(t) or [0.0] * 6)[dof - 1]
     if ldir:
         if model.masters:
             top = model.masters[-1]
@@ -176,15 +191,19 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
             if e["kind"] != "beam" or e["s"] != model.nsub_beam // 2:
                 continue
             t = e["n1"]
-            v = abs(ops.nodeDisp(t, 3))
+            v = abs(_inc(t, 3))
             if v > best:
                 best, cnode = v, t
     d_probe = ops.nodeDisp(cnode, cdof)
-    if abs(d_probe) < 1e-12:
+    d_zero = (u_zero.get(cnode) or [0.0] * 6)[cdof - 1]
+    slope = (d_probe - d_zero) / lam_probe        # control displacement per unit lambda (load-proportional part)
+    if abs(slope) * lam_probe < 1e-12:
         raise RuntimeError("zero probe displacement -- control DOF not excited")
-    du0 = d_probe / lam_probe * dlam
+    # lateral cases: push in the direction of the applied lateral pattern (lsgn), with the incremental stiffness
+    sgn = lsgn if ldir else (1 if slope > 0 else -1)
+    du0 = sgn * abs(slope) * dlam
     du = du0
-    d_cap = abs(d_probe / lam_probe) * disp_cap_factor
+    d_cap = abs(slope) * disp_cap_factor
     ops.integrator("DisplacementControl", cnode, cdof, du)
 
     hist = [(lam_probe, d_probe)]
@@ -237,13 +256,13 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
                             disp={t: ops.nodeDisp(t) for t in _track_nodes(model)})
         elif lam < post_peak * lam_max and step > step_at_max + 3:
             log.append("post-peak branch reached %.0f%% of lambda_u at step %d" % (100 * post_peak, step)); break
-        if abs(d) > d_cap:
+        if abs(d - d_zero) > d_cap:
             log.append("control displacement cap reached at step %d" % step); break
         # plateau rule: tangent stiffness over the last 10 steps below `plateau_frac` of the elastic
         # stiffness -> a plastic plateau (mechanism / squash with hardening); lambda_u is taken here
         if len(hist) > 12 and lam >= lam_max - 1e-9:
             l0, d0 = hist[-11]
-            k_el = 0.05 / abs(d_probe)
+            k_el = 1.0 / abs(slope)                # NL-R2-02: incremental elastic stiffness (lambda per in)
             k_t = (lam - l0) / max(abs(d - d0), 1e-12)
             if k_t < plateau_frac * k_el:
                 plateau = True
@@ -274,11 +293,11 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
     # post-peak ductility: lambda at 1.25 * d_at_max (if reached)
     lam_125 = None
     for lam, d in hist:
-        if abs(d) >= 1.25 * abs(d_at_max):
+        if abs(d - d_zero) >= 1.25 * abs(d_at_max - d_zero):
             lam_125 = lam; break
     return dict(label=label, lambda_u=lam_max, step_at_max=step_at_max, d_at_max=d_at_max,
                 first_yield=first_yield, lam_at_1p25d=lam_125, hist=hist, control=(cnode, cdof),
-                lateral=(ldir, lsgn), gravity_kip=W, steps=len(hist), fails=fails, log=log, plateau=plateau,
+                lateral=(ldir, lsgn), gravity_kip=W, lam_probe=lam_probe, d_zero=d_zero, probe_slope=slope, steps=len(hist), fails=fails, log=log, plateau=plateau,
                 snapshot=snap, frames=frames, seconds=round(time.time() - t0, 1))
 
 
@@ -301,6 +320,12 @@ def classify(res, model):
         by_kind[k] = by_kind.get(k, 0) + 1
     buckled = [t for t, s in snap.get("braces", {}).items() if s.get("buckled")]
     ductile_post = res.get("plateau", False) or (res["lam_at_1p25d"] is not None and res["lam_at_1p25d"] >= 0.9 * res["lambda_u"])
+    if not res.get("step_at_max"):
+        # NL-R2-02: lambda never rose above the elastic probe -> a solver/control stop, not a structural limit point
+        mech = ("NUMERICAL: the load factor never rose above the elastic probe (lambda = %.3f) -- solver/control stop, "
+                "not a structural peak; the combination is NOT EVALUATED" % res["lambda_u"])
+        return dict(mechanism=mech, cls="numerical", hinge_members=hinge_members, yielded_members=yielded_members,
+                    hinges_by_role=by_kind, buckled_braces=buckled, ductile_post_peak=False)
     nbeam_h = by_kind.get("floor", 0) + by_kind.get("roof", 0)
     if buckled and not nbeam_h:
         mech = "brace buckling (%d brace%s) governs the peak" % (len(buckled), "s" if len(buckled) > 1 else "")

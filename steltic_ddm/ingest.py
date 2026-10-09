@@ -104,7 +104,9 @@ def parse_replay(path):
             elif cmd == "element":
                 elems.append(args)
             elif cmd == "rigidDiaphragm":
-                diaph[args[1]] = list(args[2:])
+                # R2 patch (NL-R2-01): merge -- engine3d adds the centre-of-mass node with a 2nd call
+                cur = diaph.setdefault(args[1], [])
+                cur.extend(s for s in args[2:] if s not in cur)
     return nodes, fixes, masses, transf, elems, diaph
 
 

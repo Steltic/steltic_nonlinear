@@ -180,7 +180,7 @@ def write(out_dir, nm, gate, runs):
         phi = r["phi"]; chk = r["check"]
         R.append(dict(label=r["combo"][0], kind=r["summary"]["kind"], imp=r["imp"], lambda_u=res["lambda_u"], first_yield=res.get("first_yield"), lam_125=res.get("lam_at_1p25d"),
                       d_at_max=res.get("d_at_max", 0.0), hist=hist, peak_index=peak_index, frames=frames, peak_frame=peak_frame, control_label=ctrl_label, lateral=list(lat) if lat else None,
-                      phi_s=phi.get("phi_s"), phi_cls=phi.get("cls"), provisional=bool(phi.get("provisional")), phi_status=phi.get("status"), beta_T=phi.get("beta_T"), phi_lam=chk[0] if chk else None, check_ok=(None if not chk or chk[1] == "n/a" else chk[1] == "PASS"),
+                      phi_s=phi.get("phi_s"), phi_cls=phi.get("cls"), provisional=bool(phi.get("provisional")), phi_status=phi.get("status"), beta_T=phi.get("beta_T"), phi_lam=chk[0] if chk else None, check_ok=(None if not chk or chk[1] not in ("PASS", "FAIL") else chk[1] == "PASS"),
                       cls=r["cls"]["cls"], mechanism=r["cls"]["mechanism"], steps=res["steps"], seconds=res["seconds"], plateau=bool(res.get("plateau")),
                       snapshot=dict(drifts=snap.get("drifts"), disp=snap["disp"], member_ratio=snap.get("member_ratio", {}), braces=snap.get("braces", {})), state=r["state"]))
     if not R:

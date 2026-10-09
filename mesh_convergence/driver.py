@@ -43,6 +43,19 @@ def _run(cmd, log, env=None, cwd=None):
     return dict(returncode=p.returncode, seconds=round(time.time() - t0, 1))
 
 
+def _dry_status(ladder, args):
+    """NL-R2-L1: a dry run walks the stop rule on SYNTHETIC metrics -- its status is "dry-run", never "converged";
+    what the rule would have said is kept as rehearsal_status."""
+    if not getattr(args, "dry_run", False):
+        return ladder
+    return dict(ladder, status="dry-run", rehearsal_status=ladder.get("status"))
+
+
+def _dry_note(ladder):
+    return ("(stop-rule rehearsal on synthetic metrics: %s; no analysis was run)" % ladder.get("rehearsal_status")
+            if ladder.get("status") == "dry-run" else "")
+
+
 def plan_rungs(max_rungs: int = DEFAULT_MAX_RUNGS):
     return list(DEFAULT_RUNGS[:max_rungs])
 
@@ -77,7 +90,8 @@ def run_nsp_or_ddm_ladder(analysis: str, package: str, out_root: str, *, args) -
     for i, rung in enumerate(rungs):
         kn = rung_knobs(rung, analysis)
         rung_dir = os.path.join(out_root, "%s_%s" % (analysis, rung["level"]))
-        os.makedirs(rung_dir, exist_ok=True)
+        if not args.dry_run:                                   # NL-R2-L1: a dry run leaves no rung folders behind
+            os.makedirs(rung_dir, exist_ok=True)
         print("== %s %s ==" % (analysis, rung["level"]), kn, flush=True)
 
         if args.dry_run:
@@ -125,12 +139,13 @@ def run_nsp_or_ddm_ladder(analysis: str, package: str, out_root: str, *, args) -
 
     ladder = walk_ladder(analysis if analysis != "pushover" else "nsp",
                          metric_rows, tol=args.tol, max_rungs=args.max_rungs)
+    ladder = _dry_status(ladder, args)
     case = os.path.basename(os.path.abspath(package).rstrip("/"))
     path = write_scorecard(out_root, case=case, analysis=analysis, rungs=rungs,
                            ladder=ladder, metric_rows=metric_rows,
                            extra=dict(rung_meta=rung_meta, package=os.path.abspath(package),
-                                      method="fibre", product_rule="NSP/DDM fibre+mesh 10%"))
-    print(">> scorecard", path, "status=", ladder["status"], "stop_level=", ladder.get("stop_level"))
+                                      method="fibre", product_rule="NSP/DDM fibre+mesh 10%"), dry_run=bool(args.dry_run))
+    print(">> scorecard", path, "status=", ladder["status"], "stop_level=", ladder.get("stop_level"), _dry_note(ladder))
     return dict(scorecard=path, ladder=ladder, metrics=metric_rows)
 
 
@@ -236,7 +251,8 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
         tag = stage["id"]
         rung_dir = os.path.join(out_root, "nlrha_%s%s" % (
             tag, "_fc" if nlrha_mode == "fc_refine" else ""))
-        os.makedirs(rung_dir, exist_ok=True)
+        if not args.dry_run:                                   # NL-R2-L1
+            os.makedirs(rung_dir, exist_ok=True)
 
         # FC refine: freeze plasticity to Gate-A lock method (rule 1.4)
         if nlrha_mode == "fc_refine" and fc_settings:
@@ -563,9 +579,10 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
     if fc_settings:
         ladder = dict(ladder, fc_settings=fc_settings,
                       no_fibre_for_fc=fc_settings.get("no_fibre_for_fc", False))
+    ladder = _dry_status(ladder, args)
     case = os.path.basename(os.path.abspath(package).rstrip("/"))
     path = write_scorecard(
-        out_root, case=case, analysis="nlrha", rungs=fibre_rungs,
+        out_root, case=case, analysis="nlrha", rungs=fibre_rungs, dry_run=bool(args.dry_run),
         ladder=ladder, metric_rows=metric_rows,
         extra=dict(
             rung_meta=rung_meta, package=os.path.abspath(package),
@@ -590,7 +607,7 @@ def run_nlrha_product_ladder(package: str, out_root: str, *, args) -> dict:
     )
     print(">> scorecard", path, "status=", ladder["status"],
           "stop_level=", ladder.get("stop_level"),
-          "no_fibre_for_fc=", (fc_settings or {}).get("no_fibre_for_fc"))
+          "no_fibre_for_fc=", (fc_settings or {}).get("no_fibre_for_fc"), _dry_note(ladder))
     return dict(scorecard=path, ladder=ladder, metrics=metric_rows)
 
 
@@ -602,7 +619,9 @@ def run_analysis_ladder(analysis: str, package: str, out_root: str, *, args) -> 
 
 def main(args) -> int:
     package = os.path.abspath(args.package)
-    out = args.out or os.path.join(package, "mesh_convergence")
+    dry = bool(args.dry_run)                                   # NL-R2-L1: dry-run output under dry-run names only
+    out = args.out or os.path.join(package, "mesh_convergence_dryrun" if dry else "mesh_convergence")
+    stem = "mesh_convergence_DRYRUN" if dry else "mesh_convergence"
     os.makedirs(out, exist_ok=True)
     analyses = []
     for a in args.analyses:
@@ -619,11 +638,11 @@ def main(args) -> int:
             summary["analyses"][a] = dict(error=repr(ex))
             rc = 1
             print("!!", a, ex, flush=True)
-    summary_path = os.path.join(out, "mesh_convergence_summary.json")
+    summary_path = os.path.join(out, stem + "_summary.json")
     json.dump(summary, open(summary_path, "w"), indent=2, default=str)
     # short md summary
-    md_path = os.path.join(out, "mesh_convergence_summary.md")
-    lines = ["# Mesh-convergence summary", "",
+    md_path = os.path.join(out, stem + "_summary.md")
+    lines = ["# Mesh-convergence summary" + (" -- DRY RUN (synthetic metrics, no analysis was run)" if dry else ""), "",
              "- package: `%s`" % package,
              "- tol: %s" % args.tol,
              "- max_rungs: %s" % args.max_rungs,
@@ -633,8 +652,9 @@ def main(args) -> int:
             lines.append("- **%s**: ERROR %s" % (a, res["error"]))
         else:
             lad = res.get("ladder") or {}
-            lines.append("- **%s**: status=`%s` stop_level=%s" % (
-                a, lad.get("status"), lad.get("stop_level")))
+            lines.append("- **%s**: status=`%s` stop_level=%s%s" % (
+                a, lad.get("status"), lad.get("stop_level"),
+                (" (stop-rule rehearsal: %s)" % lad.get("rehearsal_status")) if dry else ""))
     open(md_path, "w").write("\n".join(lines) + "\n")
     print(">> summary", summary_path, md_path)
     return rc

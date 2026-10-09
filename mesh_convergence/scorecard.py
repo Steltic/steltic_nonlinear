@@ -13,6 +13,7 @@ def write_scorecard(
     ladder: Mapping[str, Any],
     metric_rows: Sequence[Mapping[str, Any]],
     extra: Mapping[str, Any] | None = None,
+    dry_run: bool = False,
 ) -> str:
     os.makedirs(out_dir, exist_ok=True)
     extra_d = dict(extra or {})
@@ -84,15 +85,20 @@ def write_scorecard(
     )
     if extra_d:
         doc["extra"] = dict(extra_d)
-    path = os.path.join(out_dir, "mesh_convergence_scorecard_%s.json" % analysis)
+    stem = "mesh_convergence_scorecard"
+    if dry_run:                                                    # NL-R2-L1: synthetic metrics, never read as a result
+        doc.update(status="dry-run", dry_run=True, rehearsal_status=ladder.get("rehearsal_status", status),
+                   dry_run_note="DRY RUN: the metrics are synthetic (no analysis was run); status is the stop-rule rehearsal only")
+        stem = "mesh_convergence_DRYRUN_scorecard"
+    path = os.path.join(out_dir, "%s_%s.json" % (stem, analysis))
     with open(path, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=2, default=str)
-    md = os.path.join(out_dir, "mesh_convergence_scorecard_%s.md" % analysis)
+    md = os.path.join(out_dir, "%s_%s.md" % (stem, analysis))
     lines = [
-        "# Mesh-convergence scorecard — %s / %s" % (case, analysis),
+        "# Mesh-convergence scorecard — %s / %s%s" % (case, analysis, " — DRY RUN (synthetic metrics, no analysis was run)" if dry_run else ""),
         "",
         "- method: `%s`" % doc.get("method"),
-        "- status: `%s`" % doc.get("status"),
+        "- status: `%s`%s" % (doc.get("status"), (" (stop-rule rehearsal: %s)" % doc.get("rehearsal_status")) if dry_run else ""),
         "- stop_level: %s (%s)" % (doc.get("stop_level"), doc.get("stop_rung")),
         "- tol: %s" % doc.get("tol"),
         "- max_rungs: %s" % doc.get("max_rungs"),

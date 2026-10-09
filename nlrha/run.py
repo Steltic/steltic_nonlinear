@@ -2,7 +2,8 @@
 uniform excitation (16.2.4) -> HHT-alpha (default) or Newmark integration with adaptive time step -> peak/mean bookkeeping for 16.4.
 
 Record status (result["status"]):
-  completed       -- the whole window (Arias 0.1-99.5% + free vibration) was integrated; every step converged.
+  completed       -- the whole analysed window (record start, or the trimmed start, to the checked end + free vibration;
+                     NL-R2-18 record_window) was integrated; every step converged.
   nonconvergence  -- the analytical solution failed to converge (16.4.1.1 item 1): the time step was halved down to
                      dt/32 or 12 consecutive attempts failed, or the gravity stage failed. Unacceptable response.
   incomplete      -- every committed step converged but the work budget ran out (step count or wall time). This is NOT
@@ -20,6 +21,7 @@ from pushover import nonlinear_model as NM
 from pushover import hinge_models as HM
 from . import model as MD
 from . import drift as DR
+from . import ground_motions as GM
 
 G_IN = 386.4
 
@@ -127,11 +129,175 @@ def _column_forces(ci):
 
 
 def arias_window(a1, a2, dt, lo=0.001, hi=0.995):
-    """Time window holding the [lo, hi] fraction of the Arias intensity of the stronger component -- the quiet head
-    and tail of a record are skipped (the run still adds free vibration after the window)."""
+    """Times at which the Arias intensity of the two components together reaches the fractions lo and hi. NL-R2-18:
+    without trimming the run integrates from t = 0 and uses only the end (checked, see record_window); the head is
+    skipped only when record trimming is switched on."""
     ia = np.cumsum(np.asarray(a1) ** 2 + np.asarray(a2) ** 2); ia /= ia[-1]
     i0 = int(np.searchsorted(ia, lo)); i1 = int(np.searchsorted(ia, hi))
     return i0 * dt, i1 * dt
+
+
+# NL-R2-18: the record window. Default ("off"): integrate from t = 0 to the 99.5 % Arias point + free vibration, as
+# before, but the end cut is now CHECKED: the 5 %-damped spectra of the motion the analysis actually sees (both
+# components and the maximum direction, observed only up to the end of the analysis) must stay within SPECTRAL_TOL of
+# the spectra of the full record followed by FV_REF_S of free vibration (the finding's measure: the cut changed
+# Sa(4 s) of Superstition Hills El Centro by 11.9 %), over the record's scaling period range (16.2.3.2); otherwise the
+# window is widened step by step back to the full record and then the free vibration lengthened up to FV_REF_S
+# (long-period oscillators can peak after the record ends). Optional trimming (off by default; schedule doc 8): "standard" 0.1-99.5 % / "aggressive" 0.5-99 % Arias of
+# both components together, on the head, the tail or both; trimmed ends start / stop at a zero crossing of the stronger
+# component with a 0.5 s cosine taper, the motion is zero after the window (true free vibration), the same spectral
+# check and widening apply, the scale factors stay those of the full record, and every window is disclosed (16.1.4).
+TRIM_MODES = {"off": (0.0, 0.995), "standard": (0.001, 0.995), "aggressive": (0.005, 0.99)}
+SPECTRAL_TOL = 0.02
+TAPER_S = 0.5
+WIDEN_STEPS = 6                                  # excluded Arias fractions halved up to 6 times, then the full record
+FV_REF_S = 30.0                                  # free vibration after the full record in the reference spectra
+
+
+def _cos_taper(n):
+    return 0.5 * (1.0 - np.cos(np.pi * np.arange(n) / max(n, 1)))
+
+
+def analysed_motion(a1, a2, dt, win):
+    """The two components as the analysis applies them (record orientation): the record itself without trimming;
+    with trimming the window slice, cosine-tapered at each trimmed end (zero beyond its end)."""
+    a1 = np.asarray(a1, float); a2 = np.asarray(a2, float)
+    if not win or not win.get("trimmed"):
+        return a1, a2
+    i_s, i_e = int(win["i_start"]), int(win["i_end"])
+    b1 = a1[i_s:i_e].copy(); b2 = a2[i_s:i_e].copy()
+    nt = min(int(round(TAPER_S / dt)), max(1, (i_e - i_s) // 4))      # (a window shorter than 4 tapers keeps its middle)
+    if win.get("taper_head") and nt > 1:
+        r = _cos_taper(nt); b1[:nt] *= r; b2[:nt] *= r
+    if win.get("taper_tail") and nt > 1:
+        r = _cos_taper(nt)[::-1]; b1[-nt:] *= r; b2[-nt:] *= r
+    return b1, b2
+
+
+def _observed(b, n_obs):
+    """The motion seen by an analysis that stops after n_obs samples (zero after the series ends)."""
+    return b[:n_obs] if len(b) >= n_obs else np.concatenate([b, np.zeros(n_obs - len(b))])
+
+
+def _window_at(a1, a2, dt, ia, lo, hi, trim_head, trim_tail, free_vib_s):
+    n = len(a1)
+    strong = a1 if float(np.sum(a1 ** 2)) >= float(np.sum(a2 ** 2)) else a2
+    zc = np.where(strong[:-1] * strong[1:] <= 0)[0]               # a crossing between k and k + 1
+    nt = int(round(TAPER_S / dt))                                 # the taper lies OUTSIDE the Arias window (quiet motion only)
+    i_s = 0
+    if trim_head and lo > 0:
+        i0 = int(np.searchsorted(ia, lo)) - nt; k = zc[zc <= i0]
+        i_s = int(k[-1]) if (len(k) and i0 > 0) else 0
+    i1 = n if hi >= 1.0 else min(int(np.searchsorted(ia, hi)), n)
+    if trim_tail:
+        k = zc[zc >= i1 + nt]
+        i_e = n if hi >= 1.0 else (int(k[0]) + 1 if len(k) else n)
+        i_cut = i_e
+    else:
+        i_e = n; i_cut = i1
+    i_cut = max(i_cut, i_s + 1)
+    t_end_rel = (i_cut - i_s) * dt + free_vib_s
+    return dict(i_start=i_s, i_end=i_e, i_cut=i_cut, arias=(lo if trim_head else 0.0, hi), t_offset=i_s * dt, t_start=i_s * dt, t_sig=i_cut * dt,
+                t_end=i_s * dt + t_end_rel, t_end_rel=t_end_rel, trimmed=bool(i_s > 0 or i_e < n), taper_head=bool(i_s > 0), taper_tail=bool(trim_tail and i_e < n))
+
+
+def record_window(a1, a2, dt, free_vib_s=5.0, periods=None, ref=None, mode="off", ends="both", tol=SPECTRAL_TOL):
+    """NL-R2-18: the analysed window of one record pair (record orientation) and its spectral check.
+    periods: the record's scaling period range (16.2.3.2), the check is skipped (and says so) without it;
+    ref: (Sa1, Sa2, Sa_maxdir) at `periods` of the full record + FV_REF_S free vibration (default: computed). Times are
+    on the record's own axis; t_end_rel = what the analysis integrates (window + free vibration, which the widening
+    may lengthen). Returns a json-safe dict (window, check, widening steps)."""
+    mode = (mode or "off").lower()
+    if mode not in TRIM_MODES:
+        raise ValueError("record trimming mode %r: use off, standard or aggressive" % mode)
+    a1 = np.asarray(a1, float); a2 = np.asarray(a2, float); n = len(a1)
+    ia = np.cumsum(a1 ** 2 + a2 ** 2); ia = ia / ia[-1]
+    lo0, hi0 = TRIM_MODES[mode]
+    trim_head = mode != "off" and ends in ("both", "head")
+    trim_tail = mode != "off" and ends in ("both", "tail")
+    if not trim_tail:
+        hi0 = TRIM_MODES["off"][1]                               # an untrimmed tail keeps the (checked) 99.5 % end
+    P = None if periods is None else np.asarray(periods, float)
+    if P is not None and len(P):
+        if ref is None:
+            nz = int(round(FV_REF_S / dt))
+            ref = GM.pair_spectra(np.concatenate([a1, np.zeros(nz)]), np.concatenate([a2, np.zeros(nz)]), dt, P)
+        ref = [np.asarray(x, float) for x in ref]
+    base = None
+    if mode != "off":                                            # the checked untrimmed window: trimming never runs longer
+        base = record_window(a1, a2, dt, free_vib_s, periods=P, ref=ref, mode="off", tol=tol)
+    ladder = [(lo0 / 2 ** k, 1.0 - (1.0 - hi0) / 2 ** k, free_vib_s) for k in range(WIDEN_STEPS + 1)] + [(0.0, 1.0, free_vib_s)]
+    fv = free_vib_s
+    while fv < FV_REF_S - 1e-9:
+        fv = min(FV_REF_S, max(2 * fv, 1.0)); ladder.append((0.0, 1.0, fv))
+    steps = []
+    win = None
+    for k, (lo, hi, fv) in enumerate(ladder):
+        last = k == len(ladder) - 1
+        win = _window_at(a1, a2, dt, ia, lo, hi, trim_head, trim_tail, fv)
+        win["free_vib_s"] = fv
+        if base is not None and win["t_end_rel"] >= base["t_end_rel"] - 1e-9:
+            # widened back to the length of the untrimmed window: analyse that one (already checked)
+            out = dict(base, mode=mode, ends=ends, untrimmed_s=base["t_end_rel"], saved_s=0.0,
+                       note="not trimmed: the %.0f %% spectral check needs a window as long as the untrimmed one (%d trimmed window(s) tried)" % (100 * tol, len(steps)))
+            out["check"] = dict(base["check"], trim_steps=steps)
+            return out
+        if P is None or not len(P):
+            break
+        b1, b2 = analysed_motion(a1, a2, dt, win)
+        n_obs = int(round(win["t_end_rel"] / dt)) + 1
+        got = GM.pair_spectra(_observed(b1, n_obs), _observed(b2, n_obs), dt, P)
+        worst = (-1.0, None, None)
+        for lab, g_, r_ in zip(("comp 1", "comp 2", "max-direction"), got, ref):
+            ch = np.abs(g_ / np.maximum(r_, 1e-12) - 1.0); j = int(np.argmax(ch))
+            if ch[j] > worst[0]:
+                worst = (float(ch[j]), lab, float(P[j]))
+        steps.append(dict(arias=[win["arias"][0], win["arias"][1]], t_start=round(win["t_start"], 3), t_sig=round(win["t_sig"], 3), free_vib_s=fv,
+                          max_change=worst[0], at=worst[1], T=worst[2]))
+        if worst[0] <= tol or last:
+            break
+    win["mode"] = mode; win["ends"] = ends if mode != "off" else "none"; win["free_vib_requested_s"] = free_vib_s
+    win["record_s"] = n * dt; win["taper_s"] = TAPER_S if (win["taper_head"] or win["taper_tail"]) else 0.0
+    if steps:
+        fin = steps[-1]
+        win["check"] = dict(tol=tol, ok=bool(fin["max_change"] <= tol), max_change=fin["max_change"], at=fin["at"], T=fin["T"],
+                            periods=[float(P[0]), float(P[-1])], n_widened=len(steps) - 1, steps=steps,
+                            full_record=bool(win["i_start"] == 0 and win["i_cut"] >= n))
+    else:
+        win["check"] = dict(tol=tol, ok=None, note="not checked: no scaling period range given")
+    win["arias"] = list(win["arias"])
+    win["untrimmed_s"] = base["t_end_rel"] if base is not None else win["t_end_rel"]
+    win["saved_s"] = win["untrimmed_s"] - win["t_end_rel"]
+    return win
+
+
+# NL-R2-15: the per-record wall-time budget scales with the record and the model instead of a fixed 1800 s (which cut
+# the 91.5-s Imperial Valley Delta record at t = 25-28 s on the braced Ex18 / Ex30 while every step was converging).
+# auto = max(4 h, BUDGET_S_PER_STEP_NODE x nominal steps (t_end / dt) x model nodes). Calibration (round 2 suites, 1 core,
+# dt 0.01, IMK models): completed records ran at 1.1e-4 (SMF Ex22, 887 nodes) to 1.9e-4 s per step per node (braced
+# Ex18, 1,846 nodes; Ex30, 1,374 nodes); 6e-4 is ~3x the slowest. Ex18 Delta (9,650 steps x 1,846 nodes = 3.0 h) -> the
+# 4 h floor; its dt/2 retry -> 5.9 h; a 5,000-node model on the same record -> 8 h.
+BUDGET_FLOOR_S = 4 * 3600.0
+BUDGET_S_PER_STEP_NODE = 6e-4
+
+
+def record_wall_budget(setting, t_end, dt_max, n_nodes):
+    """(seconds, basis) of the wall-time budget of one record (NL-R2-15). `setting`: None -> env
+    SNL_NLRHA_RECORD_BUDGET_S, else "auto"; "auto" -> scaled to the record window and the model size (above);
+    a number -> that many seconds; 0 -> unlimited (seconds 0)."""
+    import os
+    if setting is None:
+        setting = os.environ.get("SNL_NLRHA_RECORD_BUDGET_S") or "auto"
+    if str(setting).strip().lower() != "auto":
+        try:
+            s = float(setting)
+            return (s, "fixed %.0f s" % s) if s > 0 else (0.0, "unlimited")
+        except ValueError:
+            pass
+    n_nom = max(1, int(math.ceil(t_end / dt_max)))
+    scaled = BUDGET_S_PER_STEP_NODE * n_nom * max(1, int(n_nodes or 0))
+    s = max(BUDGET_FLOOR_S, scaled)
+    return s, ("auto: max(%.0f s, %.0e s x %d nominal steps x %d nodes = %.0f s)" % (BUDGET_FLOOR_S, BUDGET_S_PER_STEP_NODE, n_nom, int(n_nodes or 0), scaled))
 
 
 def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02, free_vib_s=5.0, rec_every=5, verbose=True,
@@ -139,16 +305,15 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     """Build a fresh model and run one scaled pair. Returns peaks/histories for the acceptance module.
 
     Work budget (NL-17): at most `step_budget_factor` x the nominal number of steps of ops.analyze calls, and at most
-    `wall_budget_s` seconds (None -> env SNL_NLRHA_RECORD_BUDGET_S, else 1800 s; 0 = unlimited). Running out of budget
-    ends the record as status "incomplete" (not non-convergence)."""
-    import os
+    `wall_budget_s` seconds (NL-R2-15: None -> env SNL_NLRHA_RECORD_BUDGET_S, else "auto" = scaled to the record window
+    and the model size, see record_wall_budget; a number = fixed; 0 = unlimited). Running out of budget ends the record
+    as status "incomplete" (not non-convergence)."""
     t0 = time.time()
-    if wall_budget_s is None:
-        try:
-            wall_budget_s = float(os.environ.get("SNL_NLRHA_RECORD_BUDGET_S", "1800"))
-        except ValueError:
-            wall_budget_s = 1800.0
     hinges, stats, elastic = MD.build(pkg, prm, ch16, PG)
+    try:
+        n_nodes = len(ops.getNodeTags())
+    except Exception:                                               # noqa: BLE001
+        n_nodes = len(getattr(pkg.model, "nodes", {}) or {})
     ok = _apply_gravity(loads)
     if ok != 0:
         return dict(record=rec["id"], label=rec.get("earthquake") or rec["id"], sf=rec.get("sf"), x_comp=rec.get("x_comp"), converged=False,
@@ -163,15 +328,28 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     T1 = max(modal["T1x"], modal["T1y"])
     damp = MD.set_damping(xi, T1, elastic)
     # bidirectional excitation, identical factor on both components (16.2.3.2), components per 16.2.4 orientation
-    ax = rec["a1"] if rec["x_comp"] == 1 else rec["a2"]; ay = rec["a2"] if rec["x_comp"] == 1 else rec["a1"]
     dt_rec = rec["dt"]; sf = rec["sf"]
+    # NL-R2-18: the analysed window (checked end cut; optional trimming) -- chosen before the run by nlrha.cli
+    win = rec.get("window") or record_window(rec["a1"], rec["a2"], dt_rec, free_vib_s)
+    b1, b2 = analysed_motion(rec["a1"], rec["a2"], dt_rec, win)
+    ax = b1 if rec["x_comp"] == 1 else b2; ay = b2 if rec["x_comp"] == 1 else b1
+    toff = float(win.get("t_offset") or 0.0)                     # analysis t = 0 is record time toff (trimmed head)
     ops.timeSeries("Path", 11, "-dt", dt_rec, "-values", *(ax * G_IN * sf).tolist())
     ops.timeSeries("Path", 12, "-dt", dt_rec, "-values", *(ay * G_IN * sf).tolist())
     ops.pattern("UniformExcitation", 11, 1, "-accel", 11)
     ops.pattern("UniformExcitation", 12, 2, "-accel", 12)
     ops.wipeAnalysis()
     ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
-    ops.test("NormDispIncr", 1e-6, 30, 0); ops.algorithm("Newton")
+    # NL-R2-21 (R5): displacement-increment tolerance 1e-5 in (on 10k+ DOF braced models Newton stalls at a round-off floor of
+    # 1e-6..1e-5 in) and NO fallback algorithms by default: ModifiedNewton -initial never converged, and KrylovNewton /
+    # NewtonLineSearch "converged" on the displacement test while out of equilibrium, committing states that blew up a few
+    # steps later and biased completed records low (Ex22: peaks up to 30 % higher without them). A failed Newton step is
+    # retried with Newton at a halved step. numerics.nlrha_fallback = "legacy" restores the old ladder,
+    # numerics.nlrha_disp_tol the old tolerance.
+    num = (prm.get("numerics") or {}) if isinstance(prm, dict) else {}
+    tol = float(num.get("nlrha_disp_tol", 1e-5))
+    ladder = (("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",)) if num.get("nlrha_fallback") == "legacy" else ()
+    ops.test("NormDispIncr", tol, 30, 0); ops.algorithm("Newton")
     if integrator == "newmark":
         ops.integrator("Newmark", 0.5, 0.25)                        # average acceleration, no numerical damping
         alg_damp = dict(integrator="Newmark average acceleration", alpha=None, xi_T1=0.0, xi_02T1=0.0)
@@ -183,8 +361,9 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     dt = dt_max                                                   # Path series interpolates the record; dt_max ~ T_lower/15
     dt_cur = dt_max; n_ok_since_cut = 0; consec_fail = 0; crawl = 0; n_fallback = 0; dt_floor = dt_max / 32.0; dt_min_used = dt_max
     next_rec = rec_every * dt_max; next_hist = 5 * dt_max                 # time-based recording (the step is adaptive)
-    t_start, t_sig = arias_window(ax, ay, dt_rec)
-    t_end = t_sig + free_vib_s
+    t_start, t_sig = win["t_start"], win["t_sig"]                # record time axis
+    t_end = win["t_end_rel"]                                      # analysis time axis (window + free vibration)
+    wall_budget_s, budget_basis = record_wall_budget(wall_budget_s, t_end, dt_max, n_nodes)
     t = 0.0
     lv = NM.levels(pkg)
     H = [lv[0][1]] + [lv[i][1] - lv[i - 1][1] for i in range(1, len(lv))]
@@ -221,26 +400,26 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     while t < t_end - 1e-9:
         if (step_budget and calls >= step_budget) or (wall_budget_s and time.time() - t0 > wall_budget_s):
             status = "incomplete"
-            reason = ("incomplete (time-out) at t=%.2f of %.2f s: work budget exhausted (%d analyze calls, budget %s; %.0f s wall, budget %s); "
+            reason = ("incomplete (time-out) at t=%.2f of %.2f s: work budget exhausted (%d analyze calls, budget %s; %.0f s wall, budget %s [%s]); "
                       "all %d committed steps converged (smallest dt %.2e s) -- NOT a 16.4.1.1(1) non-convergence"
-                      % (t, t_end, calls, step_budget or "none", time.time() - t0, ("%.0f s" % wall_budget_s) if wall_budget_s else "none", step, dt_min_used))
+                      % (t + toff, t_end + toff, calls, step_budget or "none", time.time() - t0, ("%.0f s" % wall_budget_s) if wall_budget_s else "none", budget_basis, step, dt_min_used))
             break
         ok = _analyze(dt_cur)
         if ok != 0:
             adv = dt_cur / 4
-            for alg in (("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",)):
-                ops.algorithm(*alg); ops.test("NormDispIncr", 1e-5, 100, 0)
+            for alg in ladder:
+                ops.algorithm(*alg); ops.test("NormDispIncr", max(tol, 1e-5), 100, 0)
                 ok = _analyze(adv)
                 if ok == 0:
                     break
-            ops.algorithm("Newton"); ops.test("NormDispIncr", 1e-6, 30, 0)
+            ops.algorithm("Newton"); ops.test("NormDispIncr", tol, 30, 0)
             if ok != 0:
                 # adaptive time step: halve persistently and retry the same instant (domain is still at the last committed state)
                 fails += 1; consec_fail += 1; n_ok_since_cut = 0
                 dt_cur *= 0.5
                 if dt_cur < dt_floor or consec_fail > 12:
                     status = "nonconvergence"
-                    reason = "non-convergence at t=%.2f s (dt %.2e s, %d consecutive failures)" % (t, dt_cur * 2, consec_fail); break
+                    reason = "non-convergence at t=%.2f s (dt %.2e s, %d consecutive failures)" % (t + toff, dt_cur * 2, consec_fail); break
                 continue
             # a converged fallback micro-step is a valid equilibrium state (16.4.1.1(1) is about failing to converge,
             # not about slowness). Repeated fallbacks mean Newton cannot take the current step: shrink it (NL-17)
@@ -263,10 +442,10 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
         roof = lv[-1][2]; ur = np.array([ops.nodeDisp(roof, 1), ops.nodeDisp(roof, 2)])
         peak_roof = np.maximum(peak_roof, np.abs(ur))
         if t >= next_hist - 1e-9:
-            hist_t.append(t); hist_roof.append(ur.tolist()); next_hist += 5 * dt_max
+            hist_t.append(t + toff); hist_roof.append(ur.tolist()); next_hist += 5 * dt_max   # NL-R2-18: record time axis
         if t >= next_rec - 1e-9:
             next_rec += rec_every * dt_max
-            frames_t.append(round(t, 3))
+            frames_t.append(round(t + toff, 3))
             frames_story.append([[round(ops.nodeDisp(m, 1), 3), round(ops.nodeDisp(m, 2), 3), round(ops.nodeDisp(m, 6), 6)] for m in masters])
             frames_brace.append([round(ops.eleResponse(b, "deformation")[0], 4) for b in braces])
             ir = min(int(t / dt_rec), n_rec - 1); frames_ag.append([round(float(ax[ir] * sf), 4), round(float(ay[ir] * sf), 4)])
@@ -323,14 +502,17 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                        conc_c=v["conc_c"], conc_t=v["conc_t"]) for c, v in col_env.items()}
     out = dict(record=rec["id"], label="%s %s (%s)" % (rec.get("earthquake") or rec["id"], rec.get("station") or "", rec.get("year") or "?"), sf=sf, x_comp=rec["x_comp"],
                converged=(status == "completed"), status=status, reason=reason, steps=step, fails=fails, fallback_steps=n_fallback, analyze_calls=calls,
-               dt_min=dt_min_used, t_reached=t, t_end=t_end, seconds=time.time() - t0, t_window=(t_start, t_sig), T1x=modal["T1x"], T1y=modal["T1y"],
-               damping=damp, algorithmic_damping=alg_damp, peak_story_drift=peak_drift.tolist(), peak_drift_at=peak_at, drift_method="aligned_points",
+               budget=dict(wall_s=wall_budget_s, basis=budget_basis, step_calls=step_budget, n_nodes=n_nodes),
+               dt_min=dt_min_used, t_reached=t + toff, t_end=t_end + toff, seconds=time.time() - t0, t_window=(t_start, t_sig), T1x=modal["T1x"], T1y=modal["T1y"],
+               window={k: v for k, v in win.items() if k != "check"} | dict(check={k: v for k, v in (win.get("check") or {}).items() if k != "steps"}),
+               damping=damp, algorithmic_damping=alg_damp, solver=dict(newton_disp_tol_in=tol, fallback="legacy ladder" if ladder else "none (Newton with dt halving)"), peak_story_drift=peak_drift.tolist(), peak_drift_at=peak_at, drift_method="aligned_points",
                drift_points=DR.summary(pts), peak_roof_in=peak_roof.tolist(), residual_drift=resid.tolist(),
                peak_def=peak_def, signed_def=signed_def, peak_colN=peak_colN, col_env=col_env, col_grav=col_grav,
                col_flexure={c: ci["flexure"] for c, ci in colinfo.items()}, hist_t=hist_t, hist_roof=hist_roof, brace_hist=brace_hist,
                frames=dict(t=frames_t, story=frames_story, brace_tags=braces, brace=frames_brace, ag=frames_ag,
                            hinge_tags=list(hz), hinge=frames_hinge, masters=masters),
-               hinges_meta={t: dict(kind=hinges[t]["kind"], section=hinges[t]["section"], z=hinges[t]["z"], ele=hinges[t]["ele"], end=hinges[t]["end"]) for t in hz},
+               hinges_meta={t: dict(kind=hinges[t]["kind"], section=hinges[t]["section"], z=hinges[t]["z"], ele=hinges[t]["ele"], end=hinges[t]["end"],
+                                    rbs_offset_in=hinges[t].get("rbs_offset_in")) for t in hz},     # NL-R2-16: hinge offset for the Emc beam shear
                specs={t: hinges[t]["spec"] for t in hz}, heights=H, stats=stats)
     if verbose:
         print("[nlrha] %-40s sf=%.2f  %s  steps=%d fails=%d fallback=%d  max drift X %.2f%% Y %.2f%%  roof %.1f/%.1f in  (%.0f s)%s"

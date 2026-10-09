@@ -111,6 +111,19 @@ def _interp(table, b):
             return table[a] + (table[c] - table[a]) * (b - a) / (c - a)
 
 
+def system_R(cfg, lateral_dir=None):
+    """NL-R2-17: the R of the system resisting a combination's lateral direction. A mixed-system building (ASCE 7-22
+    12.2.2: cfg seis_X / seis_Y with different R, Cd or Omega0) uses that direction's R (a direction without its own
+    dict takes cfg seis); otherwise -- and for gravity combinations -- the building's single cfg seis R."""
+    cfg = cfg or {}
+    base = cfg.get("seis") or {}
+    per = {d: dict(base, **(cfg.get("seis_" + d) or {})) for d in ("X", "Y")}
+    mixed = any(str(per["X"].get(k)) != str(per["Y"].get(k)) for k in ("R", "Cd", "Om0"))
+    if mixed and lateral_dir in ("X", "Y"):
+        return per[lateral_dir].get("R")
+    return base.get("R")
+
+
 def choose(combo_kind, system_R, cls, governed_by_braces=False, hss_braces=False, material="HR", risk_category="II"):
     """Pick the phi_s class for one combination.
     combo_kind: 'gravity' | 'wind' | 'seismic'; cls: mechanism class (reported, does not change phi_s yet);
@@ -155,7 +168,9 @@ def choose(combo_kind, system_R, cls, governed_by_braces=False, hss_braces=False
                       if prov and t["phi"] is not None else None))
 
 
-def check(phi, lam_u):
+def check(phi, lam_u, cls=None):
+    if cls == "numerical":
+        return None, "NOT EVALUATED"        # NL-R2-02: a solver/control stop is never a structural PASS or FAIL
     if phi is None or lam_u is None:
         return None, "n/a"
     v = phi * lam_u

@@ -5,7 +5,8 @@ What we read (all produced by steltic's pipeline.design_and_report / bundle.make
   <building>/model_opensees.py        the EXACT elastic OpenSeesPy model (replayed ops.* calls)
   <building>/design/member_schedule.csv   ele_tag -> member kind (col/beam/brace) + AISC section
   <building>/design/calc_package.json     roles, demands, agent capacities, capacity_design block
-  <building>/cfg.py                   the agent's cfg (seis params, system, heights, loads) -- optional
+  <building>/cfg.py                   the agent's cfg (seis params, system, heights, loads) -- optional; scalars are
+                                      regexed, `heights` comes from the EXECUTED cfg (NL-R2-06, steltic_ddm.ingest.load_cfg)
   <building>/report.html              fallback source for SDS/SD1/R/Cd/Om0/Ie, W, V, T (regex on text)
 
 Nothing here runs the model: model_opensees.py is PARSED (regex on `ops.<cmd>(...)` lines), never
@@ -50,6 +51,10 @@ class DesignBasis:
     heights_in: Optional[list] = None
     site_class: Optional[str] = None
     sources: dict = field(default_factory=dict)   # field -> where it came from
+    # NL-R2-17: per-direction design factors of a MIXED-system building (ASCE 7-22 12.2.2: a different SFRS in each
+    # direction): {"X": {system, R, Cd, Om0, V_design_kip, T_design_s, W_kip, Cs, rho, drift_limit, source}, "Y": {...}}.
+    # Empty for a single-system building -> every consumer falls back to the single set above (dir_basis).
+    by_dir: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -130,7 +135,11 @@ def parse_model_script(path: Path) -> ElasticModel:
         elif cmd == "equalDOF":
             m.equal_dofs.append(a)
         elif cmd in ("wipe",):
-            pass
+            # R2 patch (NL-R2-01): keep ONLY the last build. The export holds the probe build then the real
+            # build; probe-only nodes (e.g. a centre-of-mass node cmtag(k) the real build does not create)
+            # and probe masses must not survive. geomTransf / materials are recorded once -> keep them.
+            m.nodes.clear(); m.fixes.clear(); m.masses.clear(); m.elements.clear()
+            m.diaphragms.clear(); m.equal_dofs.clear()
         else:
             m.other.append((cmd, a))
     # Steltic's export records the engine's PROBE build followed by the real build (nodes/elements/masses/
@@ -140,9 +149,15 @@ def parse_model_script(path: Path) -> ElasticModel:
         last[e["tag"]] = e
     m.elements = list(last.values())
     if len(m.diaphragms) > 1:
+        # R2 patch (NL-R2-01): one master can carry several rigidDiaphragm calls (engine3d slaves the
+        # level centre-of-mass node cmtag(k) with its own call, HR-19) -> MERGE the slave sets per master.
         seen = {}
-        for d in m.diaphragms:
-            seen[d[1]] = d
+        for perp, ma, sl in m.diaphragms:
+            if ma in seen:
+                cur = seen[ma][2]
+                cur.extend(s for s in sl if s not in cur)
+            else:
+                seen[ma] = (perp, ma, list(sl))
         m.diaphragms = list(seen.values())
     return m
 
@@ -186,12 +201,36 @@ def _basis_from_cfg(cfg_py: Path, b: DesignBasis):
     if mo: b.system = mo.group(1); b.sources["system"] = "cfg.py"
     mo = re.search(r"['\"]?L_floor['\"]?\s*[:=]\s*" + _NUM, src)
     if mo: b.L_floor_psf = float(mo.group(1)); b.sources["L_floor_psf"] = "cfg.py"
-    mo = re.search(r"heights\s*[:=]\s*(\[[^\]]*\])", src)
-    if mo:
+    # NL-R2-06: `heights` is NOT regexed here -- the first `heights = [...]` in the text can be a docstring/comment
+    # (Ex13: "heights = [14,6,6,10,2,12] ft" -> feet read as inches, h_n 4 ft instead of 50). See _heights().
+
+
+def _heights(root: Path, model: Optional["ElasticModel"]) -> tuple:
+    """NL-R2-06: inter-level heights (in) and where they came from -- the EXECUTED cfg value cfg['heights'] (the
+    steltic_ddm loader runs cfg.py with the HR engine importable, as brace_geometry does), never a comment; when
+    cfg.py cannot be executed or carries no heights, the elevations of the replayed model's diaphragm masters
+    (else of its mass nodes). (None, reason) when neither exists."""
+    why = "no cfg.py"
+    if (root / "cfg.py").exists():
         try:
-            b.heights_in = [float(v) for v in ast.literal_eval(mo.group(1))]; b.sources["heights_in"] = "cfg.py"
-        except Exception:
-            pass
+            from steltic_ddm.ingest import load_cfg
+            h = load_cfg(str(root)).get("heights")
+            if isinstance(h, (list, tuple)) and h and all(isinstance(v, (int, float)) and v > 0 for v in h):
+                return [float(v) for v in h], "cfg.py (executed cfg['heights'])"
+            why = "cfg['heights'] absent or not a list of positive numbers"
+        except Exception as ex:                                       # noqa: BLE001 -- engine missing, cfg error, ...
+            why = "cfg.py not executable (%s)" % str(ex)[:80]
+    if model is not None and model.nodes:
+        zs = sorted({round(model.nodes[ma][2], 3) for _p, ma, _s in model.diaphragms if ma in model.nodes})
+        src = "diaphragm master elevations"
+        if not zs:
+            zs = sorted({round(model.nodes[t][2], 3) for t, mv in model.masses.items() if t in model.nodes and mv and mv[0] > 0})
+            src = "mass node elevations"
+        z0 = min(min(v[2] for v in model.nodes.values()), 0.0)
+        zs = [z for z in zs if z > z0 + 1e-6]
+        if zs:
+            return [b - a for a, b in zip([z0] + zs[:-1], zs)], "model_opensees.py %s (%s)" % (src, why)
+    return None, why
 
 
 def _basis_from_report(report_html: Path, b: DesignBasis):
@@ -218,10 +257,84 @@ def _basis_from_report(report_html: Path, b: DesignBasis):
     grab("T_design_s", r"design period T\s*=\s*min\([^)]*\)\s*=\s*" + _NUM)
 
 
-def read_basis(root: Path, calc: dict) -> DesignBasis:
+def _cfg_dir_dicts(src: str) -> dict:
+    """cfg.py `seis_X=dict(R=8, Cd=5.5, Om0=3.0, system="SMF")` / `seis_Y={...}` and `system_X="SMF"` -- literal values
+    only, read without importing cfg.py (NL-R2-17)."""
+    out = {}
+    for d in ("X", "Y"):
+        v = {}
+        mo = re.search(r"['\"]?\bseis_%s['\"]?\s*[:=]\s*(dict\([^()]*\)|\{[^{}]*\})" % d, src)
+        if mo:
+            try:
+                node = ast.parse(mo.group(1), mode="eval").body
+                if isinstance(node, ast.Call):
+                    v = {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords if kw.arg}
+                else:
+                    v = {str(k): x for k, x in ast.literal_eval(node).items()}
+            except Exception:
+                v = {}
+        mo = re.search(r"['\"]?\bsystem_%s['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]" % d, src)
+        if mo and "system" not in v:
+            v["system"] = mo.group(1)
+        if v:
+            out[d] = v
+    return out
+
+
+def _by_direction(root: Path, calc: dict, b: DesignBasis) -> dict:
+    """NL-R2-17: per-direction design factors -- calc_package.json `seismic_by_direction` (the HR engine's structured
+    per-direction design: system, R, Cd, Omega0, V, period used), else cfg.py seis_X / seis_Y / system_X / system_Y,
+    else the building's single set for that item. Kept only when R, Cd or Omega0 really differ between X and Y
+    (mixed systems, ASCE 7-22 12.2.2): a single-system building keeps the single set, so its results do not change."""
+    sbd = calc.get("seismic_by_direction") or {}
+    cfgd = _cfg_dir_dicts((root / "cfg.py").read_text(encoding="utf-8", errors="replace")) if (root / "cfg.py").exists() else {}
+    rep = {}
+    if (root / "report.html").exists():                             # "per-direction ELF ...: V_X = 82.6 k, V_Y = 30.1 k"
+        t = html.unescape(re.sub(r"<[^>]+>", " ", (root / "report.html").read_text(encoding="utf-8", errors="replace")))
+        for d in ("X", "Y"):
+            mo = re.search(r"\bV_%s\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*k(?:ip)?\b" % d, t)
+            if mo:
+                rep[d] = float(mo.group(1))
+    out = {}
+    for d in ("X", "Y"):
+        c, f = sbd.get(d) or {}, dict(cfgd.get(d) or {})
+        if d in rep:
+            f["V_report"] = rep[d]
+        v, src = {}, {}
+        for key, ck, fk, attr in (("system", "system", "system", "system"), ("R", "R", "R", "R"), ("Cd", "Cd", "Cd", "Cd"), ("Om0", "Omega0", "Om0", "Om0"),
+                                  ("V_design_kip", "V_kip", "V_report", "V_design_kip"), ("T_design_s", "Tu_s", None, "T_design_s"), ("W_kip", "W_kip", None, "W_kip"),
+                                  ("Cs", "Cs", None, None), ("rho", "rho", "rho", None), ("drift_limit", "drift_limit", "drift_limit", None)):
+            if c.get(ck) is not None:
+                v[key] = c[ck]; src[key] = "calc_package.json seismic_by_direction.%s" % d
+            elif fk and f.get(fk) is not None:
+                v[key] = f[fk]; src[key] = ("report.html V_%s" % d) if fk == "V_report" else "cfg.py seis_%s / system_%s" % (d, d)
+            elif attr and getattr(b, attr, None) is not None:
+                v[key] = getattr(b, attr); src[key] = "building value (%s; no per-direction value in the package)" % b.sources.get(attr, "package")
+        v["source"] = src
+        out[d] = v
+    num = lambda x: float(x) if isinstance(x, (int, float)) or (isinstance(x, str) and x.replace(".", "", 1).isdigit()) else None
+    if all(num(out["X"].get(k)) == num(out["Y"].get(k)) for k in ("R", "Cd", "Om0")):
+        return {}                                                   # one set of factors both ways: keep the single set
+    return out
+
+
+def dir_basis(b: DesignBasis, d: Optional[str]) -> dict:
+    """NL-R2-17: the design factors that govern direction d ('X' / 'Y'): the per-direction set of a mixed-system
+    building, else the building's single set (unchanged behaviour for single-system buildings)."""
+    x = ((getattr(b, "by_dir", None) or {}).get(str(d or "").upper()[:1]) or {}) if d else {}
+    g = lambda k, attr: x[k] if x.get(k) is not None else getattr(b, attr, None)
+    return dict(system=g("system", "system"), R=g("R", "R"), Cd=g("Cd", "Cd"), Om0=g("Om0", "Om0"), V_design_kip=g("V_design_kip", "V_design_kip"),
+                T_design_s=g("T_design_s", "T_design_s"), W_kip=g("W_kip", "W_kip"), drift_limit=x.get("drift_limit"), per_direction=bool(x),
+                source=(x.get("source") or {}))
+
+
+def read_basis(root: Path, calc: dict, model: Optional[ElasticModel] = None) -> DesignBasis:
     b = DesignBasis()
     if (root / "cfg.py").exists():
         _basis_from_cfg(root / "cfg.py", b)
+    b.heights_in, src = _heights(root, model)                         # NL-R2-06
+    if b.heights_in:
+        b.sources["heights_in"] = src
     if (root / "report.html").exists():
         _basis_from_report(root / "report.html", b)
     dr = root / "design" / "design_report.md"
@@ -232,6 +345,12 @@ def read_basis(root: Path, calc: dict) -> DesignBasis:
     cd = calc.get("capacity_design") or {}
     if b.system is None and cd.get("system"):
         b.system = cd["system"]; b.sources["system"] = "calc_package.capacity_design"
+    try:
+        b.by_dir = _by_direction(root, calc, b)                     # NL-R2-17
+    except Exception:                                               # noqa: BLE001 -- never lose the single set
+        b.by_dir = {}
+    if b.by_dir:
+        b.sources["by_dir"] = "; ".join(sorted({v for d in b.by_dir.values() for v in (d.get("source") or {}).values()}))
     return b
 
 
@@ -459,7 +578,7 @@ def load(path: str | os.PathLike) -> Package:
     model = parse_model_script(files["model"])
     schedule = read_schedule(files["schedule"]) if files["schedule"].exists() else {}
     calc = json.load(open(files["calc"])) if files["calc"].exists() else {}
-    basis = read_basis(root, calc)
+    basis = read_basis(root, calc, model)
     name = calc.get("building") or root.name
     return Package(root=root, name=name, model=model, schedule=schedule, calc=calc, basis=basis,
                    files={k: str(v) for k, v in files.items() if v.exists()})
@@ -473,10 +592,13 @@ def summary(p: Package) -> str:
         kinds[k] = kinds.get(k, 0) + 1
     b = p.basis
     return ("package %s @ %s\n  nodes %d, elements %d %s, diaphragms %d, fixed nodes %d, mass nodes %d\n"
-            "  basis: SDS=%s SD1=%s R=%s Cd=%s Om0=%s Ie=%s system=%s W=%s kip V=%s kip T=%s s\n  sources: %s"
+            "  basis: SDS=%s SD1=%s R=%s Cd=%s Om0=%s Ie=%s system=%s W=%s kip V=%s kip T=%s s\n  sources: %s%s"
             % (p.name, p.root, len(m.nodes), len(m.elements), kinds, len(m.diaphragms), len(m.fixes),
                len(m.masses), b.SDS, b.SD1, b.R, b.Cd, b.Om0, b.Ie, b.system, b.W_kip, b.V_design_kip,
-               b.T_design_s, b.sources))
+               b.T_design_s, b.sources,
+               "".join("\n  per direction %s (NL-R2-17, mixed systems 12.2.2): system=%s R=%s Cd=%s Om0=%s V=%s kip T=%s s"
+                       % (d, v.get("system"), v.get("R"), v.get("Cd"), v.get("Om0"), v.get("V_design_kip"), v.get("T_design_s"))
+                       for d, v in sorted((getattr(b, "by_dir", None) or {}).items()))))
 
 
 if __name__ == "__main__":

@@ -60,6 +60,19 @@ def cfg_loads(pkg):
             out["sources"]["L_by_level"] = "cfg.py"
         except Exception:
             pass
+    # NL-R2-16: roof snow S (psf) for Eq. (16.4-3) of 16.4.2.1 Exception 2 (cfg `snow`, per level `snow_by_level`)
+    mo = re.search(r"(?<![A-Za-z0-9_])['\"]?snow['\"]?\s*[:=]\s*" + num, src)
+    out["snow"] = float(mo.group(1)) if mo else None
+    if mo:
+        out["sources"]["snow"] = "cfg.py"
+    out["snow_by_level"] = {}
+    mo = re.search(r"(?<![A-Za-z0-9_])['\"]?snow_by_level['\"]?\s*[:=]\s*(\{[^{}]*\})", src)
+    if mo:
+        try:
+            out["snow_by_level"] = {int(k): float(v) for k, v in ast.literal_eval(mo.group(1)).items()}
+            out["sources"]["snow_by_level"] = "cfg.py"
+        except Exception:
+            pass
     if out["L_floor"] is None and getattr(pkg.basis, "L_floor_psf", None) is not None:
         out["L_floor"] = float(pkg.basis.L_floor_psf); out["sources"]["L_floor"] = pkg.basis.sources.get("L_floor_psf", "package basis")
     return out
@@ -153,7 +166,7 @@ def tributary(pkg, live_psf=None, roof_live_psf=None):
         k = lb["k"]; top = (i == len(LB) - 1)
         Lf = cl["L_by_level"].get(k, Lf_default) if live_psf is None else live_psf
         above = LB[i + 1]["bays"] if not top else []
-        node_area, node_L0, node_Lr = {}, {}, {}
+        node_area, node_L0, node_Lr, node_roof = {}, {}, {}, {}
         colset = set(lb["column_nodes"])
         floor_in2 = roof_in2 = 0.0
         if lb["bays"]:
@@ -171,6 +184,7 @@ def tributary(pkg, live_psf=None, roof_live_psf=None):
                     node_area[n] = node_area.get(n, 0.0) + sh
                     if roof:
                         node_Lr[n] = node_Lr.get(n, 0.0) + Lr * sh / 1000.0
+                        node_roof[n] = node_roof.get(n, 0.0) + sh
                     else:
                         node_L0[n] = node_L0.get(n, 0.0) + Lf * sh / 1000.0
         else:
@@ -186,10 +200,38 @@ def tributary(pkg, live_psf=None, roof_live_psf=None):
                 node_area[n] = a_in2 / 144.0 / len(tgt)
                 if roof_in2:
                     node_Lr[n] = Lr * a_in2 / 144.0 / len(tgt) / 1000.0
+                    node_roof[n] = a_in2 / 144.0 / len(tgt)
                 else:
                     node_L0[n] = Lf * a_in2 / 144.0 / len(tgt) / 1000.0
         out.append(dict(k=k, z=lb["z"], master=lb["master"], slaves=lb["slaves"], area_ft2=(floor_in2 + roof_in2) / 144.0,
                         floor_ft2=floor_in2 / 144.0, roof_ft2=roof_in2 / 144.0, L0_floor_psf=Lf, Lr_psf=Lr,
-                        L0_kip=sum(node_L0.values()), Lr_kip=sum(node_Lr.values()), node_area=node_area, node_L0=node_L0, node_Lr=node_Lr,
+                        L0_kip=sum(node_L0.values()), Lr_kip=sum(node_Lr.values()), node_area=node_area, node_L0=node_L0, node_Lr=node_Lr, node_roof_ft2=node_roof,
                         method=method, bays=len(lb["bays"])))
     return out, info
+
+
+def column_snow_axial(pkg):
+    """NL-R2-16: roof snow axial force S (kip) of every column for Eq. (16.4-3) of ASCE 7-22 16.4.2.1 Exception 2.
+    Snow (cfg `snow`, or `snow_by_level` {k: psf}) on the ROOF bays of each level (the same framed plate and quarter-bay
+    lumping as the 16.3.2 gravity), carried down each vertical column line: a column takes the snow lumped on the nodes
+    of its line at and above its top. Returns ({col_tag: kip}, basis text); no snow in cfg.py -> ({}, "S = 0 ...")."""
+    from pushover import nonlinear_model as NM
+    cl = cfg_loads(pkg)
+    if not cl.get("snow") and not cl.get("snow_by_level"):
+        return {}, "S = 0 (no roof snow load in cfg.py)"
+    levels, _ = tributary(pkg)
+    nodes = pkg.model.nodes
+    node_S = {}
+    for lv in levels:
+        psf = cl["snow_by_level"].get(lv["k"], cl.get("snow") or 0.0)
+        for n, a in (lv.get("node_roof_ft2") or {}).items():
+            node_S[n] = node_S.get(n, 0.0) + psf * a / 1000.0
+    out = {}
+    key = lambda n: (_k(nodes[n][0]), _k(nodes[n][1]))
+    for e in pkg.model.elements:
+        if "etype" in e or NM.member_kind(pkg, e) != "col" or key(e["n1"]) != key(e["n2"]):
+            continue
+        z_top = max(nodes[e["n1"]][2], nodes[e["n2"]][2])
+        out[e["tag"]] = sum(s for n, s in node_S.items() if key(n) == key(e["n1"]) and nodes[n][2] >= z_top - 1e-6)
+    return out, "roof snow %s psf%s on the roof bays (cfg.py), tributary to the column lines" % (
+        cl.get("snow"), (" (by level %s)" % cl["snow_by_level"]) if cl.get("snow_by_level") else "")

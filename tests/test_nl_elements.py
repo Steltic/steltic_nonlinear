@@ -202,6 +202,32 @@ def test_find_links_topology():
     assert HM.find_links(nodes, mem, _prm(ebf_link=g), "EBF") == {}
 
 
+def test_links_only_in_declared_ebf_and_stmf_refused():
+    """NL-R2-13: a beam segment between two brace work points is an EBF link only when the system is declared EBF (or the
+    tag is listed); an STMF (Ex28: 1248 truss chord panels became shear links) is refused before any model is built."""
+    import types
+    nodes, mem = _ebf_members()
+    prm = HM.load_params()
+    for sysname in ("STMF", "SCBF", "SMF", None):
+        notes = []
+        assert HM.find_links(nodes, mem, prm, sysname, notes=notes) == {}, sysname
+        assert len(notes) == 1 and notes[0].startswith("1 beam segments between two brace work points modelled as BEAMS")
+    notes = []
+    assert list(HM.find_links(nodes, mem, prm, "EBF", notes=notes)) == [4] and notes == []
+    assert list(HM.find_links(nodes, mem, prm, "SMF / EBF")) == [4]               # system_Y declares the EBF
+    g = dict(prm["ebf_link"]); g.update(element_tags=[4])                         # explicit list: honoured in any system
+    assert list(HM.find_links(nodes, mem, _prm(ebf_link=g), "SCBF")) == [4]
+    # refusal
+    B = lambda **k: types.SimpleNamespace(**{"system": None, **k})
+    assert "STMF" in HM.unsupported_system(B(system="STMF", system_X="STMF")) and "E4" in HM.unsupported_system(B(system="STMF"))
+    assert HM.unsupported_system(B(system="dual", system_Y="special truss moment frame")) is not None
+    for ok in ("EBF", "SMF", "dual SMF+BRBF", "SCBF", None):
+        assert HM.unsupported_system(B(system=ok)) is None
+    pkg = types.SimpleNamespace(basis=B(system="STMF"))
+    with pytest.raises(HM.UnsupportedSystem, match="NOT EVALUATED.*STMF"):
+        NM.build_nonlinear(pkg, _prm(), {})
+
+
 # ----------------------------------------------------------------------------- NL-10 cyclic deterioration
 def test_cyclic_lambda_expressions():
     prm = HM.load_params()

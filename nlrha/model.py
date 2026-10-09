@@ -38,7 +38,7 @@ def ch16_gravity(pkg, ch16, live_psf=None, roof_live_psf=None, with_live=True):
     area_all = area_lt100 = 0.0
     f_le, f_gt, c = g["live_factor_le100psf"], g["live_factor_gt100psf"], g["combination_factor"]
     for lv in trib:
-        WD = pkg.model.masses.get(lv["master"], [0] * 6)[0] * G_IN
+        WD = NM.level_mass(pkg, lv["master"], [s for (_k, _z, _m, s) in NM.levels(pkg) if _m == lv["master"]][0])["m"] * G_IN   # R2 patch
         A = sum(lv["node_area"].values())
         fL = f_gt if lv["L0_floor_psf"] > 100 else f_le
         fR = f_gt if lv["Lr_psf"] > 100 else f_le
@@ -85,6 +85,7 @@ def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
         prm["verified"] = False                                      # value on the NLRHA copy -> the run's effective flag drops
         prm["_used_unverified"] = prm_b.get("_used_unverified") or prm.get("_used_unverified") or {}
     stats["degradation_16_3_1"] = degradation_statement(prm, stats)
+    stats["lambda_summary"] = lambda_summary(hinges)                 # NL-R2-05: the Lambda values the run built
     # Fibre: all forceBeamColumn tags for Rayleigh region. IMK: elastic_ele_tags (RBS extras) or pack tags.
     if stats.get("plasticity") == "fibre" and stats.get("fibre_eles"):
         elastic_eles = list(stats["fibre_eles"])
@@ -101,6 +102,18 @@ def build(pkg, prm, ch16, PG, member_nseg=None, plasticity=None):
                 for si in range(1, nseg):
                     elastic_eles.append(SEG_ELE_BASE + e["tag"] * 100 + si)
     return hinges, stats, elastic_eles
+
+
+def lambda_summary(hinges):
+    """NL-R2-05: the IMK cyclic-deterioration Lambda the model actually carries, per member kind:
+    {kind: {n, n_zero, min, max}} over the beam / column hinges (fibre models carry none -> {})."""
+    out = {}
+    for h in hinges.values():
+        sp = h.get("spec")
+        if h.get("kind") not in ("beam", "col") or sp is None or not hasattr(sp, "Lambda"):
+            continue
+        out.setdefault(h["kind"], []).append(float(getattr(sp, "Lambda") or 0.0))
+    return {k: dict(n=len(v), n_zero=sum(1 for x in v if x <= 0.0), min=round(min(v), 4), max=round(max(v), 4)) for k, v in out.items()}
 
 
 def degradation_statement(prm, stats):
@@ -135,24 +148,51 @@ def degradation_statement(prm, stats):
     return dict(items=[dict(component=c, modelled=t, ok=ok) for c, t, ok in items], demonstrated=demonstrated, text=text)
 
 
+def _mass_dofs():
+    """[(node, [m1..m6])] for every node carrying mass (floor / CoM nodes, brace nodes, seeded tiny masses). The full
+    mass matrix is needed: the eigenvectors are orthogonal with respect to it, and leaving the brace nodes out inflates
+    the participation of the brace-local modes (Ex30: 118 %)."""
+    out = []
+    for n in ops.getNodeTags():
+        try:
+            m = list(ops.nodeMass(n))
+        except Exception:                                           # noqa: BLE001
+            continue
+        if any(v > 0.0 for v in m):
+            out.append((n, m))
+    return out
+
+
 def modal(pkg, nmodes=12):
-    """Periods + effective modal mass fractions in X and Y (for the period range and the 90% rule)."""
+    """Periods + effective modal mass fractions in X and Y (for the period range and the 90% rule).
+
+    NL-R2-09 fix 2: participation from the FULL lumped mass matrix of the analysis model (every node that carries
+    mass, all six DOFs) -- not from level masses read at the diaphragm masters. The brace nodes now carry their own mass
+    and the level mass may sit on a centre-of-mass node, so a master-only sum is no longer consistent with the
+    eigenvectors (it reported 118 % cumulative mass on Ex30). Mtot is the model's total translational mass per direction."""
+    md = _mass_dofs()
+    for nm_try in (nmodes, 2 * nmodes, 4 * nmodes, 8 * nmodes):       # brace-local modes can crowd the first 12
+        res = _modal_n(md, nm_try)
+        if res["T90"] is not None:
+            break
+    res["n_modes"] = nm_try
+    return res
+
+
+def _modal_n(md, nmodes):
     ops.wipeAnalysis()
     ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
     w2 = ops.eigen("-genBandArpack", nmodes)
-    lv = NM.levels(pkg)
-    mk = {k: pkg.model.masses[m][0] for k, z, m, s in lv}; Mtot = sum(mk.values())
+    Mtot = {"X": sum(m[0] for n, m in md), "Y": sum(m[1] for n, m in md)}
     modes = []
     for i, w in enumerate(w2):
         T = 2 * math.pi / math.sqrt(max(w, 1e-12))
-        fr = {}
-        Jk = {k: pkg.model.masses[m][5] for k, z, m, s in lv}
-        px = {k: ops.nodeEigenvector(m, i + 1, 1) for k, z, m, s in lv}; py = {k: ops.nodeEigenvector(m, i + 1, 2) for k, z, m, s in lv}
-        pr = {k: ops.nodeEigenvector(m, i + 1, 6) for k, z, m, s in lv}
-        Mn = sum(mk[k] * (px[k] ** 2 + py[k] ** 2) + Jk[k] * pr[k] ** 2 for k in mk)      # full generalised mass (x, y, torsion)
-        for d, phi in (("X", px), ("Y", py)):
-            Ln = sum(mk[k] * phi[k] for k in phi)
-            fr[d] = (Ln ** 2 / Mn / Mtot) if Mn > 0 else 0.0
+        Mn = 0.0; L = {"X": 0.0, "Y": 0.0}
+        for n, m in md:
+            phi = ops.nodeEigenvector(n, i + 1)
+            Mn += sum(m[d] * phi[d] * phi[d] for d in range(min(6, len(phi))))
+            L["X"] += m[0] * phi[0]; L["Y"] += m[1] * phi[1]
+        fr = {d: (L[d] ** 2 / Mn / Mtot[d]) if (Mn > 0 and Mtot[d] > 0) else 0.0 for d in L}
         modes.append(dict(mode=i + 1, T=T, fx=fr["X"], fy=fr["Y"]))
     T1x = max(modes, key=lambda m: m["fx"])["T"]; T1y = max(modes, key=lambda m: m["fy"])["T"]
     cx = cy = 0.0; T90 = None

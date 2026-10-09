@@ -94,12 +94,62 @@ def _f(x, nd=2):
     return ("%%.%df" % nd) % x if isinstance(x, (int, float)) else str(x)
 
 
+def _hm_txt(n):
+    """NL-R2-12: the higher-mode test result for one NSP column."""
+    hm = n.get("higher_modes") or {}
+    if hm.get("max_ratio") is None:
+        return '<span class="warn">NOT EVALUATED</span> %s' % hm.get("reason", "no modal data")
+    lab = {"significant": '<span class="ng">significant</span>', "not_significant": '<span class="ok">not significant</span>'}.get(
+        hm.get("status"), '<span class="warn">NOT EVALUATED</span>')
+    return "%.2f (story %d; %d modes, %.0f%% mass, %s) → %s" % (hm["max_ratio"], hm["story_max"], hm["n_modes_used"],
+                                                                100 * (hm.get("cum_mass_frac") or 0), hm.get("combination", ""), lab)
+
+
+def _nsp_txt(n):
+    st = n.get("nsp_status") or ("not_permitted" if n.get("nsp_permitted") is False else "not_evaluated")
+    cls = {"permitted": "ok", "not_permitted": "ng", "permitted_with_LDP": "ng"}.get(st, "warn")
+    word = {"permitted": "permitted", "not_permitted": "NOT permitted — NDP required",
+            "permitted_with_LDP": "NOT permitted alone — supplementary LDP required", "not_evaluated": "NOT EVALUATED"}[st]
+    return '<span class="%s">%s</span>' % (cls, word)
+
+
+def _hm_table(nsp):
+    """Per-story ratios of the higher-mode test (NL-R2-12), one table per direction."""
+    hm = (nsp.get("BSE-1N") or next(iter(nsp.values()), {})).get("higher_modes") or {}
+    if not hm.get("ratios"):
+        return ""
+    rows = "".join("<tr><td>%d</td><td>%.0f</td><td>%.0f</td><td>%s</td></tr>"
+                   % (r["story"], r["V_modal_kip"], r["V_mode1_kip"], _tag(r["ratio"] <= hm["limit"], "%.2f" % r["ratio"], "%.2f" % r["ratio"]))
+                   for r in hm["ratios"])
+    return ("<h3>Higher-mode significance — ASCE 41-23 §7.3.2.1 item 2</h3><p>Response-spectrum story shears from the pushover "
+            "model's modes (initial stiffness, diaphragm level masses): %d modes in eigen order to %.1f%% mass participation in "
+            "this direction, combined by %s, against the first-mode-only shears; spectrum %s. Higher-mode effects are "
+            "significant where a ratio exceeds 1.30 (then the NSP must be supplemented by an LDP). Result: <b>%s</b> — %s.</p>"
+            "<table><tr><th>Story</th><th>V 90%%-mass MRSA (kip)</th><th>V first mode (kip)</th><th>ratio</th></tr>%s</table>"
+            % (hm["n_modes_used"], 100 * (hm.get("cum_mass_frac") or 0), hm.get("combination", ""), hm.get("spectrum", ""),
+               hm.get("status", "").replace("_", " ").upper(), hm.get("reason", ""), rows))
+
+
+def _reached_txt(n):
+    """NL-R2-24: a push short of delta_t is NOT ACCEPTABLE only after a genuine strength loss / rotation b; a numerical
+    stop (or the drift cap) above 0.8 Vmax is NOT EVALUATED."""
+    if n.get("reached_target", True):
+        return _tag(True, "yes")
+    sf = n.get("target_shortfall") or {}
+    if sf and sf.get("kind") in ("numerical", "drift_cap"):
+        return '<span class="warn">NO — NOT EVALUATED</span> %s' % sf.get("text", "")
+    return _tag(False, txt_ng="NO — TARGET NOT REACHED: NOT ACCEPTABLE") + (" %s" % sf["text"] if sf.get("text") else "")
+
+
 def _tag(ok, txt_ok="PASS", txt_ng="NG"):
     return '<span class="ok">%s</span>' % txt_ok if ok else '<span class="ng">%s</span>' % txt_ng
 
 
-def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s):
+def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s, pending=()):
+    """`pending` (NL-R2-14): directions still running -- the files are written after each direction and marked
+    PARTIAL until the last one is in (pushover_package.json: complete / directions_pending)."""
     os.makedirs(outdir, exist_ok=True)
+    pending = list(pending or [])
     b = pkg.basis
     ts = datetime.datetime.now().isoformat(timespec="seconds")
     H = []
@@ -115,6 +165,11 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                  % ("the parameter file claims verified=true, but some values the model used are not user-verified."
                     if prm.get("_verified_claimed") else "the parameter file has verified=false.",
                     _which or "the whole file (no per-field record)", prm.get("source", "")))
+    if pending:
+        H.append('<div class="banner">PARTIAL RESULTS — direction%s %s still running; finished: %s. This report is rewritten when '
+                 'the remaining direction%s finish%s; no overall verdict can be drawn from it yet.</div>'
+                 % ("s" if len(pending) > 1 else "", ", ".join(pending), ", ".join(runs) or "none",
+                    "s" if len(pending) > 1 else "", "" if len(pending) > 1 else "es"))
     H.append('<div class="note"><b>Not for construction.</b> Prototype output produced by an AI-driven tool from an automatically converted '
              'analysis model. Every result must be independently checked and sealed by a licensed professional engineer.</div>')
     if hinge_stats and hinge_stats.get("model_warnings"):      # NL-02/03/10: element-model disclosures from the builder
@@ -127,7 +182,13 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                    ("Cd", "C<sub>d</sub>"), ("Om0", "Ω<sub>0</sub>"), ("Ie", "I<sub>e</sub>"), ("W_kip", "Effective seismic weight W (kip)"),
                    ("V_design_kip", "ELF design base shear V (kip)"), ("T_design_s", "Design period T (s)"), ("L_floor_psf", "Floor live load (psf)")):
         H.append("<tr><td>%s</td><td>%s</td><td>%s</td></tr>" % (lab, _f(getattr(b, k)), b.sources.get(k, "—")))
+    for d, x in sorted((getattr(b, "by_dir", None) or {}).items()):     # NL-R2-17: mixed systems (12.2.2) -- the factors of each direction
+        H.append("<tr><td><b>Direction %s</b> (mixed systems, ASCE 7-22 12.2.2): system · R / C<sub>d</sub> / Ω<sub>0</sub> · V · T</td><td>%s · %s / %s / %s · %s kip · %s s</td><td>%s</td></tr>"
+                 % (d, x.get("system"), _f(x.get("R")), _f(x.get("Cd")), _f(x.get("Om0")), _f(x.get("V_design_kip")), _f(x.get("T_design_s")),
+                    "; ".join(sorted(set((x.get("source") or {}).values())))))
     H.append("</table>")
+    if getattr(b, "by_dir", None):
+        H.append('<p class="note">Mixed systems: Ω = V<sub>max</sub>/V, Ω<sub>0</sub>, R and C<sub>d</sub> below use the push direction\'s own design (the rows above), not the building headline.</p>')
     _pz = (prm.get("panel_zones") or {}).get("mode", "rigid")
     _npz = hinge_stats.get("panel_zones", 0) if hinge_stats else 0
     if (hinge_stats or {}).get("plasticity") == "fibre":
@@ -177,22 +238,25 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                 ("S<sub>a</sub>(T<sub>e</sub>) (g)", lambda n: _f(n["Sa"], 3)),
                 ("C<sub>0</sub> (Γ<sub>1</sub>φ<sub>roof</sub>) · C<sub>1</sub> · C<sub>2</sub>", lambda n: "%.3f · %.3f · %.3f" % (n["C0"], n["C1"], n["C2"])),
                 ("Strength ratio μ<sub>strength</sub> = S<sub>a</sub>C<sub>m</sub>/(V<sub>y</sub>/W), Eq. (7-32)", lambda n: "%s (C<sub>m</sub> %s, %s)" % (_f(n["mu_strength"], 3), _f(n.get("Cm"), 2), n.get("Cm_basis", ""))),
-                ("μ<sub>max</sub> (Eq. 7-33, α<sub>e</sub> Eq. 7-34) → NSP permitted (§7.3.2.1)?", lambda n: "%s → %s" % (_f(n["mu_max"], 2), _tag(n["nsp_permitted"], "yes", "NO — use NDP"))),
+                ("μ<sub>max</sub> (Eq. 7-33, α<sub>e</sub> Eq. 7-34) → μ<sub>strength</sub> &lt; μ<sub>max</sub> (§7.3.2.1 item 1)?", lambda n: "%s → %s" % (_f(n["mu_max"], 2), _tag(n.get("nsp_strength_ok", n["nsp_permitted"]), "yes", "NO — use NDP"))),
+                ("Higher modes (§7.3.2.1 item 2): max story shear 90%-mass MRSA / first mode (limit 1.30)", _hm_txt),
+                ("<b>NSP applicability (§7.3.2.1)</b>", _nsp_txt),
                 ("<b>Target displacement δ<sub>t</sub> (in) · /H</b>, Eq. (7-29)", lambda n: "<b>%.2f</b> · %.2f%%" % (n["target_disp_in"], 100 * n["target_over_H"])),
-                ("Push reached δ<sub>t</sub>? (§7.4.3.3.1)", lambda n: _tag(n.get("reached_target", True), "yes", "NO — TARGET NOT REACHED: NOT ACCEPTABLE")),
+                ("Push reached δ<sub>t</sub>? (§7.4.3.3.1)", _reached_txt),
                 ("Curve pushed to ≥ 1.5 δ<sub>t</sub>?", lambda n: _tag(n["reached_150pct"], "yes", "NO — extend push")))
         for lab, fn in rows:
             H.append("<tr><td>%s</td>%s</tr>" % (lab, "".join("<td>%s</td>" % fn(n) for n in R["nsp"].values())))
         H.append("</table>")
+        H.append(_hm_table(R["nsp"]))
 
         p = R["p695"]
         H.append("<h3>FEMA P-695-style factors from this curve</h3><table><tr><th>Factor</th><th>Value</th><th>Design basis</th><th>Reading</th></tr>")
         H.append("<tr><td>Overstrength Ω = V<sub>max</sub>/V</td><td>%s (V<sub>max</sub> = %.0f kip, V<sub>max</sub>/W = %.2f)</td><td>Ω<sub>0</sub> = %s</td><td>%s</td></tr>"
-                 % (_f(p["Omega"]), p["Vmax_kip"], p["Vmax_over_W"], _f(b.Om0, 1),
+                 % (_f(p["Omega"]), p["Vmax_kip"], p["Vmax_over_W"], _f(p.get("Omega0_design", b.Om0), 1),
                     "system overstrength far exceeds the tabulated Ω<sub>0</sub> — heavy drift/serviceability-governed sections; capacity-design forces bounded by Ω<sub>0</sub>Q<sub>E</sub> are not an upper bound here"
-                    if (p["Omega"] or 0) > 1.5 * (b.Om0 or 3) else "within the usual range of the tabulated Ω<sub>0</sub>"))
+                    if (p["Omega"] or 0) > 1.5 * (p.get("Omega0_design", b.Om0) or 3) else "within the usual range of the tabulated Ω<sub>0</sub>"))
         H.append("<tr><td>Period-based ductility μ<sub>T</sub> = δ<sub>u</sub>/δ<sub>y,eff</sub></td><td>%s (δ<sub>u</sub> = %.1f in %s; δ<sub>y,eff</sub> = %.2f in, T = %.2f s)</td><td>R = %s, C<sub>d</sub> = %s</td><td>%s</td></tr>"
-                 % (_f(p["mu_T"]), p["delta_u_in"], p["delta_u_basis"], p["delta_y_eff_in"], p["T_used_s"], _f(b.R, 0), _f(b.Cd, 1),
+                 % (_f(p["mu_T"]), p["delta_u_in"], p["delta_u_basis"], p["delta_y_eff_in"], p["T_used_s"], _f(p.get("R_design", b.R), 0), _f(p.get("Cd_design", b.Cd), 1),
                     "μ<sub>T</sub> ≥ 3 is the P-695 threshold for full spectral-shape credit" if p["mu_T"] >= 3 else "limited ductility — review hinge parameters and mechanism"))
         t = run.get("tail", {})
         _st = t.get("status")
@@ -255,7 +319,7 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
     for d, run in runs.items():
         R = results[d]; n1 = R["nsp"]["BSE-1N"]; n2 = R["nsp"]["BSE-2N"]; p = R["p695"]
         H.append("<tr><td>Actual overstrength vs Ω<sub>0</sub> = %s (%s)</td><td>Ω = %s</td><td>Ch. 9 capacity design — Ω<sub>0</sub>Q<sub>E</sub> column/collector forces</td></tr>"
-                 % (_f(b.Om0, 1), d, _f(p["Omega"])))
+                 % (_f(p.get("Omega0_design", b.Om0), 1), d, _f(p["Omega"])))
         H.append("<tr><td>Does a ductile (beam-hinging) mechanism form? (%s)</td><td>%d beam / %d column hinges yielded at δ<sub>t</sub> BSE-2N</td><td>Ch. 9 SCWB ratio</td></tr>"
                  % (d, sum(c["beam_yielded"] for c in R["acc"]["BSE-2N"]["census"]), sum(c["col_yielded"] for c in R["acc"]["BSE-2N"]["census"])))
         _md = R["acc"]["BSE-2N"].get("max_story_drift")
@@ -291,7 +355,11 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
              "Gravity in the push distributed equally to column nodes per level (footprint from node extents); replace with tributary loads from model_static.py for irregular plans.",
              pz_item,
              "Force-controlled actions (column axial, connection welds/bolts) reported as P/P<sub>ye</sub> only; run the Eq. 7-38 check with γχ factors.",
-             "Higher-mode check: NSP must be supplemented by an LDP where higher modes are significant (story shear from a 90%-mass MRSA > 130% of the first-mode shear) — perform with the linear package's RS results."]
+             "Higher-mode check (ASCE 41-23 §7.3.2.1 item 2), computed here from the pushover model's modes: %s. Where significant, "
+             "the NSP is permitted only with a supplementary LDP (not part of this supplement)." % "; ".join(
+                 "%s: %s" % (d, (lambda hm: ("max ratio %.2f at story %d → %s" % (hm["max_ratio"], hm["story_max"], hm["status"].replace("_", " ")))
+                                 if hm.get("max_ratio") is not None else "NOT EVALUATED (%s)" % hm.get("reason", ""))(
+                     (results[d]["nsp"].get("BSE-1N") or {}).get("higher_modes") or {})) for d in runs)]
     H += ["<li>%s</li>" % i for i in items]
     H.append("</ol>")
     html = "\n".join(H)
@@ -302,7 +370,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
               params_unverified=prm.get("_used_unverified") or {}, params_verified_claimed=bool(prm.get("_verified_claimed")),
               risk_category=prm.get("_risk_category"), bpon_levels=list(_PF.bpon_levels(prm.get("_risk_category") or "I_II")),
               numerics=prm.get("numerics", {}),
-              basis=vars(b) | {"sources": b.sources}, hinge_stats=hinge_stats, gravity=gravity_table, directions={})
+              basis=vars(b) | {"sources": b.sources}, hinge_stats=hinge_stats, gravity=gravity_table, directions={},
+              complete=not pending, directions_pending=pending, elapsed_s=round(elapsed_s, 1))
     for d, run in runs.items():
         R = results[d]
         pk["directions"][d] = dict(T1=run["pattern"]["T1"], mode=run["pattern"]["mode"], meff_frac=run["pattern"]["meff_frac"],
@@ -311,6 +380,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                                    acceptance={k: {kk: vv for kk, vv in a.items()} for k, a in R["acc"].items()})
         with open(os.path.join(outdir, "curve_%s.csv" % d), "w") as f:
             f.write("roof_disp_in,base_shear_kip\n" + "\n".join("%.5f,%.3f" % (u, V) for u, V in zip(run["rec"]["u"], run["rec"]["V"])))
-    with open(os.path.join(outdir, "pushover_package.json"), "w", encoding="utf-8") as f:
+    tmp = os.path.join(outdir, "pushover_package.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(pk, f, indent=1, default=str)
+    os.replace(tmp, os.path.join(outdir, "pushover_package.json"))      # atomic: readers never see a half-written file
     return os.path.join(outdir, "pushover_report.html")

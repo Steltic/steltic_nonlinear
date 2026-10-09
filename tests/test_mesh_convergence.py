@@ -105,12 +105,13 @@ def test_dry_run_driver(tmp_path):
     (tmp_path / "fake_job").mkdir()
     rc = main(a)
     assert rc == 0
-    sc = tmp_path / "out" / "mesh_convergence_scorecard_nsp.json"
-    assert sc.exists()
+    sc = tmp_path / "out" / "mesh_convergence_DRYRUN_scorecard_nsp.json"       # NL-R2-L1: dry-run names
+    assert sc.exists() and not (tmp_path / "out" / "mesh_convergence_scorecard_nsp.json").exists()
     doc = json.loads(sc.read_text())
     assert doc["tol"] == 0.10
     assert doc["method"] == "fibre"
-    assert doc["status"] in ("converged", "not_converged_within_cap", "continue")
+    assert doc["status"] == "dry-run" and doc["dry_run"] is True
+    assert doc["rehearsal_status"] in ("converged", "not_converged_within_cap", "continue")
 
 
 # ---------------------------------------------------------------------------
@@ -296,11 +297,11 @@ def test_dry_run_nlrha_dual_gate_driver(tmp_path):
     (tmp_path / "fake_job").mkdir()
     rc = main(a)
     assert rc == 0
-    sc = tmp_path / "out" / "mesh_convergence_scorecard_nlrha.json"
+    sc = tmp_path / "out" / "mesh_convergence_DRYRUN_scorecard_nlrha.json"     # NL-R2-L1: dry-run names
     doc = json.loads(sc.read_text())
-    assert doc["extra"]["nlrha_dual_gate"] is True
+    assert doc["extra"]["nlrha_dual_gate"] is True and doc["status"] == "dry-run"
     # Should complete or be in FC refine/pending — never silently treat as NSP-style only
-    assert doc["status"] in (
+    assert doc["rehearsal_status"] in (
         STATUS_NLRHA_COMPLETE,
         STATUS_GATE_A_LOCKED_FC_REFINE,
         STATUS_GATE_A_LOCKED_FC_PENDING,

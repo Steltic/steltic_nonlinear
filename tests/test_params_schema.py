@@ -258,6 +258,15 @@ def test_review_verdict_is_derived_from_the_results():
     md = review.mock_review(_ev(**{"summary.ddm.n_pass": 10}))
     assert "Nothing is required" not in md and "lighter design" not in md and "FAIL" in md
     assert "Nothing is required" in review.mock_review(_ev())
+    # NL-R2-12: the 7.3.2.1 higher-mode test -- significant -> not permitted alone (LDP missing), not done -> not evaluated
+    rv = review.results_verdict(_ev(**{"summary.pushover.nsp_status": "permitted_with_LDP"}))
+    assert rv["status"] == "INCOMPLETE" and "supplementary LDP" in rv["not_evaluated"][0]
+    assert "not permitted alone" in review.mock_review(_ev(**{"summary.pushover.nsp_status": "permitted_with_LDP"}))
+    rv = review.results_verdict(_ev(**{"summary.pushover.nsp_status": "not_evaluated"}))
+    assert rv["status"] == "INCOMPLETE" and "higher-mode" in rv["not_evaluated"][0]
+    rv = review.results_verdict(_ev(**{"summary.pushover.nsp_status": "not_permitted"}))
+    assert rv["status"] == "FAIL" and "NDP" in rv["failures"][0]
+    assert review.results_verdict(_ev(**{"summary.pushover.nsp_status": "permitted"}))["status"] == "PASS"
 
 
 def test_review_says_loudly_that_no_model_is_configured(tmp_path, monkeypatch):
