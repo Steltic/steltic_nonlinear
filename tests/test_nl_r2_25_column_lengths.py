@@ -69,3 +69,37 @@ def test_column_Pn_per_axis():
     assert KLr == pytest.approx(max(456.0 / 9.69, 168.0 / 1.92), rel=1e-3)
     Pn2, KLr2 = AC.column_Pn("W24X76", 456.0, Fy=50.0, Lcx=456.0, Lcy=40.0)      # strong axis governs
     assert KLr2 == pytest.approx(456.0 / 9.69, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------------------------- review D4
+def test_collector_record_is_not_a_column_record():
+    """Ex33: the W12X40 'collector' record matched '"col" in role' and was taken as a column record."""
+    rec = dict(id="collector-W12X40", inputs=dict(role="collector", section="W12X40", length_in=300.0, Lcy_in=100.0,
+                                                   Lb_in=100.0))
+    assert AC.design_column_lengths(_pkg([rec], z2=300.0, sec="W12X40"), "W12X40", 0.0, 300.0, 300.0) is None
+    for role in ("col", "column", "lateral_col", "gravity col"):
+        rec["inputs"]["role"] = role
+        assert AC.design_column_lengths(_pkg([rec], z2=300.0, sec="W12X40"), "W12X40", 0.0, 300.0, 300.0)["Lcy"] == 100.0
+
+
+@pytest.mark.parametrize("z1,z2,Lcy", [(0.0, 336.0, 168.0), (336.0, 456.0, 120.0), (0.0, 456.0, 168.0)])
+def test_split_elements_keep_the_member_strong_axis_length(z1, z2, Lcy):
+    """Ex33 W24X76: the 456 in column is modelled as 336 + 120 in elements in some lines; the weak axis is cut at the
+    brace points inside the element, the strong axis spans the whole member (456 in), not the element."""
+    dl = AC.design_column_lengths(_pkg([_EX33]), "W24X76", z1, z2, z2 - z1)
+    assert dl["Lcx"] == 456.0 and dl["Lcy"] == Lcy and dl["Lb"] == Lcy
+
+
+def test_element_longer_than_the_record_member_is_not_braced_by_it():
+    rec = dict(id="c", inputs=dict(role="lateral_col", section="W24X76", length_in=300.0, brace_points_in=[0.0, 150.0, 456.0]))
+    assert AC.design_column_lengths(_pkg([rec]), "W24X76", 0.0, 456.0, 456.0) is None
+
+
+def test_several_records_take_the_per_axis_maxima():
+    a = dict(id="a", inputs=dict(kind="col", role="gravity_col", section="W10X45", length_in=384.0, Lcx_in=384.0, Lcy_in=128.0,
+                                 Lb_in=128.0))
+    b = dict(id="b", inputs=dict(kind="col", role="lateral_col", section="W10X45", length_in=384.0, Lcx_in=200.0, Lcy_in=192.0,
+                                 Lb_in=96.0))
+    dl = AC.design_column_lengths(_pkg([a, b], z2=384.0, sec="W10X45"), "W10X45", 0.0, 384.0, 384.0)
+    assert (dl["Lcx"], dl["Lcy"], dl["Lb"]) == (384.0, 192.0, 128.0)
+    assert "[a]" in dl["source"] and "[b]" in dl["source"]

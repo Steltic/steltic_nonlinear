@@ -240,37 +240,47 @@ def design_column_lengths(pkg, section, z1, z2, L):
     None when the package gives nothing for this column: the caller keeps K = 1 and the member length about both axes
     and Lb = member length (the previous, conservative default)."""
     calc = getattr(pkg, "calc", None) or {}
-    best = None
+    recs = []
     sec_n = str(section or "").strip().upper().replace(" ", "")
     for m in calc.get("members") or []:
         inp = (m or {}).get("inputs") or {}
         role = str(inp.get("role") or "") + " " + str(inp.get("kind") or "")
-        if "col" not in role.lower() or str(inp.get("section") or "").strip().upper().replace(" ", "") != sec_n:
+        # review D4(a): the role as a whole word ("lateral_col", "gravity_col", "col", "column"), never "collector"
+        if not ({"col", "column", "columns"} & set(re.split(r"[^a-z]+", role.lower()))) \
+                or str(inp.get("section") or "").strip().upper().replace(" ", "") != sec_n:
             continue
         K = _len(inp.get("K")) or 1.0
         Lcx = _len(inp.get("Lcx_in")); Lcy = _len(inp.get("Lcy_in")) or _len(inp.get("Lc_weak_in")); Lb = _len(inp.get("Lb_in"))
+        Lm = _len(inp.get("length_in"))
         pts = inp.get("brace_points_in")
         src = "calc_package members[%s].inputs" % m.get("id")
         if isinstance(pts, (list, tuple)) and len(pts) >= 2 and all(_len(x) is not None or x in (0, 0.0) for x in pts):
             pts = sorted(float(x) for x in pts)
-            if not (pts[0] - 1.0 <= min(z1, z2) and max(z1, z2) <= pts[-1] + 1.0):
+            # review D4(b): only an element lying within the record's member (inside its brace-point span, no longer than
+            # the member)
+            if not (pts[0] - 1.0 <= min(z1, z2) and max(z1, z2) <= pts[-1] + 1.0) or (Lm is not None and L > Lm + 1.0):
                 continue
             lo, hi = min(z1, z2), max(z1, z2)
             cuts = [lo] + [x for x in pts if lo + 1e-6 < x < hi - 1e-6] + [hi]
             seg = max(b - a for a, b in zip(cuts[:-1], cuts[1:]))
-            rec = dict(Lcx=Lcx or K * L, Lcy=seg, Lb=seg, K=K, source="%s.brace_points_in %s (element %.0f-%.0f in)" % (
-                src, "/".join("%.0f" % x for x in pts), lo, hi))
+            # review D4(b): the strong axis spans the whole MEMBER, not this element (an element split at a brace point,
+            # Ex33 336 / 120 in of the 456 in column): Lcx = max(Lcx_in, K x member length)
+            Lmem = Lm if Lm is not None else (pts[-1] - pts[0])
+            recs.append(dict(Lcx=max(Lcx or 0.0, K * Lmem, L), Lcy=seg, Lb=seg, K=K, source="%s.brace_points_in %s (element %.0f-%.0f in)" % (
+                src, "/".join("%.0f" % x for x in pts), lo, hi)))
         elif Lcx or Lcy or Lb:
-            Lm = _len(inp.get("length_in"))
             if Lm is None or abs(Lm - L) > 1.0:
                 continue
-            rec = dict(Lcx=Lcx or K * L, Lcy=Lcy or K * L, Lb=Lb or Lcy or L, K=K,
-                       source="%s.%s" % (src, "/".join(k for k in ("Lcx_in", "Lcy_in", "Lb_in") if _len(inp.get(k)))))
-        else:
-            continue
-        if best is None or (rec["Lcy"], rec["Lb"], rec["Lcx"]) > (best["Lcy"], best["Lb"], best["Lcx"]):
-            best = rec
-    return best
+            recs.append(dict(Lcx=Lcx or K * L, Lcy=Lcy or K * L, Lb=Lb or Lcy or L, K=K,
+                             source="%s.%s" % (src, "/".join(k for k in ("Lcx_in", "Lcy_in", "Lb_in") if _len(inp.get(k))))))
+    if not recs:
+        return None
+    if len(recs) == 1:
+        return recs[0]
+    # review D4(c): several matching records (e.g. lateral and gravity groups of one section) -> the longest length PER
+    # AXIS (conservative), as documented
+    return dict(Lcx=max(r["Lcx"] for r in recs), Lcy=max(r["Lcy"] for r in recs), Lb=max(r["Lb"] for r in recs),
+                K=max(r["K"] for r in recs), source="per-axis maxima of " + "; ".join(r["source"] for r in recs))
 
 
 def _column_caps(pkg, c, prm, phi_col, B):
