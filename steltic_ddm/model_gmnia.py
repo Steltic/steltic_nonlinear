@@ -49,6 +49,7 @@ BRB_ELE0 = 70_000_000     # NL-02: BRB corotTruss BRB_ELE0 + member tag
 SPRING_MAT0 = 80_000_000  # BRB / link spring materials
 BRACE_NODE0 = 85_000_000  # NL-R2-27: deck node of a beam lateral-torsional brace (BRACE_NODE0 + running count)
 BRACE_ELE0 = 86_000_000   # NL-R2-27: zeroLength deck brace (BRACE_ELE0 + running count)
+TIED_BRACE_NSUB = 8      # review D2: minimum sub-elements of an X diagonal tied at its crossing
 BRACE_CONTINUOUS_N = 8    # NL-R2-27: L / Lb above this -> continuous bracing (every interior chain node braced)
 K_TRANS = 1.0e9      # kip/in   stiff pin springs
 K_ROT = 1.0e10       # kip-in/rad
@@ -165,6 +166,7 @@ class GMNIAModel:
         if self._grav_geo is False and not self.elastic:
             self.special_log.append("gravity: HR static-model distribution unavailable (%s) -- legacy two-way 45-degree "
                                     "tributary used (ignores one-way decks / infill)" % self._grav_fail)
+        self._x_tie_plan()                                         # NL-R2-28 (DDM), before the chains are built
         for m in nm.members:
             self._add_member(m)
         if self.braced:
@@ -275,36 +277,60 @@ class GMNIAModel:
                 break
         return out
 
+    def _x_tie_plan(self):
+        """NL-R2-28 (DDM): {brace tag: partner tag} of the X pairs that will be connected at the crossing -- decided from
+        the work-point geometry BEFORE the chains are built, so the tied diagonals get their half-length imperfection
+        (review D2) and at least TIED_BRACE_NSUB sub-elements."""
+        self.x_ties = {}
+        if self.elastic:
+            return
+        secs = self._hr_x_crossing_sections()
+        self._x_secs = secs
+        if not secs:
+            return
+        from pushover import sections_db as SDB
+        cand = [m for m in self.nm.members if m.kind == "brace" and not SDB.is_brb(m.section)
+                and str(m.section).upper().replace(" ", "") in secs]
+        for ta, tb in self.x_pairs([(m.tag, self._coord(m.n1), self._coord(m.n2)) for m in cand]):
+            self.x_ties[ta] = tb; self.x_ties[tb] = ta
+
+    @staticmethod
+    def bow_offset(f, L, bmag, tied=False):
+        """Member bow at fraction f of a chain of length L: half-sine bmag * L. A diagonal tied at its crossing (review D2)
+        adds an antisymmetric half-sine of bmag * L / 2 on each half -- the half-length buckling mode with the crossing at
+        rest, out-of-straightness L/2 / 1000 between brace points (AISC 360-22 App. 1, 1.2.2a User Note: 1/1,000
+        member out-of-straightness; 1.3.3b: the pattern with the greatest destabilizing effect)."""
+        off = bmag * L * math.sin(math.pi * f)
+        if tied:
+            off += bmag * (L / 2) * math.sin(2 * math.pi * f)
+        return off
+
     def _tie_x_crossings(self):
         """NL-R2-28 (DDM): where the HR design says the two diagonals of an X are connected at the crossing (and designs
         the compression diagonal on half its work-point length), the GMNIA connects them too -- the mid chain nodes share
         their translations (pinned crossing, equalDOF 1-3). The restraint the tension diagonal gives the compression
         diagonal then comes out of the analysis instead of an assumed K (AISC 360-22 App. 1, 1.3.1(a): all component and
         connection deformations of the structure as designed). Before: the diagonals were independent (K = 1 on the full
-        length), i.e. ~1/4 of the buckling load the HR design relied on (Ex21: HSS5-1/2X5-1/2X3/8, KL/r 319 vs 171)."""
-        self.x_ties = {}
-        if self.elastic:
-            return
-        secs = self._hr_x_crossing_sections()
-        if not secs:
-            return
-        from pushover import sections_db as SDB
-        cand = [(m.tag, self._coord(m.n1), self._coord(m.n2)) for m in self.nm.members
-                if m.kind == "brace" and not SDB.is_brb(m.section) and str(m.section).upper().replace(" ", "") in secs
-                and m.tag in self.sub_nodes and len(self.sub_nodes[m.tag]) >= 5 and len(self.sub_nodes[m.tag]) % 2 == 1]
-        skipped = sum(1 for m in self.nm.members if m.kind == "brace" and m.tag in self.sub_nodes
-                      and len(self.sub_nodes[m.tag]) % 2 == 0)
-        for ta, tb in self.x_pairs(cand):
+        length), i.e. ~1/4 of the buckling load the HR design relied on (Ex21: HSS5-1/2X5-1/2X3/8, KL/r 319 vs 171).
+        Review D2: a tied diagonal also carries an antisymmetric (L/2)/1000 half-sine on each half (see _add_member):
+        the full-length L/1000 bow alone is symmetric about the crossing and never seeds the half-length mode (pinned X
+        HSS5X5X3/8, 600 x 384 in: 81.1 kip with the full bow only vs 50.4 with the seed; Euler half length 48.8)."""
+        done = set()
+        for ta, tb in sorted(self.x_ties.items()):
+            if ta in done:
+                continue
             na = self.sub_nodes[ta][len(self.sub_nodes[ta]) // 2]
             nb = self.sub_nodes[tb][len(self.sub_nodes[tb]) // 2]
             ops.equalDOF(na, nb, 1, 2, 3)
-            self.x_ties[ta] = tb; self.x_ties[tb] = ta
+            done.update((ta, tb))
         if self.x_ties:
             self.special_log.append(
                 "X-brace crossings (NL-R2-28): %d X pairs of %s connected at the crossing (mid chain nodes share their "
                 "translations, rotations free) as the HR design assumes (calc_package: connected at the crossing, Lc <= "
-                "0.6 Lwp)%s" % (len(self.x_ties) // 2, ", ".join(sorted(secs)),
-                                 "; %d braces with an odd sub-element count left unconnected" % skipped if skipped else ""))
+                "0.6 Lwp); each tied diagonal carries the L/1000 full-length bow plus an antisymmetric (L/2)/1000 half-sine "
+                "per half (out-of-straightness between brace points, AISC 360-22 App. 1, 1.2.2a User Note / 1.3.3b)%s"
+                % (len(self.x_ties) // 2, ", ".join(sorted(self._x_secs)),
+                   "; tied diagonals use >= %d sub-elements" % TIED_BRACE_NSUB))
 
     # ------------------------------------------------------------------ NL-R2-27 beam bracing by the deck / infill
     def _hr_lb(self):
@@ -484,6 +510,10 @@ class GMNIAModel:
         if m.kind == "brace" and SDB.is_brb(m.section):
             return self._add_brb(m)
         nsub = {"col": self.nsub_col, "beam": self.nsub_beam, "brace": self.nsub_brace}[m.kind]
+        if m.kind == "brace" and m.tag in self.x_ties:
+            # review D2: a tied diagonal buckles over each half -- at least 4 elements per half (2 per half over-predict:
+            # pinned X HSS5X5X3/8: 57.7 kip with 2, 50.4 with 4; Euler half length 48.8) and an even count (crossing node)
+            nsub = max(TIED_BRACE_NSUB, nsub + nsub % 2)
         tr = self._transf_for(m)
         p1, p2 = self._coord(m.n1), self._coord(m.n2)
         L = math.dist(p1, p2)
@@ -596,7 +626,7 @@ class GMNIAModel:
         nseg = len(fr) + 1
         chain = [end1]
         for s, f in enumerate(fr, start=1):
-            off = bmag * L * math.sin(math.pi * f)
+            off = self.bow_offset(f, L, bmag, tied=(m.kind == "brace" and m.tag in self.x_ties))
             x = p1[0] + (p2[0] - p1[0]) * f + bv[0] * off
             y = p1[1] + (p2[1] - p1[1]) * f + bv[1] * off
             z = p1[2] + (p2[2] - p1[2]) * f + bv[2] * off

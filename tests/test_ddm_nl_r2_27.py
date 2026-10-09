@@ -309,60 +309,87 @@ def test_hr_x_crossing_sections_follow_the_calc_package(inp, expected):
     assert g._hr_x_crossing_sections() == expected
 
 
-def test_x_crossing_tie_raises_the_compression_diagonal_buckling_load():
-    """Two pin-ended HSS diagonals of a 600 x 384 in bay, the lower ends fixed in translation, the upper ends pushed
-    so that one diagonal is in compression and the other in tension (end rotations about X, Z held): with the crossing
-    tied (mid nodes share their
-    translations) the compression diagonal carries ~4x the force it carries untied (half vs full buckling length;
-    measured 216 vs 58 kip)."""
+def _x_peak(tie, nsub=8, residual="none"):
+    """Two pin-ended HSS5X5X3/8 diagonals of a 600 x 384 in bay (all end rotations free; torsion held by a spring), the
+    lower ends fixed in translation, the upper ends pushed together in X: peak compression (kip) in diagonal 1-2.
+    The bows are the GMNIA's (GMNIAModel.bow_offset, L/1000; tied diagonals with the half-length seed)."""
     import math
     import openseespy.opensees as ops
     from steltic_ddm.sections_fiber import FiberSectionBuilder
+    from steltic_ddm.model_gmnia import GMNIAModel
+    ops.wipe(); ops.model("basic", "-ndm", 3, "-ndf", 6)
+    H, B = 384.0, 600.0
+    ends = {1: (0, 0, 0), 2: (B, 0, H), 3: (B, 0, 0), 4: (0, 0, H)}
+    for t, c in ends.items():
+        ops.node(t, *c)
+    for t in (1, 3):
+        ops.fix(t, 1, 1, 1, 0, 0, 0)
+    for t in (2, 4):
+        ops.fix(t, 0, 1, 1, 0, 0, 0)
+    ops.uniaxialMaterial("Elastic", 99, 1e10)
+    for t, (a, b) in ((1, (1, 2)), (3, (3, 4)), (2, (1, 2)), (4, (3, 4))):     # torsion only (pins otherwise)
+        pa, pb = ends[a], ends[b]
+        ops.node(900 + t, *ends[t]); ops.fix(900 + t, 1, 1, 1, 1, 1, 1)
+        ops.element("zeroLength", 900 + t, 900 + t, t, "-mat", 99, "-dir", 4, "-orient",
+                    *[pb[q] - pa[q] for q in range(3)], 0, 1, 0)
+    ops.geomTransf("Corotational", 1, 0.0, 1.0, 0.0)
+    FiberSectionBuilder(ops, Fy=50.0, residual=residual).hss_rect(1, "HSS5X5X3/8", residual=residual)
+    ops.beamIntegration("Lobatto", 1, 1, 5)
+    mids, et = {}, 0
+    for k, (a, b) in enumerate(((1, 2), (3, 4))):
+        pa, pb = ends[a], ends[b]
+        L = math.dist(pa, pb)
+        chain = [a]
+        for s in range(1, nsub):
+            f = s / nsub
+            t = 100 + 20 * k + s
+            ops.node(t, pa[0] + (pb[0] - pa[0]) * f, GMNIAModel.bow_offset(f, L, 0.001, tied=tie), pa[2] + (pb[2] - pa[2]) * f)
+            chain.append(t)
+        chain.append(b)
+        mids[k] = chain[nsub // 2]
+        for s in range(nsub):
+            et += 1
+            ops.element("forceBeamColumn", et, chain[s], chain[s + 1], 1, 1)
+    if tie:
+        ops.equalDOF(mids[0], mids[1], 1, 2, 3)
+    ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
+    ops.load(2, -1.0, 0, 0, 0, 0, 0); ops.load(4, -1.0, 0, 0, 0, 0, 0)
+    ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
+    ops.test("NormDispIncr", 1e-8, 50, 0); ops.algorithm("Newton")
+    ops.integrator("DisplacementControl", 2, 1, -0.005); ops.analysis("Static")
+    nmin = 0.0
+    for _ in range(400):
+        if ops.analyze(1) != 0:
+            break
+        nmin = min(nmin, ops.eleResponse(1, "basicForce")[0])
+    return -nmin
 
-    def run(tie):
-        ops.wipe(); ops.model("basic", "-ndm", 3, "-ndf", 6)
-        H, B = 384.0, 600.0
-        ends = {1: (0, 0, 0), 2: (B, 0, H), 3: (B, 0, 0), 4: (0, 0, H)}
-        for t, c in ends.items():
-            ops.node(t, *c)
-        for t in (1, 3):
-            ops.fix(t, 1, 1, 1, 1, 0, 1)
-        for t in (2, 4):                         # top: pushed together in X (axial shortening of 1-2, lengthening of 3-4)
-            ops.fix(t, 0, 1, 1, 1, 0, 1)
-        ops.geomTransf("Corotational", 1, 0.0, 1.0, 0.0)
-        FiberSectionBuilder(ops, Fy=50.0, residual="none").hss_rect(1, "HSS5X5X3/8", residual="none")
-        ops.beamIntegration("Lobatto", 1, 1, 5)
-        mids, et = {}, 0
-        for k, (a, b) in enumerate(((1, 2), (3, 4))):
-            pa, pb = ends[a], ends[b]
-            chain = [a]
-            for s in range(1, 4):
-                f = s / 4.0
-                off = 0.001 * math.dist(pa, pb) * math.sin(math.pi * f)
-                t = 100 + 10 * k + s
-                ops.node(t, pa[0] + (pb[0] - pa[0]) * f, off, pa[2] + (pb[2] - pa[2]) * f)
-                chain.append(t)
-            chain.append(b)
-            mids[k] = chain[2]
-            for s in range(4):
-                et += 1
-                ops.element("forceBeamColumn", et, chain[s], chain[s + 1], 1, 1)
-        if tie:
-            ops.equalDOF(mids[0], mids[1], 1, 2, 3)
-        ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
-        ops.load(2, -1.0, 0, 0, 0, 0, 0); ops.load(4, -1.0, 0, 0, 0, 0, 0)
-        ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
-        ops.test("NormDispIncr", 1e-8, 50, 0); ops.algorithm("Newton")
-        ops.integrator("DisplacementControl", 2, 1, -0.01); ops.analysis("Static")
-        nmin = 0.0
-        for _ in range(150):
-            if ops.analyze(1) != 0:
-                break
-            nmin = min(nmin, ops.eleResponse(1, "basicForce")[0])
-        return -nmin                              # peak compression in the 1-2 diagonal (kip)
 
-    free, tied = run(False), run(True)
-    assert tied > 2.5 * free
+def test_x_crossing_tie_gives_the_half_length_capacity_not_more():
+    """Review D2: pinned X, HSS5X5X3/8 (r 1.87 in), diagonal 712 in. Untied: ~ Euler on the full length (12.2 kip).
+    Tied: the crossing halves the buckling length -- the capacity must be close to the half-length Euler load (48.8) and
+    above the AISC E3 Pn on the half length (42.8), NOT 81 kip (what the full-length bow alone gave: it is symmetric about
+    the crossing and never seeds the half-length mode)."""
+    import math
+    from pushover import sections_db as SDB
+    p = SDB.props("HSS5X5X3/8")
+    L = math.hypot(600.0, 384.0)
+    def euler(Lc):
+        return math.pi ** 2 * 29000.0 / (Lc / p["rx"]) ** 2 * p["A"]
+    e3_half = 0.877 * euler(L / 2)                         # KL/r 190 > 4.71 sqrt(E/Fy): elastic range, E3-3
+    free, tied = _x_peak(False), _x_peak(True)
+    assert free <= 1.1 * euler(L)
+    assert e3_half <= tied <= 1.1 * euler(L / 2)
+    assert tied > 3.0 * free
+
+
+def test_tied_diagonal_bow_has_the_half_length_seed():
+    from steltic_ddm.model_gmnia import GMNIAModel
+    L = 712.0
+    assert abs(GMNIAModel.bow_offset(0.5, L, 0.001, tied=True) - 0.712) < 1e-9          # crossing: the full bow only
+    q1 = GMNIAModel.bow_offset(0.25, L, 0.001, tied=True) - GMNIAModel.bow_offset(0.25, L, 0.001)
+    q3 = GMNIAModel.bow_offset(0.75, L, 0.001, tied=True) - GMNIAModel.bow_offset(0.75, L, 0.001)
+    assert abs(q1 - 0.356) < 1e-9 and abs(q3 + 0.356) < 1e-9                             # (L/2)/1000, antisymmetric
 
 
 # ---------------------------------------------------------------------------------------------- review D1: bridge vs limit
@@ -435,3 +462,34 @@ def test_bridge_never_reports_above_a_snap_through_limit(frac, dl_frac):
             assert ops.getLoadFactor(1) <= lim * (1 + 1e-9) and abs(_vm_residual(ops)) < 1e-4
     if why is not None:
         assert "snap" in why
+
+
+def test_gmnia_ties_x_diagonals_with_seed_and_fine_chain():
+    """Model level (review D2): an X of HSS5X5X3/8 in the X bay of the R6 one-storey frame, calc package 'connected at the
+    crossing' -> the pair is tied at coincident mid nodes, each diagonal has >= 8 sub-elements (default nsub 4) and the
+    quarter nodes carry the antisymmetric half-length seed."""
+    import math
+    import openseespy.opensees as ops
+    from test_ddm_r6 import _frame
+    from steltic_ddm.ingest import Member
+    from steltic_ddm.model_gmnia import GMNIAModel, TIED_BRACE_NSUB
+    nm, cfg = _frame()
+    tg = max(m.tag for m in nm.members) + 1
+    nm.members.append(Member(tg, "brace", "HSS5X5X3/8", 101, 100201, transf=4, dirn="X"))
+    nm.members.append(Member(tg + 1, "brace", "HSS5X5X3/8", 201, 100101, transf=4, dirn="X"))
+    L = math.hypot(300.0, 144.0)
+    nm.calc_package = {"members": [{"inputs": dict(role="brace", section="HSS5X5X3/8", Lc_in=L / 2, Lwp_in=L,
+                                                   configuration="X-bracing, diagonals connected at the crossing")}]}
+    g = GMNIAModel(nm, cfg, nsub=(2, 2, 4)).build()
+    assert g.x_ties == {tg: tg + 1, tg + 1: tg}
+    for t in (tg, tg + 1):
+        assert len(g.sub_nodes[t]) - 1 == TIED_BRACE_NSUB
+    ma, mb = g.sub_nodes[tg][TIED_BRACE_NSUB // 2], g.sub_nodes[tg + 1][TIED_BRACE_NSUB // 2]
+    assert math.dist(ops.nodeCoord(ma), ops.nodeCoord(mb)) < 1e-6
+    q1 = ops.nodeCoord(g.sub_nodes[tg][TIED_BRACE_NSUB // 4])
+    assert abs(abs(q1[1]) - 0.001 * L * (math.sin(math.pi / 4) + 0.5)) < 1e-6        # full bow + (L/2)/1000 seed
+    assert any("X-brace crossings" in str(r[4]) for r in g.builder.log)
+    # without the calc-package statement nothing is tied and the chains keep the default count
+    nm.calc_package = {}
+    g = GMNIAModel(nm, cfg, nsub=(2, 2, 4)).build()
+    assert g.x_ties == {} and len(g.sub_nodes[tg]) - 1 == 4
