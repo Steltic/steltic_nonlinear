@@ -245,8 +245,82 @@ def _member_row_values(blk: dict, ty: float, p: dict, Fye: float, prm: dict, Ca:
     return v, extra
 
 
+def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: dict) -> HingeSpec:
+    """NL-R2-28: HSS column flexural hinge.
+
+    Rectangular HSS: AISC 342-22 Table C3.6 line 4 ("Rectangular HSS and built-up box shapes", columns in
+    compression; one line, no highly / moderately ductile split):
+        a = 1.1 lam^-1.2 (1 - PG/Pye)^1.8 <= 0.05,  b = 0.5 lam^-0.6 (1 - PG/Pye)^1.2 - 0.01 <= 0.08,  c = 0.25,
+        IO = 0.5 a, LS = 0.75 b, CP = b;  note [e]: x0.75 for built-up box columns (not rolled HSS).
+    lam = the most slender wall b/t (note [b]: the element giving the lowest deformation), with b = B - 3t and the
+    design wall t = 0.93 t_nom (AISC 360-22 B4.1b, B4.2). M_CE with Eqs. C3-5/C3-6 and theta_y with Eq. C3-15,
+    exactly as for W columns; PG/Pye above the force-controlled limit -> force-controlled (C3.4). Expressions,
+    limits and the HSS material come from the group column_flexure_hss (template fallback, flagged).
+    Round HSS / pipe: Table C3.6 has no row -> no hinge, treated as force-controlled for flexure (flagged)."""
+    cp = prm["column_flexure"]
+    hb, tmpl = param_group(prm, "column_flexure_hss")
+    flags = ["HSS column: AISC 342-22 Table C3.6 line 4 (rectangular HSS)%s" % (
+        " -- column_flexure_hss not in the parameter file: repository TEMPLATE values" if tmpl else "")]
+    mt = prm["material"]
+    if hb.get("Fy_ksi") is not None:                     # HSS material (A500 Gr. C) -- not the W-shape `material`
+        Fy, Ry = float(hb["Fy_ksi"]), float(hb.get("Ry_expected", 1.0)); src = "column_flexure_hss"
+    elif (prm.get("brace_axial") or {}).get("Fy_ksi") is not None:
+        Fy, Ry = float(prm["brace_axial"]["Fy_ksi"]), float(prm["brace_axial"].get("Ry_expected", 1.0)); src = "brace_axial (HSS)"
+    else:
+        Fy, Ry = float(mt["Fy_ksi"]), float(mt["Ry_expected"]); src = "material (W-shape values)"
+    Fye = Fy * Ry
+    flags.append("HSS Fye = %.1f x %.2f = %.1f ksi (%s)" % (Fy, Ry, Fye, src))
+    Pye = p["A"] * Fye
+    r = max(0.0, PG_kip) / Pye
+    fc_lim = float(cp.get("force_controlled_above_P_over_Pye", 0.6))
+    ty0 = _theta_y(p["Zx"], Fye, L_in, p["Ix"], max(1e-6, 1 - r))
+    geo = p.get("hss") or {}
+    if geo.get("kind") != "rect" or r >= fc_lim:
+        if geo.get("kind") != "rect":
+            flags.append("%s (%s): AISC 342-22 Table C3.6 has no row for round HSS / pipe columns -> no flexural hinge, "
+                         "FORCE-CONTROLLED column" % (section, geo.get("kind", "?")))
+        else:
+            flags.append("PG/Pye=%.2f >= %.2f -> FORCE-CONTROLLED column (no hinge; check P vs PCL)" % (r, fc_lim))
+        PS.mark_used(prm, "column_flexure_hss", from_template=tmpl); PS.mark_used(prm, "column_flexure")
+        return HingeSpec("column", section, L_in, Fye, p["Zx"] * Fye, ty0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                         True, r, True, tuple(flags))
+    ws = SDB.hss_wall_slenderness(section)
+    lam = ws["lam"]
+    env = dict(lam=lam, PG=max(0.0, PG_kip), Pye=Pye, L=L_in, ry=p["ry"], math=math)
+    row = dict(hb)
+    for k in ("a_expr", "b_expr", "c_expr"):
+        if isinstance(row.get(k), str):
+            row[k] = row[k].replace("PG/Pye", "(PG/Pye)")
+    v = _row_abs(row, None, env)
+    mult = float(hb.get("built_up_box_factor", 0.75)) if hb.get("built_up_box") else 1.0
+    if mult != 1.0:
+        flags.append("built-up box column: Table C3.6 note [e] x%.2f" % mult)
+        v = {k: (x * mult if k != "c" and x is not None else x) for k, x in v.items()}
+    missing = [k for k in ("a", "b", "c", "IO", "LS", "CP") if v.get(k) is None]
+    if missing:
+        raise ValueError("HSS column parameters: %s missing (column_flexure_hss, AISC 342-22 Table C3.6 line 4)" % ", ".join(missing))
+    flags.append("HSS wall b/t=%.1f (t_des=%.3f in): a=%.4f b=%.4f c=%.2f rad at PG/Pye=%.3f" % (lam, ws["t_des"], v["a"], v["b"], v["c"], r))
+    PS.mark_used(prm, "column_flexure_hss", from_template=tmpl); PS.mark_used(prm, "column_flexure")
+    red = eval(cp["Mpce_axial_reduction"].replace("PG/Pye", "(PG/Pye)"), {}, env)
+    Mpe = p["Zx"] * Fye * red
+    ty = _theta_y(p["Zx"], Fye, L_in, p["Ix"], red if cp.get("theta_y_uses_Mpce") else 1 - r)
+    cd = prm.get("cyclic_deterioration") or (template_params().get("cyclic_deterioration") or {})
+    lam_c, cdet = 0.0, 1.0
+    if str(cd.get("mode", "none")).lower() == "supplied" and cd.get("Lambda_column_hss") is not None:
+        lam_c = float(cd["Lambda_column_hss"]); cdet = float(cd.get("c_exponent", 1.0))
+        flags.append("cyclic deterioration Lambda=%.3f (Lambda_column_hss, supplied)" % lam_c)
+    else:                                                # the W-shape regressions (Lignos et al.) do not cover HSS
+        flags.append("cyclic deterioration OFF for HSS columns (W-shape regressions not applicable; supply "
+                     "cyclic_deterioration.Lambda_column_hss with mode=supplied)")
+    return HingeSpec("column", section, L_in, Fye, Mpe, ty, v["a"], v["b"], v["c"], float(hb.get("Mc_over_My", cp.get("Mc_over_My", 1.1))),
+                     IO=v["IO"], LS=v["LS"], CP=v["CP"], force_controlled=False, PG_over_Pye=r, compact=True,
+                     flags=tuple(flags), Lambda=lam_c, c_det=cdet)
+
+
 def column_hinge(section: str, L_in: float, PG_kip: float, prm: dict) -> HingeSpec:
     p = SDB.props(section); cp = prm["column_flexure"]; mt = prm["material"]
+    if p.get("hss"):                                     # NL-R2-28: HSS / pipe -- no W-shape fields (d, tf, tw, bf)
+        return _hss_column_hinge(section, p, L_in, PG_kip, prm)
     Fye = mt["Fy_ksi"] * mt["Ry_expected"]
     Pye = p["A"] * Fye
     r = max(0.0, PG_kip) / Pye
@@ -344,25 +418,13 @@ class BraceSpec:
 
 
 def _hss_outside_and_tdes(section: str):
-    """Parse rectangular HSS label like HSS12X12X5/8 -> (B_out, tdes). A500 design wall tdes=0.93*tnom (AISC Manual)."""
-    s = section.strip().upper().replace(" ", "")
-    if not s.startswith("HSS"):
+    """Rectangular HSS label (HSS12X12X5/8, HSS5-1/2X5-1/2X3/8) -> (larger outside dimension, tdes);
+    A500 design wall tdes = 0.93 tnom (AISC 360-22 B4.2). (None, None) for anything else (NL-R2-28: the
+    fractional dimensions '5-1/2' used to fail this parse silently)."""
+    g = SDB.parse_hss_label(section)
+    if not g or g["kind"] != "rect":
         return None, None
-    body = s[3:]
-    parts = body.split("X")
-    if len(parts) < 3:
-        return None, None
-    try:
-        B = float(parts[0]); H = float(parts[1])
-        t_tok = parts[2]
-        if "/" in t_tok:
-            a, b = t_tok.split("/", 1); tnom = float(a) / float(b)
-        else:
-            tnom = float(t_tok)
-    except ValueError:
-        return None, None
-    tdes = 0.93 * tnom
-    return max(B, H), tdes
+    return max(g["B"], g["H"]), g["t_des"]
 
 
 def brace_spec(section: str, L_in: float, prm: dict, Lc_in: float = None) -> BraceSpec:

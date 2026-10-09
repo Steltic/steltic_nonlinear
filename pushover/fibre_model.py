@@ -32,6 +32,7 @@ from __future__ import annotations
 import math
 import openseespy.opensees as ops
 from . import hinge_models as HM
+from . import sections_db as SDB
 from .nonlinear_model import (
     E_KSI_AL, MAT_BASE, RIGID_T, RIGID_R,
     member_kind, strong_I_slot, strong_rot_dof, _dir_vec, beam_params_for, fr_column_ends,
@@ -120,6 +121,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     rigid zeroLength pins (GMNIA-style). Plasticity is along the member via fibres + Lobatto IP.
     """
     from steltic_ddm.sections_fiber import FiberSectionBuilder
+    from steltic_ddm import sections_fiber as SFB
     m = pkg.model
     ops.wipe(); ops.model("basic", "-ndm", m.ndm, "-ndf", m.ndf)
     for t, xyz in m.nodes.items():
@@ -154,7 +156,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     nseg = max(1, int(nseg))
     pin_count = 0
 
-    def _fibre_sec(sec, kind):
+    def _fibre_sec(sec, kind, Fy_hss=None):
         key = (str(sec).upper(), kind)
         if key in sec_cache:
             return sec_cache[key]
@@ -162,8 +164,10 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         axis = "y" if kind == "col" else "z"
         lab = str(sec)
         try:
-            if lab.upper().startswith("HSS"):
-                builder.hss_rect(tag, lab, n_per_side=max(8, nf_web[0] // 2), n_thick=2, residual=residual)
+            if lab.upper().startswith("HSS") and SFB.hss_dims(lab):     # NL-R2-28: fractional labels; HSS Fye (A500)
+                builder.hss_rect(tag, lab, n_per_side=max(8, nf_web[0] // 2), n_thick=2, residual=residual, Fy=Fy_hss)
+            elif lab.upper().startswith(("HSS", "PIPE")):
+                builder.hss_round(tag, lab, Fy=Fy_hss)
             else:
                 builder.w_shape(tag, lab, axis=axis, nf_flange=nf_flange, nf_web=nf_web, residual=residual)
         except Exception as ex:
@@ -271,7 +275,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         if not hinge_j:
             end2 = FIB_PIN_NODE + e["tag"] * 10 + 2; ops.node(end2, *p2); ops.mass(end2, *([tiny] * 6))
             _pin(e["n2"], end2, {dof}); stats["released_ends"] += 1
-        secTag = _fibre_sec(sec, kind)
+        secTag = _fibre_sec(sec, kind, Fy_hss=(spec.Fye_ksi if (spec is not None and SDB.parse_hss_label(sec)) else None))
         # stations along the member: (s0, s1, "full"|"rbs")
         geo = (binfo or {}).get("rbs")
         rbs_i = rbs_j = False
