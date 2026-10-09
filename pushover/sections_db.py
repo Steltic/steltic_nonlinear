@@ -113,6 +113,28 @@ def parse_hss_label(section) -> dict | None:
     return None
 
 
+# NL-R2-28 (review D3): HSS / pipe material by shape type. Ry: AISC 341-22 Table A3.2 (RAG spec:AISC_341_22 A3.2:
+# A500 Gr. C 1.3, A53 1.6). Fy: ASTM A500 Gr. C 50 ksi shaped (rectangular / square) and 46 ksi round, ASTM A53 Gr. B
+# 35 ksi (AISC 360-22 B4.2 User Note: pipe designed as round HSS when it conforms to A53 Gr. B) -- the Fy values are the
+# ASTM minimums as tabulated in the AISC Manual (Table 2-4); they are not in the RAG corpus.
+HSS_MATERIALS = {
+    "rect": dict(Fy=50.0, Ry=1.3, spec="ASTM A500 Gr. C (rectangular / square HSS)"),
+    "round": dict(Fy=46.0, Ry=1.3, spec="ASTM A500 Gr. C (round HSS)"),
+    "pipe": dict(Fy=35.0, Ry=1.6, spec="ASTM A53 Gr. B (pipe)"),
+}
+
+
+def hss_material(section) -> dict | None:
+    """Default material of an HSS / pipe label by shape type (HSS_MATERIALS): dict(Fy, Ry, Fye, spec, kind); None for
+    other shapes."""
+    g = parse_hss_label(section)
+    if not g:
+        return None
+    m = dict(HSS_MATERIALS[g["kind"]])
+    m.update(kind=g["kind"], Fye=m["Fy"] * m["Ry"])
+    return m
+
+
 def hss_wall_slenderness(section) -> dict | None:
     """Rectangular HSS wall slenderness with the design wall thickness (AISC 360-22 B4.1b / B4.2: b = B - 3t,
     h = H - 3t when the corner radius is not known, t = 0.93 t_nom). -> dict(b_t, h_t, lam = max, t_des)."""

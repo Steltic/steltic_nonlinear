@@ -268,6 +268,9 @@ def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: di
         Fy, Ry = float(prm["brace_axial"]["Fy_ksi"]), float(prm["brace_axial"].get("Ry_expected", 1.0)); src = "brace_axial (HSS)"
     else:
         Fy, Ry = float(mt["Fy_ksi"]), float(mt["Ry_expected"]); src = "material (W-shape values)"
+    hm = SDB.hss_material(section)
+    if hm and hm["kind"] != "rect":                      # review D3: round HSS / pipe are not the A500 shaped grade
+        Fy, Ry, src = hm["Fy"], hm["Ry"], hm["spec"] + ", AISC 341-22 Table A3.2"
     Fye = Fy * Ry
     flags.append("HSS Fye = %.1f x %.2f = %.1f ksi (%s)" % (Fy, Ry, Fye, src))
     Pye = p["A"] * Fye
@@ -432,6 +435,9 @@ def brace_spec(section: str, L_in: float, prm: dict, Lc_in: float = None) -> Bra
     default K_effective x L_in. L_in (work-point length) still sets the axial stiffness."""
     p = SDB.props(section); bp = prm["brace_axial"]
     Fye = bp["Fy_ksi"] * bp["Ry_expected"]
+    hm = SDB.hss_material(section)
+    if hm and hm["kind"] != "rect":                      # review D3: round HSS A500 Gr. C 46 / pipe A53 Gr. B 35 ksi
+        Fye = hm["Fye"]
     A, r = p["A"], min(p["rx"], p["ry"])
     KLr = (Lc_in if Lc_in else bp["K_effective"] * L_in) / r
     Fe = math.pi ** 2 * E_KSI / KLr ** 2

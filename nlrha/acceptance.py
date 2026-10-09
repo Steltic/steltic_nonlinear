@@ -862,6 +862,9 @@ def ebf_brace_capacity(section, Lc_in, prm, phi=0.9, B=1.0):
     case 6 limit 1.40 sqrt(E/Fy); a slender wall (E7 not applied) is flagged."""
     ba = (prm or {}).get("brace_axial") or {}
     Fy = float(ba.get("Fy_ksi", 50.0))
+    hm = SDB.hss_material(section)
+    if hm and hm["kind"] != "rect":                      # review D3: round HSS 46 ksi / pipe 35 ksi
+        Fy = hm["Fy"]
     Pn, KLr = column_Pn(section, Lc_in, Fy=Fy)
     A = SDB.props(section)["A"]
     notes = []

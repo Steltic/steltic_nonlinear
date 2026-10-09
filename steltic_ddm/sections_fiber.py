@@ -396,10 +396,15 @@ class FiberSectionBuilder:
 
     def build(self, secTag, label, kind, axis=None):
         lab = str(label).upper()
+        # review D3: HSS / pipe take the NOMINAL Fy of their own material (A500 Gr. C 50 rectangular / 46 round, A53 Gr. B
+        # 35 pipe -- pushover.sections_db.HSS_MATERIALS), never the frame's W-shape Fy
+        from pushover.sections_db import hss_material
+        hm = hss_material(lab)
         if lab.startswith("HSS") and hss_dims(lab):
-            return self.hss_rect(secTag, lab, residual=("none" if self.residual == "none" else "cf_hss_membrane"))
+            return self.hss_rect(secTag, lab, residual=("none" if self.residual == "none" else "cf_hss_membrane"),
+                                 Fy=(hm["Fy"] if hm else None))
         if lab.startswith(("HSS", "PIPE")) and round_hss_dims(lab):
-            return self.hss_round(secTag, lab)
+            return self.hss_round(secTag, lab, Fy=(hm["Fy"] if hm else None))
         if lab.startswith(("W", "HP", "M", "S")) and not lab.startswith("MC"):
             return self.w_shape(secTag, lab, axis=(axis or ("y" if kind == "col" else "z")))
         props = cfs_section_props(label)

@@ -275,7 +275,8 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         if not hinge_j:
             end2 = FIB_PIN_NODE + e["tag"] * 10 + 2; ops.node(end2, *p2); ops.mass(end2, *([tiny] * 6))
             _pin(e["n2"], end2, {dof}); stats["released_ends"] += 1
-        secTag = _fibre_sec(sec, kind, Fy_hss=(spec.Fye_ksi if (spec is not None and SDB.parse_hss_label(sec)) else None))
+        hm = SDB.hss_material(sec)                       # review D3: HSS / pipe Fye by shape type, never the W-shape Fye
+        secTag = _fibre_sec(sec, kind, Fy_hss=((spec.Fye_ksi if spec is not None else hm["Fye"]) if hm else None))
         # stations along the member: (s0, s1, "full"|"rbs")
         geo = (binfo or {}).get("rbs")
         rbs_i = rbs_j = False
