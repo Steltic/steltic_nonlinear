@@ -342,7 +342,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                  % (x2.get("snow_basis") or "S = 0", (" " + x2["note"]) if x2.get("note") else ""))
     H.append('<p class="note">Q<sub>ns</sub> is the gravity state of the nonlinear model itself (16.3.2 loads), split into D and 0.5L by the level totals. '
              'Flexure is classified per AISC 342-22 C3.4: deformation-controlled for P<sub>G</sub>/P<sub>ye</sub> ≤ 0.6 (analysed moment with the expected strength M<sub>CE</sub>, F<sub>ye</sub> = R<sub>y</sub>F<sub>y</sub>, C3.4b.2.b with m = 1), '
-             'force-controlled above (transformed by the 16.4.2.1 equations, resisted by φM<sub>n</sub>: F2 with L<sub>b</sub> = column length and C<sub>b</sub> = 1, F3/F6). '
+             'force-controlled above (transformed by the 16.4.2.1 equations, resisted by φM<sub>n</sub>: F2 with C<sub>b</sub> = 1, F3/F6). '
+             'Unbraced lengths (E2 L<sub>c</sub> per axis, F2 L<sub>b</sub>): the HR design\'s column bracing where design/calc_package.json gives it (brace points or L<sub>cx</sub>/L<sub>cy</sub>/L<sub>b</sub>, listed in the notes), otherwise K = 1 with the column length about both axes and L<sub>b</sub> = column length. '
              'A deformation-controlled axis modelled elastic (the minor axis of concentrated-hinge columns) whose moment exceeds M<sub>CE</sub> is flagged: the model cannot represent that yielding (16.3.1). '
              'Peaks of P, M<sub>major</sub> and M<sub>minor</sub> are taken independently per record (not concurrent) — conservative.%s</p>'
              % ((" Notes: " + "; ".join(acc["fc_notes"])) if acc.get("fc_notes") else ""))

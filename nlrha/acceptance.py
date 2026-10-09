@@ -73,10 +73,16 @@ def _f(v):
     return x if math.isfinite(x) else None
 
 
-def column_Pn(section, L_in, Fy=50.0, K=1.0):
-    """AISC 360-22 E3 nominal compressive strength (flexural buckling about the weaker axis, K = 1, Lc = member
-    length; slender-element reduction of E7 not applied -- W columns in seismic frames are non-slender)."""
-    p = SDB.props(section); r = min(p["rx"], p["ry"]); KLr = K * L_in / r
+def column_Pn(section, L_in, Fy=50.0, K=1.0, Lcx=None, Lcy=None):
+    """AISC 360-22 E3 nominal compressive strength, flexural buckling about the governing axis: Lc/r = max(Lcx/rx,
+    Lcy/ry) with the per-axis effective lengths Lc = KL of E2 when given (NL-R2-25: the HR design's bracing, see
+    design_column_lengths), else K x member length about the weaker axis. Slender-element reduction of E7 not
+    applied -- W columns in seismic frames are non-slender."""
+    p = SDB.props(section)
+    if Lcx or Lcy:
+        KLr = max((Lcx or K * L_in) / p["rx"], (Lcy or K * L_in) / p["ry"])
+    else:
+        r = min(p["rx"], p["ry"]); KLr = K * L_in / r
     Fe = math.pi ** 2 * E_KSI / KLr ** 2
     Fcr = (0.658 ** (Fy / Fe)) * Fy if KLr <= 4.71 * math.sqrt(E_KSI / Fy) else 0.877 * Fe
     return Fcr * p["A"], KLr
@@ -203,16 +209,82 @@ def _record_column_dc(ev, Qns, cap, flex, frac_D, SMS, Ie, gamma):
     return max(vals) if vals else None
 
 
+def _len(v):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x > 0 and math.isfinite(x) else None
+
+
+def design_column_lengths(pkg, section, z1, z2, L):
+    """NL-R2-25: the unbraced lengths the HR design used for this column, per axis (AISC 360-22 E2: Lc = K L for
+    buckling about each axis; F2: Lb between points braced against lateral displacement of the compression flange or
+    twist of the cross section). Source: design/calc_package.json members[*] with a column role/kind and this section:
+      * inputs.brace_points_in (elevations of the column's brace points, e.g. girts / inner-flange braces / crane
+        level): the element's span [z1, z2] is cut at the points inside it -> Lcy = Lb = the longest piece, Lcx =
+        inputs.Lcx_in or K L (strong axis spans the full member, frame-plane stability by the DAM, K = 1);
+      * inputs.Lcx_in / Lcy_in / Lb_in (per-axis lengths), used when the member's length_in equals this element's
+        length (a group record of a different length is not this element's bracing).
+    Several matching records (e.g. lateral and gravity groups of one section) -> the longest lengths (conservative).
+    None when the package gives nothing for this column: the caller keeps K = 1 and the member length about both axes
+    and Lb = member length (the previous, conservative default)."""
+    calc = getattr(pkg, "calc", None) or {}
+    best = None
+    sec_n = str(section or "").strip().upper().replace(" ", "")
+    for m in calc.get("members") or []:
+        inp = (m or {}).get("inputs") or {}
+        role = str(inp.get("role") or "") + " " + str(inp.get("kind") or "")
+        if "col" not in role.lower() or str(inp.get("section") or "").strip().upper().replace(" ", "") != sec_n:
+            continue
+        K = _len(inp.get("K")) or 1.0
+        Lcx = _len(inp.get("Lcx_in")); Lcy = _len(inp.get("Lcy_in")) or _len(inp.get("Lc_weak_in")); Lb = _len(inp.get("Lb_in"))
+        pts = inp.get("brace_points_in")
+        src = "calc_package members[%s].inputs" % m.get("id")
+        if isinstance(pts, (list, tuple)) and len(pts) >= 2 and all(_len(x) is not None or x in (0, 0.0) for x in pts):
+            pts = sorted(float(x) for x in pts)
+            if not (pts[0] - 1.0 <= min(z1, z2) and max(z1, z2) <= pts[-1] + 1.0):
+                continue
+            lo, hi = min(z1, z2), max(z1, z2)
+            cuts = [lo] + [x for x in pts if lo + 1e-6 < x < hi - 1e-6] + [hi]
+            seg = max(b - a for a, b in zip(cuts[:-1], cuts[1:]))
+            rec = dict(Lcx=Lcx or K * L, Lcy=seg, Lb=seg, K=K, source="%s.brace_points_in %s (element %.0f-%.0f in)" % (
+                src, "/".join("%.0f" % x for x in pts), lo, hi))
+        elif Lcx or Lcy or Lb:
+            Lm = _len(inp.get("length_in"))
+            if Lm is None or abs(Lm - L) > 1.0:
+                continue
+            rec = dict(Lcx=Lcx or K * L, Lcy=Lcy or K * L, Lb=Lb or Lcy or L, K=K,
+                       source="%s.%s" % (src, "/".join(k for k in ("Lcx_in", "Lcy_in", "Lb_in") if _len(inp.get(k)))))
+        else:
+            continue
+        if best is None or (rec["Lcy"], rec["Lb"], rec["Lcx"]) > (best["Lcy"], best["Lb"], best["Lcx"]):
+            best = rec
+    return best
+
+
 def _column_caps(pkg, c, prm, phi_col, B):
     sec = pkg.schedule.get(c, {}).get("section"); e = next(e for e in pkg.model.elements if e["tag"] == c)
-    L = math.dist(pkg.model.nodes[e["n1"]], pkg.model.nodes[e["n2"]])
+    p1, p2 = pkg.model.nodes[e["n1"]], pkg.model.nodes[e["n2"]]
+    L = math.dist(p1, p2)
     Fy, Ry = _material(prm)
-    Pn, KLr = column_Pn(sec, L, Fy=Fy)
-    Mnx, Mny, notes = column_Mn(sec, L, Fy=Fy)
-    Mcx, Mcy, _ = column_Mn(sec, L, Fy=Ry * Fy)                  # expected strengths M_CE (Fye = Ry Fy), AISC 342 C3.3a.2
+    dl = design_column_lengths(pkg, sec, p1[2], p2[2], L)          # NL-R2-25: the design's per-axis bracing
+    if dl:
+        Pn, KLr = column_Pn(sec, L, Fy=Fy, Lcx=dl["Lcx"], Lcy=dl["Lcy"])
+        Lb = dl["Lb"]
+    else:
+        Pn, KLr = column_Pn(sec, L, Fy=Fy)
+        Lb = L
+    Mnx, Mny, notes = column_Mn(sec, Lb, Fy=Fy)
+    Mcx, Mcy, _ = column_Mn(sec, Lb, Fy=Ry * Fy)                 # expected strengths M_CE (Fye = Ry Fy), AISC 342 C3.3a.2
+    notes = list(notes)
+    if dl:
+        notes.append("%s: Lcx %.0f / Lcy %.0f / Lb %.0f in from the HR design (%s)" % (sec, dl["Lcx"], dl["Lcy"], dl["Lb"], dl["source"]))
     A = SDB.props(sec)["A"]
     return sec, e, L, KLr, notes, dict(phiPn=phi_col * B * Pn, phiTn=phi_col * B * Fy * A, phiMnx=phi_col * B * Mnx, phiMny=phi_col * B * Mny,
-                                       MCEx=Mcx, MCEy=Mcy, Pye=Ry * Fy * A, Pn=Pn, Fy=Fy)
+                                       MCEx=Mcx, MCEy=Mcy, Pye=Ry * Fy * A, Pn=Pn, Fy=Fy,
+                                       Lcx=(dl or {}).get("Lcx", L), Lcy=(dl or {}).get("Lcy", L), Lb=Lb,
+                                       length_source=(dl or {}).get("source", "member length, K = 1 (no per-axis bracing in the package)"))
 
 
 # --------------------------------------------------------------------------- NL-R2-16: ASCE 7-22 16.4.2.1 Exception 2
@@ -686,6 +758,7 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
                              Mu_maj=Q["Mmaj"], Mu_min=Q["Mmin"], Mns_maj=Qns.get("Mmaj"), Mns_min=Qns.get("Mmin"),
                              flexure_major=flex["major"], flexure_minor=flex["minor"], modelled=flex.get("modelled") or {}, phiBRn=cap["phiPn"], phiTn=cap["phiTn"],
                              phiMnx=cap["phiMnx"], phiMny=cap["phiMny"], MCEx=cap["MCEx"], MCEy=cap["MCEy"], Fy=cap["Fy"], KLr=KLr,
+                             Lcx_in=cap["Lcx"], Lcy_in=cap["Lcy"], Lb_in=cap["Lb"], length_source=cap["length_source"],
                              _Qns=Qns, _flex=flex, **chk))
     # group the worst per (section, z)
     best = {}; dflt = {}
