@@ -1,6 +1,6 @@
 """Regression tests for the round-2 findings NL-R2-05, 06, 08, 10 and NL-R2-L1 (package reading, the 16.1.4 criteria
 document, the feedback loops, BRB data, mesh-convergence dry run). Small synthetic packages only -- no analysis."""
-import json, os, sys, tempfile
+import json, os, shutil, sys, tempfile
 from pathlib import Path
 import pytest
 
@@ -39,12 +39,17 @@ def _job(cfg_text=_CFG_COMMENT, model=_MODEL):
 
 
 def _engine_ok():
+    # runs at collection (skipif), before tests/conftest.py redirects tempfile: remove the probe job here (NL-R2-31)
+    d = None
     try:
         from steltic_ddm.ingest import load_cfg
         d = _job("cfg = dict(heights=[1.0])\n")
         return load_cfg(str(d)).get("heights") == [1.0]
     except Exception:
         return False
+    finally:
+        if d is not None:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.mark.skipif(not _engine_ok(), reason="the HR engine is not importable (STELTIC_ENGINE_DIR)")
