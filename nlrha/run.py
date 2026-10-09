@@ -73,6 +73,25 @@ def hht_algorithmic_damping(alpha, dt, T):
     return float(-ln.real / abs(ln))
 
 
+def transient_step(h):
+    """One transient step of size h. NL-R2-20 (residual): after a FAILED step, force a domainChanged cycle
+    (ops.domainChange) so the retry starts from the committed state.
+
+    A failed ops.analyze reverts the nodes and elements (Domain::revertToLastCommit) and the integrator vectors, but in
+    a transient analysis with the Transformation constraint handler the DOF groups of MP-constrained nodes (rigid-
+    diaphragm / equalDOF slaves) keep state from the failed iterations: the retry then starts from a corrupted state of
+    every diaphragm slave's own DOFs (UZ, RX, RY). After a diverged step this is garbage (Ex20 Gilroy #3: one Newton
+    iteration of the retry gave |du| ~1e5..1e26 rad at the work-point / joint rotations, every halving failed again ->
+    non-convergence); after a merely non-converged step the retry converges to a WRONG state (tests/
+    test_nlrha_retry_state.py: a 4-node frame with one equalDOF slave). domainChange rebuilds the DOF groups and
+    re-reads the integrator's response vectors from the committed nodal state (OpenSees 3.7/3.8; HHT and Newmark).
+    Steps that converge are untouched, so records without a failed step are bit-identical."""
+    ok = ops.analyze(1, h)
+    if ok != 0:
+        ops.domainChange()
+    return ok
+
+
 def _column_info(pkg, hinges, stats, PG=None, prm=None):
     """Per column element: the element tags at its i and j ends (sub-divided members: first and last segment), the
     local force indices of the major / minor moments, how each flexural axis is MODELLED (hinge / elastic / fibre) and
@@ -395,7 +414,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     def _analyze(h):
         nonlocal calls
         calls += 1
-        return ops.analyze(1, h)
+        return transient_step(h)                                   # NL-R2-20 (residual): clean state for the retry
 
     while t < t_end - 1e-9:
         if (step_budget and calls >= step_budget) or (wall_budget_s and time.time() - t0 > wall_budget_s):
