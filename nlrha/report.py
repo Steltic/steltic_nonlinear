@@ -384,7 +384,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                "Accidental torsion is not applied (16.3.4 — only where a Type 1 irregularity exists); inherent eccentricity is whatever the diaphragm master/mass placement in the package gives.",
                ("16.4.2.1 Exception 2 was applied to the axial force of %d column group(s) (%s) on the user's decision (7 Oct 2026); the engineer of record and the 16.5 reviewer must accept that these actions are limited by the yield mechanism and the E<sub>mc</sub> basis (section 5)."
                 % (x2["n_columns"], "; ".join(x2.get("members") or [])) if x2.get("used") else "16.4.2.1 Exception 2 was not used for any column (none qualified or it is switched off)."),
-               "Force-controlled column check: AISC 360 E3 / F2–F6 / H1-1 nominal strengths computed here (F<sub>y</sub> = %s ksi from the component parameters, K = 1, L<sub>b</sub> = column length, C<sub>b</sub> = 1); connections, splices and base plates are not checked." % (((prm.get("material") or {}).get("Fy_ksi")) or 50),
+               "Force-controlled column check: AISC 360 E3 / F2–F6 / H1-1 nominal strengths computed here (F<sub>y</sub> = %s ksi from the component parameters, unbraced lengths from the HR design's column bracing where design/calc_package.json gives them, otherwise K = 1 and L<sub>b</sub> = column length, C<sub>b</sub> = 1); connections, splices and base plates are not checked." % (((prm.get("material") or {}).get("Fy_ksi")) or 50),
                "16.1.4 documentation and 16.5 independent design review are procedural requirements outside this tool."):
         H.append("<li>%s</li>" % it)
     H.append("</ol>")
