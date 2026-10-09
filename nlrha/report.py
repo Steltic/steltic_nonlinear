@@ -328,6 +328,17 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                     _num(r.get("DC")), _tag(r["DC"] <= 1.0, "ok", "NG"), r.get("fc_basis", "16.4.2.1 Eqs. (16.4-1)/(16.4-2)"),
                     r.get("governing", "") + "".join("<br><span class='ng'>%s</span>" % f for f in (r.get("flags") or []))))
     H.append("</table>")
+    if acc.get("force_controlled_ebf_braces"):                     # NL-R2-22
+        H.append("<h3>Force-controlled — EBF braces: axial (critical, AISC 341-22 Table A-1.7.3; AISC 342-22 E2.4a(b)), modelled elastic; "
+                 "φ = 0.9 (AISC 360-22 E3 on the design buckling length / D2 tension yielding), B = 1.0</h3>")
+        H.append("<table><tr><th>Section</th><th>elev. (in)</th><th>P<sub>u</sub> comp / tens · P<sub>ns</sub> (kip)</th><th>P<sub>r</sub> (16.4-1) / T<sub>r</sub> (16.4-2)</th>"
+                 "<th>φP<sub>n</sub> · L<sub>c</sub> (in) · KL/r</th><th>φF<sub>y</sub>A<sub>g</sub></th><th>D/C · governing</th></tr>")
+        for r in acc["force_controlled_ebf_braces"]:
+            H.append("<tr><td>%s</td><td>%.0f</td><td>%s / %s · %s</td><td>%s / %s</td><td>%s · %s · %s<br><small>%s</small></td><td>%s</td><td>%s %s<br><small>%s</small></td></tr>"
+                     % (r["section"], r["z_in"], _num(r["Qu_comp"], "%.0f"), _num(r["Qu_tens"], "%.0f"), _num(r["Qns"], "%.0f"), _num(r["demand_comp"], "%.0f"),
+                        _num(r["demand_tens"], "%.0f"), _num(r["phiPn"], "%.0f"), _num(r["Lc_in"], "%.0f"), _num(r["KLr"], "%.0f"), r.get("Lc_source") or "",
+                        _num(r["phiTn"], "%.0f"), _num(r["DC"]), _tag(r["DC"] <= 1.0, "ok", "NG"), r["governing"]))
+        H.append("</table>")
     if x2.get("apply", True) and acc["force_controlled_columns"]:
         H.append('<p class="note"><b>16.4.2.1 Exception 2 (Eqs. 16.4-3 / 16.4-4).</b> Applied to the axial force of a column when (1) its flexure is deformation-controlled on both axes '
                  '(AISC 342-22 C3.4) and the model represents that yielding, and (2) every member delivering vertical force to its column line at and above the column is a modelled '

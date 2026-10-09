@@ -814,6 +814,10 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         not_evaluated.append("column moments not recorded (results from an older build): 16.4.2.1 combined axial + flexure not evaluated -- re-run")
     mean_ok = all(s["ok"] for s in story_rows) if acc_runs else None
     fc_ok = (bool(col_table) and all(r["DC"] <= 1.0 for r in col_table)) if acc_runs else None
+    # NL-R2-22: EBF braces -- force-controlled, critical (AISC 341-22 Table A-1.7.3), modelled elastic
+    brace_fc, brace_fc_notes = ebf_brace_fc(acc_runs, results, frac_D, SMS, Ie, fc["gamma"], float(fc.get("B", B) or B), prm, suite_stat)
+    if brace_fc and fc_ok is not None:
+        fc_ok = fc_ok and all(r["DC"] <= 1.0 for r in brace_fc)
     if fc_ok and moments_missing:
         fc_ok = None                              # axial-only pass is not a pass of the combined check (an axial-only failure stays decisive)
     verdict = dict(
@@ -824,6 +828,7 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         deformation_ok=(all(r["DC_CP"] <= 1.0 for r in rows) if acc_runs else None), valid_range_ok=(all(r["DC_valid"] <= 1.0 for r in rows) if acc_runs else None),
         force_controlled_ok=fc_ok,
         worst_FC_DC=(max((r["DC"] for r in col_table), default=None)),
+        worst_FC_DC_ebf_braces=(max((r["DC"] for r in brace_fc), default=None)),
         worst_FC_DC_default=(max((r.get("DC_default_group_max", r["DC"]) for r in col_table), default=None)),
         FC_exception_2=_exc2_summary(col_table, ex2_on, ex2_note, snow_basis),
         residual_applicable=tall240, residual_ok=(None if not tall240 else (bool(np.max(mean_resid) <= ch16["residual_drift"]["limit"]) if mean_resid is not None else None)))
@@ -844,8 +849,71 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
     verdict["overall"] = status == "ACCEPTABLE"
     return dict(limits=lim, per_record=per, story=story_rows, mean_residual=(mean_resid.tolist() if mean_resid is not None else None),
                 deformation_groups=rows, force_controlled_columns=col_table, verdict=verdict, hn_in=hn,
+                force_controlled_ebf_braces=brace_fc,
                 per_record_fc=per_record_fc, governing_fc_records=governing_fc_records, records_not_run=not_run,
-                fc_notes=sorted(fc_notes), drift_method=("aligned_points" if all(r.get("drift_method") == "aligned_points" for r in results if record_status(r) == "completed") else "legacy_corner_nodes"))
+                fc_notes=sorted(fc_notes | set(brace_fc_notes)), drift_method=("aligned_points" if all(r.get("drift_method") == "aligned_points" for r in results if record_status(r) == "completed") else "legacy_corner_nodes"))
+
+
+def ebf_brace_capacity(section, Lc_in, prm, phi=0.9, B=1.0):
+    """NL-R2-22: phi B Rn of an EBF brace (critical force-controlled action, ASCE 7-22 16.4.2.1: phi of the material
+    standard): compression phi_c Pn, AISC 360-22 E3 flexural buckling on the design buckling length Lc (brace_Lc: the
+    HR design's brace length, else K_effective x work-point length); tension phi_t Fy Ag (AISC 360-22 D2(a)); phi = 0.90
+    for both. Fy = brace_axial.Fy_ksi (nominal). Rectangular HSS walls are checked against the AISC 360-22 Table B4.1a
+    case 6 limit 1.40 sqrt(E/Fy); a slender wall (E7 not applied) is flagged."""
+    ba = (prm or {}).get("brace_axial") or {}
+    Fy = float(ba.get("Fy_ksi", 50.0))
+    Pn, KLr = column_Pn(section, Lc_in, Fy=Fy)
+    A = SDB.props(section)["A"]
+    notes = []
+    from pushover import hinge_models as HM
+    Bo, tdes = HM._hss_outside_and_tdes(section) if str(section).upper().startswith("HSS") else (None, None)
+    if Bo and tdes and (Bo - 3.0 * tdes) / tdes > 1.40 * math.sqrt(E_KSI / Fy):
+        notes.append("%s: slender HSS wall (b/t > 1.40 sqrt(E/Fy)) -- AISC 360-22 E7 reduction NOT applied" % section)
+    return dict(phiPn=phi * B * Pn, phiTn=phi * B * Fy * A, Pn=Pn, Tn=Fy * A, KLr=KLr, Lc_in=Lc_in, Fy=Fy, notes=notes)
+
+
+def ebf_brace_fc(runs, all_results, frac_D, SMS, Ie, gamma, B, prm, suite_stat):
+    """NL-R2-22: ASCE 7-22 16.4.2.1 for the axial force of the EBF braces (AISC 341-22 Table A-1.7.3: Brace / Axial =
+    Force-controlled, Critical; AISC 342-22 E2.4a(b)), modelled elastic by nonlinear_model.ebf_brace_force_controlled.
+    Qu = suite statistic (16.4: mean, or max(1.2 median, mean) with an unacceptable record) of the record peaks, per
+    brace, compression and tension separately; Qns = the brace's axial force in the gravity state of the same model.
+      (16.4-1) (1.2 + 0.12 SMS) D + 0.5 L + 1.3 Ie (Qu - Qns) <= phi B Pn   [compression +]
+      (16.4-2) (0.9 - 0.12 SMS) D - 1.3 Ie (Qns - Qu,t) -> net tension <= phi B Fy Ag
+    Returns (rows grouped worst per (section, level), notes). [] when the runs carry no EBF brace envelope."""
+    meta = next(((r.get("stats") or {}).get("ebf_braces") for r in all_results if (r.get("stats") or {}).get("ebf_braces")), None)
+    if not meta or not runs:
+        return [], []
+    k1 = 1.2 + 0.12 * SMS; k2 = 0.9 - 0.12 * SMS
+    rows, notes, caps = [], set(), {}
+    for b, m in meta.items():
+        envs = [(r.get("ebf_brace_env") or {}).get(b) for r in runs]
+        envs = [ev for ev in envs if ev]
+        if not envs:
+            continue
+        key = (m["section"], round(m["Lc_in"], 1))
+        if key not in caps:
+            caps[key] = ebf_brace_capacity(m["section"], m["Lc_in"], prm, B=B)
+        cap = caps[key]; notes.update(cap["notes"])
+        Pns = -float(envs[0]["Pg"])                                   # compression + (gravity state of this model)
+        D = Pns * frac_D; hL = Pns - D
+        Qc = float(suite_stat(np.array([ev["Pc"] for ev in envs])))  # peak compression (+)
+        Qt = -float(suite_stat(np.array([ev["Pt"] for ev in envs])))  # most tensile, compression + sign
+        Pr1 = k1 * D + hL + gamma * Ie * max(Qc - Pns, 0.0)
+        Pr2 = k2 * D - gamma * Ie * max(Pns - Qt, 0.0)
+        dc_c = max(Pr1, 0.0) / cap["phiPn"]
+        dc_t = (-Pr2 / cap["phiTn"]) if Pr2 < 0 else 0.0
+        rows.append(dict(ele=b, section=m["section"], z_in=m["z"], Lc_in=m["Lc_in"], Lc_source=m.get("Lc_source"), KLr=cap["KLr"],
+                         Qns=Pns, Qu_comp=Qc, Qu_tens=-Qt, demand_comp=Pr1, demand_tens=(-Pr2 if Pr2 < 0 else 0.0),
+                         phiPn=cap["phiPn"], phiTn=cap["phiTn"], DC_comp=dc_c, DC_tens=dc_t, DC=max(dc_c, dc_t),
+                         governing=("compression, Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns) <= phi Pn (AISC 360-22 E3)" if dc_c >= dc_t else
+                                    "tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns) <= phi Fy Ag (AISC 360-22 D2)"),
+                         criticality="critical (AISC 341-22 Table A-1.7.3)"))
+    best = {}
+    for r in rows:
+        k = (r["section"], round(r["z_in"]))
+        if k not in best or r["DC"] > best[k]["DC"]:
+            best[k] = r
+    return sorted(best.values(), key=lambda r: (r["z_in"], r["section"])), sorted(notes)
 
 
 def _exc2_summary(col_table, on, note, snow_basis):
