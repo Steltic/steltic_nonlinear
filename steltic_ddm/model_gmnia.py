@@ -376,7 +376,8 @@ class GMNIAModel:
             return None
         if lb <= L / BRACE_CONTINUOUS_N:
             return ("continuous", (), lb)
-        n = int(round(L / lb))
+        # review: brace spacing never shorter than the design Lb (floor, not round: L/Lb 2.6 gave 0.87 Lb) -- conservative
+        n = int(math.floor(L / lb + 1e-6))
         if n < 2:
             return None
         xs = [k * L / n for k in range(1, n)]

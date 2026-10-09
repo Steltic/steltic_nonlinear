@@ -169,7 +169,7 @@ def test_brace_restrains_only_lateral_and_twist():
 
 
 def test_brace_plan_rules():
-    """Lb <= L/8 -> continuous; round(L/Lb) >= 2 -> discrete brace points; Lb ~ L -> unbraced; no diaphragm or no
+    """Lb <= L/8 -> continuous; floor(L/Lb) >= 2 -> discrete brace points (spacing never below Lb); Lb ~ L -> unbraced; no diaphragm or no
     HR Lb -> unbraced; conflicting groups -> the largest Lb."""
     from test_ddm_r6 import _frame
     from steltic_ddm.model_gmnia import GMNIAModel
@@ -182,6 +182,11 @@ def test_brace_plan_rules():
     g._lb_map = None; nm.calc_package = _cp(100.0)
     assert g._brace_plan(beam, 300.0, 12.0) == ("discrete", [100.0, 200.0], 100.0, True)
     g._lb_map = None; nm.calc_package = _cp(250.0)
+    assert g._brace_plan(beam, 300.0, 12.0) is None
+    # review: L/Lb = 2.6 -> two spaces of 150 in (>= Lb 115.4), not three of 100 in (0.87 Lb, the old round())
+    g._lb_map = None; nm.calc_package = _cp(300.0 / 2.6)
+    assert g._brace_plan(beam, 300.0, 12.0)[:2] == ("discrete", [150.0])
+    g._lb_map = None; nm.calc_package = _cp(160.0)                 # L/Lb 1.9: unbraced (spacing 300 >= 160), not 150
     assert g._brace_plan(beam, 300.0, 12.0) is None
     g._lb_map = None; nm.calc_package = None
     assert g._brace_plan(beam, 300.0, 12.0) is None
