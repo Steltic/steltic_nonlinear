@@ -32,10 +32,12 @@ from __future__ import annotations
 import math
 import openseespy.opensees as ops
 from . import hinge_models as HM
+from . import sections_db as SDB
 from .nonlinear_model import (
     E_KSI_AL, MAT_BASE, RIGID_T, RIGID_R,
     member_kind, strong_I_slot, strong_rot_dof, _dir_vec, beam_params_for, fr_column_ends,
-    element_context, build_brace, link_shear_spring, finish_stats, _pt_mass_balance,
+    element_context, build_brace, link_shear_spring, finish_stats, _pt_mass_balance, _link_mass_balance,
+    STEEL_DENSITY_KIP_IN3, G_IN,
 )
 
 SEG_NODE_BASE = 70_000_000
@@ -120,6 +122,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     rigid zeroLength pins (GMNIA-style). Plasticity is along the member via fibres + Lobatto IP.
     """
     from steltic_ddm.sections_fiber import FiberSectionBuilder
+    from steltic_ddm import sections_fiber as SFB
     m = pkg.model
     ops.wipe(); ops.model("basic", "-ndm", m.ndm, "-ndf", m.ndf)
     for t, xyz in m.nodes.items():
@@ -154,7 +157,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     nseg = max(1, int(nseg))
     pin_count = 0
 
-    def _fibre_sec(sec, kind):
+    def _fibre_sec(sec, kind, Fy_hss=None):
         key = (str(sec).upper(), kind)
         if key in sec_cache:
             return sec_cache[key]
@@ -162,8 +165,10 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         axis = "y" if kind == "col" else "z"
         lab = str(sec)
         try:
-            if lab.upper().startswith("HSS"):
-                builder.hss_rect(tag, lab, n_per_side=max(8, nf_web[0] // 2), n_thick=2, residual=residual)
+            if lab.upper().startswith("HSS") and SFB.hss_dims(lab):     # NL-R2-28: fractional labels; HSS Fye (A500)
+                builder.hss_rect(tag, lab, n_per_side=max(8, nf_web[0] // 2), n_thick=2, residual=residual, Fy=Fy_hss)
+            elif lab.upper().startswith(("HSS", "PIPE")):
+                builder.hss_round(tag, lab, Fy=Fy_hss)
             else:
                 builder.w_shape(tag, lab, axis=axis, nf_flange=nf_flange, nf_web=nf_web, residual=residual)
         except Exception as ex:
@@ -264,6 +269,9 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         if lk and not lk.get("skipped") and kind == "beam":
             # NL-03 EBF link: shear spring (Table C2.4 backbone) in series with the fibre chain (flexural yielding in fibres)
             end1, mat = link_shear_spring(e, p1, p2, sec, prm, mat, hinges, stats, tiny=tiny)
+            link_node = end1
+        else:
+            link_node = None
         # major-axis releases -> pin (no rotational continuity); unreleased -> continuous fibre
         if not hinge_i:
             end1 = FIB_PIN_NODE + e["tag"] * 10 + 1; ops.node(end1, *p1); ops.mass(end1, *([tiny] * 6))
@@ -271,7 +279,8 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         if not hinge_j:
             end2 = FIB_PIN_NODE + e["tag"] * 10 + 2; ops.node(end2, *p2); ops.mass(end2, *([tiny] * 6))
             _pin(e["n2"], end2, {dof}); stats["released_ends"] += 1
-        secTag = _fibre_sec(sec, kind)
+        hm = SDB.hss_material(sec)                       # review D3: HSS / pipe Fye by shape type, never the W-shape Fye
+        secTag = _fibre_sec(sec, kind, Fy_hss=((spec.Fye_ksi if spec is not None else hm["Fye"]) if hm else None))
         # stations along the member: (s0, s1, "full"|"rbs")
         geo = (binfo or {}).get("rbs")
         rbs_i = rbs_j = False
@@ -297,6 +306,15 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
             ops.node(mid, *xyz); ops.mass(mid, *([tiny] * 6))
             chain.append(mid)
         chain.append(end2)
+        if link_node is not None and str(prm.get("_analysis", "")).lower() == "nlrha":
+            # NL-R2-22 (review): the EBF link's own steel mass, as in the IMK builder (build_link_imk), on the shear-spring
+            # node and the link's interior fibre-chain nodes -- taken off the floor mass by _link_mass_balance
+            lnodes = [link_node] + chain[1:-1]
+            mlk = SDB.props(sec)["A"] * L * STEEL_DENSITY_KIP_IN3 / G_IN
+            for nd in lnodes:
+                mn = mlk / len(lnodes)
+                ops.mass(nd, *([mn] * 3 + [mn * L * L / 12.0] * 3))
+            ctx.setdefault("link_mass", []).append((e["n1"], mlk))
         seg_tags = []
         for si, (s0, s1, kd) in enumerate(segs):
             etag = e["tag"] if si == 0 else (SEG_ELE_BASE + e["tag"] * 100 + si)
@@ -337,6 +355,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
     _pt_mass_balance(pkg, ctx, stats)
+    _link_mass_balance(pkg, ctx, stats)                          # NL-R2-22 (review): EBF link own mass, fibre path
     finish_stats(stats, ctx, prm, "fibre")
     if verbose:
         nfib = sum(x[3] for x in builder.log) if builder.log else 0

@@ -245,8 +245,85 @@ def _member_row_values(blk: dict, ty: float, p: dict, Fye: float, prm: dict, Ca:
     return v, extra
 
 
+def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: dict) -> HingeSpec:
+    """NL-R2-28: HSS column flexural hinge.
+
+    Rectangular HSS: AISC 342-22 Table C3.6 line 4 ("Rectangular HSS and built-up box shapes", columns in
+    compression; one line, no highly / moderately ductile split):
+        a = 1.1 lam^-1.2 (1 - PG/Pye)^1.8 <= 0.05,  b = 0.5 lam^-0.6 (1 - PG/Pye)^1.2 - 0.01 <= 0.08,  c = 0.25,
+        IO = 0.5 a, LS = 0.75 b, CP = b;  note [e]: x0.75 for built-up box columns (not rolled HSS).
+    lam = the most slender wall b/t (note [b]: the element giving the lowest deformation), with b = B - 3t and the
+    design wall t = 0.93 t_nom (AISC 360-22 B4.1b, B4.2). M_CE with Eqs. C3-5/C3-6 and theta_y with Eq. C3-15,
+    exactly as for W columns; PG/Pye above the force-controlled limit -> force-controlled (C3.4). Expressions,
+    limits and the HSS material come from the group column_flexure_hss (template fallback, flagged).
+    Round HSS / pipe: Table C3.6 has no row -> no hinge, treated as force-controlled for flexure (flagged)."""
+    cp = prm["column_flexure"]
+    hb, tmpl = param_group(prm, "column_flexure_hss")
+    flags = ["HSS column: AISC 342-22 Table C3.6 line 4 (rectangular HSS)%s" % (
+        " -- column_flexure_hss not in the parameter file: repository TEMPLATE values" if tmpl else "")]
+    mt = prm["material"]
+    if hb.get("Fy_ksi") is not None:                     # HSS material (A500 Gr. C) -- not the W-shape `material`
+        Fy, Ry = float(hb["Fy_ksi"]), float(hb.get("Ry_expected", 1.0)); src = "column_flexure_hss"
+    elif (prm.get("brace_axial") or {}).get("Fy_ksi") is not None:
+        Fy, Ry = float(prm["brace_axial"]["Fy_ksi"]), float(prm["brace_axial"].get("Ry_expected", 1.0)); src = "brace_axial (HSS)"
+    else:
+        Fy, Ry = float(mt["Fy_ksi"]), float(mt["Ry_expected"]); src = "material (W-shape values)"
+    hm = SDB.hss_material(section)
+    if hm and hm["kind"] != "rect":                      # review D3: round HSS / pipe are not the A500 shaped grade
+        Fy, Ry, src = hm["Fy"], hm["Ry"], hm["spec"] + ", AISC 341-22 Table A3.2"
+    Fye = Fy * Ry
+    flags.append("HSS Fye = %.1f x %.2f = %.1f ksi (%s)" % (Fy, Ry, Fye, src))
+    Pye = p["A"] * Fye
+    r = max(0.0, PG_kip) / Pye
+    fc_lim = float(cp.get("force_controlled_above_P_over_Pye", 0.6))
+    ty0 = _theta_y(p["Zx"], Fye, L_in, p["Ix"], max(1e-6, 1 - r))
+    geo = p.get("hss") or {}
+    if geo.get("kind") != "rect" or r >= fc_lim:
+        if geo.get("kind") != "rect":
+            flags.append("%s (%s): AISC 342-22 Table C3.6 has no row for round HSS / pipe columns -> no flexural hinge, "
+                         "FORCE-CONTROLLED column" % (section, geo.get("kind", "?")))
+        else:
+            flags.append("PG/Pye=%.2f >= %.2f -> FORCE-CONTROLLED column (no hinge; check P vs PCL)" % (r, fc_lim))
+        PS.mark_used(prm, "column_flexure_hss", from_template=tmpl); PS.mark_used(prm, "column_flexure")
+        return HingeSpec("column", section, L_in, Fye, p["Zx"] * Fye, ty0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                         True, r, True, tuple(flags))
+    ws = SDB.hss_wall_slenderness(section)
+    lam = ws["lam"]
+    env = dict(lam=lam, PG=max(0.0, PG_kip), Pye=Pye, L=L_in, ry=p["ry"], math=math)
+    row = dict(hb)
+    for k in ("a_expr", "b_expr", "c_expr"):
+        if isinstance(row.get(k), str):
+            row[k] = row[k].replace("PG/Pye", "(PG/Pye)")
+    v = _row_abs(row, None, env)
+    mult = float(hb.get("built_up_box_factor", 0.75)) if hb.get("built_up_box") else 1.0
+    if mult != 1.0:
+        flags.append("built-up box column: Table C3.6 note [e] x%.2f" % mult)
+        v = {k: (x * mult if k != "c" and x is not None else x) for k, x in v.items()}
+    missing = [k for k in ("a", "b", "c", "IO", "LS", "CP") if v.get(k) is None]
+    if missing:
+        raise ValueError("HSS column parameters: %s missing (column_flexure_hss, AISC 342-22 Table C3.6 line 4)" % ", ".join(missing))
+    flags.append("HSS wall b/t=%.1f (t_des=%.3f in): a=%.4f b=%.4f c=%.2f rad at PG/Pye=%.3f" % (lam, ws["t_des"], v["a"], v["b"], v["c"], r))
+    PS.mark_used(prm, "column_flexure_hss", from_template=tmpl); PS.mark_used(prm, "column_flexure")
+    red = eval(cp["Mpce_axial_reduction"].replace("PG/Pye", "(PG/Pye)"), {}, env)
+    Mpe = p["Zx"] * Fye * red
+    ty = _theta_y(p["Zx"], Fye, L_in, p["Ix"], red if cp.get("theta_y_uses_Mpce") else 1 - r)
+    cd = prm.get("cyclic_deterioration") or (template_params().get("cyclic_deterioration") or {})
+    lam_c, cdet = 0.0, 1.0
+    if str(cd.get("mode", "none")).lower() == "supplied" and cd.get("Lambda_column_hss") is not None:
+        lam_c = float(cd["Lambda_column_hss"]); cdet = float(cd.get("c_exponent", 1.0))
+        flags.append("cyclic deterioration Lambda=%.3f (Lambda_column_hss, supplied)" % lam_c)
+    else:                                                # the W-shape regressions (Lignos et al.) do not cover HSS
+        flags.append("cyclic deterioration OFF for HSS columns (W-shape regressions not applicable; supply "
+                     "cyclic_deterioration.Lambda_column_hss with mode=supplied)")
+    return HingeSpec("column", section, L_in, Fye, Mpe, ty, v["a"], v["b"], v["c"], float(hb.get("Mc_over_My", cp.get("Mc_over_My", 1.1))),
+                     IO=v["IO"], LS=v["LS"], CP=v["CP"], force_controlled=False, PG_over_Pye=r, compact=True,
+                     flags=tuple(flags), Lambda=lam_c, c_det=cdet)
+
+
 def column_hinge(section: str, L_in: float, PG_kip: float, prm: dict) -> HingeSpec:
     p = SDB.props(section); cp = prm["column_flexure"]; mt = prm["material"]
+    if p.get("hss"):                                     # NL-R2-28: HSS / pipe -- no W-shape fields (d, tf, tw, bf)
+        return _hss_column_hinge(section, p, L_in, PG_kip, prm)
     Fye = mt["Fy_ksi"] * mt["Ry_expected"]
     Pye = p["A"] * Fye
     r = max(0.0, PG_kip) / Pye
@@ -344,25 +421,13 @@ class BraceSpec:
 
 
 def _hss_outside_and_tdes(section: str):
-    """Parse rectangular HSS label like HSS12X12X5/8 -> (B_out, tdes). A500 design wall tdes=0.93*tnom (AISC Manual)."""
-    s = section.strip().upper().replace(" ", "")
-    if not s.startswith("HSS"):
+    """Rectangular HSS label (HSS12X12X5/8, HSS5-1/2X5-1/2X3/8) -> (larger outside dimension, tdes);
+    A500 design wall tdes = 0.93 tnom (AISC 360-22 B4.2). (None, None) for anything else (NL-R2-28: the
+    fractional dimensions '5-1/2' used to fail this parse silently)."""
+    g = SDB.parse_hss_label(section)
+    if not g or g["kind"] != "rect":
         return None, None
-    body = s[3:]
-    parts = body.split("X")
-    if len(parts) < 3:
-        return None, None
-    try:
-        B = float(parts[0]); H = float(parts[1])
-        t_tok = parts[2]
-        if "/" in t_tok:
-            a, b = t_tok.split("/", 1); tnom = float(a) / float(b)
-        else:
-            tnom = float(t_tok)
-    except ValueError:
-        return None, None
-    tdes = 0.93 * tnom
-    return max(B, H), tdes
+    return max(g["B"], g["H"]), g["t_des"]
 
 
 def brace_spec(section: str, L_in: float, prm: dict, Lc_in: float = None) -> BraceSpec:
@@ -370,6 +435,9 @@ def brace_spec(section: str, L_in: float, prm: dict, Lc_in: float = None) -> Bra
     default K_effective x L_in. L_in (work-point length) still sets the axial stiffness."""
     p = SDB.props(section); bp = prm["brace_axial"]
     Fye = bp["Fy_ksi"] * bp["Ry_expected"]
+    hm = SDB.hss_material(section)
+    if hm and hm["kind"] != "rect":                      # review D3: round HSS A500 Gr. C 46 / pipe A53 Gr. B 35 ksi
+        Fye = hm["Fye"]
     A, r = p["A"], min(p["rx"], p["ry"])
     KLr = (Lc_in if Lc_in else bp["K_effective"] * L_in) / r
     Fe = math.pi ** 2 * E_KSI / KLr ** 2
@@ -957,11 +1025,27 @@ def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
 # verdict. The special segment of an STMF (AISC 341-22 E4: chord flexure/shear + X-diagonal yielding/buckling within
 # the segment) has no nonlinear model here.
 import re as _re
+# NL-R2-L2: plate shear walls. The web plates (or the steel-concrete composite wall panels) carry the storey shear;
+# the HR model represents them with rigid zones / elastic panels this module has no section for, and there is no
+# nonlinear web model here (tension-field strips for an SPSW, a composite wall fibre / panel model for a C-PSW).
+# Before NL-R2-L2 the pushover crashed at the model build (fibre section RIGID_ZONE not in aisc_shapes.csv).
+_PSW_SYSTEMS = (
+    (_re.compile(r"\bSPSW\b|STEEL\s+PLATE\s+SHEAR\s+WALL|SPECIAL\s+PLATE\s+SHEAR\s+WALL", _re.I),
+     "special plate shear wall (SPSW, AISC 341-22 F5): the steel web plates, which provide the inelastic deformation "
+     "through web-plate (tension-field) yielding, have no nonlinear model in this module (AISC 342-22 C6 steel plate "
+     "shear walls not implemented) -- the analysis is NOT EVALUATED"),
+    (_re.compile(r"\bC{1,2}-?PSW\b|COMPOSITE\s+PLATE\s+SHEAR\s+WALL|SPEEDCORE", _re.I),
+     "composite plate shear wall (C-PSW/CF, CC-PSW/CF; AISC 341-22 H7 / H8): the concrete-filled steel wall panels and "
+     "filled composite coupling beams have no nonlinear model in this module -- the analysis is NOT EVALUATED"),
+)
 UNSUPPORTED_SYSTEMS = (
     (_re.compile(r"\bSTMF\b|SPECIAL\s+TRUSS\s+MOMENT", _re.I),
      "special truss moment frame (STMF): the special segment (AISC 341-22 E4) has no nonlinear element model in this "
      "module, and its truss chords would otherwise be taken as EBF links -- the analysis is NOT EVALUATED"),
-)
+) + _PSW_SYSTEMS
+# Systems the DDM (GMNIA, steltic_ddm) cannot model either. The STMF is not among them: the DDM models the truss as a
+# frame and never takes chords as links (find_links with the declared system, NL-R2-13).
+DDM_UNSUPPORTED_SYSTEMS = _PSW_SYSTEMS
 
 
 def declared_systems(basis) -> list:
@@ -974,10 +1058,11 @@ def declared_systems(basis) -> list:
     return out
 
 
-def unsupported_system(basis) -> str | None:
-    """NL-R2-13: the refusal message when the declared system is one this module cannot model, else None."""
+def unsupported_system(basis, engine: str = "nonlinear") -> str | None:
+    """NL-R2-13 / NL-R2-L2: the refusal message when the declared system is one this module cannot model, else None.
+    engine="ddm": only the systems the GMNIA design-by-analysis cannot model either (plate shear walls)."""
     for s in declared_systems(basis):
-        for rx, why in UNSUPPORTED_SYSTEMS:
+        for rx, why in (DDM_UNSUPPORTED_SYSTEMS if engine == "ddm" else UNSUPPORTED_SYSTEMS):
             if rx.search(s):
                 return "system %r not supported: %s." % (s, why)
     return None

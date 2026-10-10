@@ -328,6 +328,17 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                     _num(r.get("DC")), _tag(r["DC"] <= 1.0, "ok", "NG"), r.get("fc_basis", "16.4.2.1 Eqs. (16.4-1)/(16.4-2)"),
                     r.get("governing", "") + "".join("<br><span class='ng'>%s</span>" % f for f in (r.get("flags") or []))))
     H.append("</table>")
+    if acc.get("force_controlled_ebf_braces"):                     # NL-R2-22
+        H.append("<h3>Force-controlled — EBF braces: axial (critical, AISC 341-22 Table A-1.7.3; AISC 342-22 E2.4a(b)), modelled elastic; "
+                 "φ = 0.9 (AISC 360-22 E3 on the design buckling length / D2 tension yielding), B = 1.0</h3>")
+        H.append("<table><tr><th>Section</th><th>elev. (in)</th><th>P<sub>u</sub> comp / tens · P<sub>ns</sub> (kip)</th><th>P<sub>r</sub> (16.4-1) / T<sub>r</sub> (16.4-2)</th>"
+                 "<th>φP<sub>n</sub> · L<sub>c</sub> (in) · KL/r</th><th>φF<sub>y</sub>A<sub>g</sub></th><th>D/C · governing</th></tr>")
+        for r in acc["force_controlled_ebf_braces"]:
+            H.append("<tr><td>%s</td><td>%.0f</td><td>%s / %s · %s</td><td>%s / %s</td><td>%s · %s · %s<br><small>%s</small></td><td>%s</td><td>%s %s<br><small>%s</small></td></tr>"
+                     % (r["section"], r["z_in"], _num(r["Qu_comp"], "%.0f"), _num(r["Qu_tens"], "%.0f"), _num(r["Qns"], "%.0f"), _num(r["demand_comp"], "%.0f"),
+                        _num(r["demand_tens"], "%.0f"), _num(r["phiPn"], "%.0f"), _num(r["Lc_in"], "%.0f"), _num(r["KLr"], "%.0f"), r.get("Lc_source") or "",
+                        _num(r["phiTn"], "%.0f"), _num(r["DC"]), _tag(r["DC"] <= 1.0, "ok", "NG"), r["governing"]))
+        H.append("</table>")
     if x2.get("apply", True) and acc["force_controlled_columns"]:
         H.append('<p class="note"><b>16.4.2.1 Exception 2 (Eqs. 16.4-3 / 16.4-4).</b> Applied to the axial force of a column when (1) its flexure is deformation-controlled on both axes '
                  '(AISC 342-22 C3.4) and the model represents that yielding, and (2) every member delivering vertical force to its column line at and above the column is a modelled '
@@ -341,8 +352,9 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                  'Columns that do not meet (1) and (2) keep the default check (reason in the table).%s</p>'
                  % (x2.get("snow_basis") or "S = 0", (" " + x2["note"]) if x2.get("note") else ""))
     H.append('<p class="note">Q<sub>ns</sub> is the gravity state of the nonlinear model itself (16.3.2 loads), split into D and 0.5L by the level totals. '
-             'Flexure is classified per AISC 342-22 C3.4: deformation-controlled for P<sub>G</sub>/P<sub>ye</sub> ≤ 0.6 (analysed moment with the expected strength M<sub>CE</sub>, F<sub>ye</sub> = R<sub>y</sub>F<sub>y</sub>, C3.4b.2.b with m = 1), '
-             'force-controlled above (transformed by the 16.4.2.1 equations, resisted by φM<sub>n</sub>: F2 with L<sub>b</sub> = column length and C<sub>b</sub> = 1, F3/F6). '
+             'Flexure is classified per AISC 342-22 C3.4: deformation-controlled for P<sub>G</sub>/P<sub>ye</sub> ≤ 0.6 (analysed moment with the expected strength M<sub>CE</sub>, F<sub>ye</sub> = R<sub>y</sub>F<sub>y</sub>, C3.4a.2b with m = 1, combined with the axial force in compression only; in net tension the deformation-controlled moment is judged by the hinge rotation), '
+             'force-controlled above (transformed by the 16.4.2.1 equations, resisted by φM<sub>n</sub>: F2 with C<sub>b</sub> = 1, F3/F6). '
+             'Unbraced lengths (E2 L<sub>c</sub> per axis, F2 L<sub>b</sub>): the HR design\'s column bracing where design/calc_package.json gives it (brace points or L<sub>cx</sub>/L<sub>cy</sub>/L<sub>b</sub>, listed in the notes), otherwise K = 1 with the column length about both axes and L<sub>b</sub> = column length. '
              'A deformation-controlled axis modelled elastic (the minor axis of concentrated-hinge columns) whose moment exceeds M<sub>CE</sub> is flagged: the model cannot represent that yielding (16.3.1). '
              'Peaks of P, M<sub>major</sub> and M<sub>minor</sub> are taken independently per record (not concurrent) — conservative.%s</p>'
              % ((" Notes: " + "; ".join(acc["fc_notes"])) if acc.get("fc_notes") else ""))
@@ -383,7 +395,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                "Accidental torsion is not applied (16.3.4 — only where a Type 1 irregularity exists); inherent eccentricity is whatever the diaphragm master/mass placement in the package gives.",
                ("16.4.2.1 Exception 2 was applied to the axial force of %d column group(s) (%s) on the user's decision (7 Oct 2026); the engineer of record and the 16.5 reviewer must accept that these actions are limited by the yield mechanism and the E<sub>mc</sub> basis (section 5)."
                 % (x2["n_columns"], "; ".join(x2.get("members") or [])) if x2.get("used") else "16.4.2.1 Exception 2 was not used for any column (none qualified or it is switched off)."),
-               "Force-controlled column check: AISC 360 E3 / F2–F6 / H1-1 nominal strengths computed here (F<sub>y</sub> = %s ksi from the component parameters, K = 1, L<sub>b</sub> = column length, C<sub>b</sub> = 1); connections, splices and base plates are not checked." % (((prm.get("material") or {}).get("Fy_ksi")) or 50),
+               "Force-controlled column check: AISC 360 E3 / F2–F6 / H1-1 nominal strengths computed here (F<sub>y</sub> = %s ksi from the component parameters, unbraced lengths from the HR design's column bracing where design/calc_package.json gives them, otherwise K = 1 and L<sub>b</sub> = column length, C<sub>b</sub> = 1); connections, splices and base plates are not checked." % (((prm.get("material") or {}).get("Fy_ksi")) or 50),
                "16.1.4 documentation and 16.5 independent design review are procedural requirements outside this tool."):
         H.append("<li>%s</li>" % it)
     H.append("</ol>")

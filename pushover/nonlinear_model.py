@@ -594,6 +594,8 @@ def build_brace(pkg, e, sec, prm, mat, hinges, stats, ctx):
             if f.startswith("WARNING") or "FALLBACK" in f or "TEMPLATE" in f:
                 _note(stats, "BRB %s: %s" % (sec, f))
         return mat
+    if ebf_brace_force_controlled(pkg, ctx, prm, e):             # NL-R2-22: EBF brace = force-controlled, elastic
+        return _build_ebf_brace(pkg, e, sec, prm, mat, stats, ctx, p1, p2, L)
     Lc, lc_src = brace_Lc(pkg, ctx, prm, e, L)                   # NL-R2-19: the design's buckling length
     spec = HM.brace_spec(sec, L, prm, Lc_in=Lc)
     _note(stats, "buckling braces: buckling length from %s" % lc_src.split(" x ")[0] if " x " in lc_src else "buckling braces: " + lc_src)
@@ -607,6 +609,67 @@ def build_brace(pkg, e, sec, prm, mat, hinges, stats, ctx):
     ops.element("corotTruss", e["tag"], e["n1"], e["n2"], spec.A, mat)
     hinges[e["tag"]] = _brace_hinge(e, sec, p1, p2, spec, mat, E_KSI_AL(spec))
     stats["brace_nonlinear"] += 1
+    return mat
+
+
+def ebf_brace_force_controlled(pkg, ctx, prm, e):
+    """NL-R2-22: True for a buckling (non-BRB) brace of a declared eccentrically braced frame that frames into an EBF
+    link end. AISC 341-22 Appendix 1 Table A-1.7.3 designates the EBF 'Brace / Axial' action Force-controlled,
+    Critical, and AISC 342-22 E2.4a(b) makes every action of EBF components other than link shear / flexure
+    force-controlled (the braces are capacity-designed for the link overstrength, AISC 341-22 F3.5b). Such a brace is
+    modelled ELASTIC (ASCE 41-23 7.5.1.1: an action modelled linear elastic is treated as force-controlled) and its
+    axial force is checked by ASCE 7-22 16.4.2.1 (nlrha.acceptance). brace_axial.ebf_brace_model = "buckling" keeps
+    the previous buckling-brace model. Braces of any other system, and braces not framing into a link, are unchanged."""
+    mode = str(((prm or {}).get("brace_axial") or {}).get("ebf_brace_model", "elastic")).lower()
+    if mode not in ("elastic", "force_controlled"):
+        return False
+    if not HM.is_ebf_system(" / ".join(HM.declared_systems(getattr(pkg, "basis", None)))):
+        return False
+    ln = ctx.get("ebf_link_nodes")
+    if ln is None:
+        tags = {t for t, v in (ctx.get("links") or {}).items() if not v.get("skipped")}
+        ln = set()
+        for el in getattr(pkg.model, "elements", None) or []:
+            if el["tag"] in tags:
+                ln.update((el["n1"], el["n2"]))
+        ctx["ebf_link_nodes"] = ln
+    return e["n1"] in ln or e["n2"] in ln
+
+
+def ebf_brace_meta(pkg, prm):
+    """NL-R2-22: {brace tag: dict(section, L_in, Lc_in, Lc_source, z)} of the EBF braces build_brace models elastic
+    (same gate, no OpenSees calls) -- the pushover records their axial force for the force-controlled check. {} for any
+    package that is not a declared EBF (no work, nothing recorded)."""
+    if not HM.is_ebf_system(" / ".join(HM.declared_systems(getattr(pkg, "basis", None)))) or not hasattr(pkg.model, "elements"):
+        return {}
+    ctx = dict(links=HM.find_links_pkg(pkg, prm, member_kind))
+    out = {}
+    for e in pkg.model.elements:
+        sec = pkg.schedule.get(e["tag"], {}).get("section")
+        if member_kind(pkg, e) != "brace" or not sec or str(sec).upper() == "GHOST" or SDB.is_brb(str(sec)):
+            continue
+        if "etype" in e and e["etype"] not in ("Truss", "truss", "corotTruss"):
+            continue
+        if ebf_brace_force_controlled(pkg, ctx, prm, e):
+            p1, p2 = pkg.model.nodes[e["n1"]], pkg.model.nodes[e["n2"]]
+            L = math.dist(p1, p2)
+            Lc, src = brace_Lc(pkg, ctx, prm, e, L)
+            out[e["tag"]] = dict(section=sec, L_in=L, Lc_in=Lc, Lc_source=src, z=max(p1[2], p2[2]))
+    return out
+
+
+def _build_ebf_brace(pkg, e, sec, prm, mat, stats, ctx, p1, p2, L):
+    """NL-R2-22: elastic pin-ended EBF brace (corotTruss, E x the HR model's area -- the stiffness of the elastic
+    model), registered in stats['ebf_braces'] for the 16.4.2.1 force-controlled check (critical: phi of AISC 360-22,
+    Pn per AISC 360-22 E3 on the design buckling length brace_Lc). Not a hinge: it has no deformation acceptance."""
+    A = float(e["raw"][4]) if "etype" in e else float(e["A"])
+    mat += 1
+    ops.uniaxialMaterial("Elastic", mat, HM.E_KSI)
+    ops.element("corotTruss", e["tag"], e["n1"], e["n2"], A, mat)
+    Lc, lc_src = brace_Lc(pkg, ctx, prm, e, L)
+    stats.setdefault("ebf_braces", {})[e["tag"]] = dict(section=sec, A_model=A, L_in=L, Lc_in=Lc, Lc_source=lc_src,
+                                                        n1=e["n1"], n2=e["n2"], z=max(p1[2], p2[2]))
+    stats["brace_ebf_elastic"] = stats.get("brace_ebf_elastic", 0) + 1
     return mat
 
 
@@ -861,6 +924,15 @@ def build_link_imk(pkg, e, sec, prm, mat, hinges, stats, ctx, beam_side=None):
     I = e[slot]
     ni, nj = HN_BASE + tag * 10 + 1, HN_BASE + tag * 10 + 2
     ops.node(ni, *p1); ops.node(nj, *p2)
+    if str(prm.get("_analysis", "")).lower() == "nlrha":
+        # NL-R2-22: the link's own steel mass on its three internal nodes (taken off the floor mass, _link_mass_balance).
+        # Massless, they made the link a quasi-static island: at the Table C2.4 capping point (C -> D drop of the shear
+        # spring) Newton chattered and halving dt could not help (no inertia at those DOFs) -- Ex8 Duzce stopped at
+        # t = 8.35 s with one link at gamma = a. With the mass the step halving resolves the drop.
+        mlk = SDB.props(sec)["A"] * L * STEEL_DENSITY_KIP_IN3 / G_IN
+        for nd in (sn, ni, nj):
+            ops.mass(nd, *([mlk / 3.0] * 3 + [mlk / 3.0 * L * L / 12.0] * 3))
+        ctx.setdefault("link_mass", []).append((e["n1"], mlk))
     args = dict(A=e["A"], E=e["E"], G=e["G"], J=e["J"], Iy=e["Iy"], Iz=e["Iz"])
     args[slot] = I * (N_STIFF + 1.0) / N_STIFF
     ops.element("elasticBeamColumn", tag, ni, nj, args["A"], args["E"], args["G"], args["J"], args["Iy"], args["Iz"], e["transf"])
@@ -938,6 +1010,33 @@ def _pt_mass_balance(pkg, ctx, stats):
           % (moved, moved * G_IN))
 
 
+def _link_mass_balance(pkg, ctx, stats):
+    """NL-R2-22: take the EBF links' own mass (placed on their internal nodes in the NLRHA) off the floor mass of the
+    link's level, in proportion to the translational mass of the level's mass-carrying nodes: total mass unchanged."""
+    items = ctx.get("link_mass") or []
+    if not items:
+        return
+    zlev = [(z, master, slaves) for k, z, master, slaves in levels(pkg)]
+    moved = 0.0
+    for n1, mb in items:
+        z = pkg.model.nodes[n1][2]
+        hit = next(((master, slaves) for zz, master, slaves in zlev if abs(zz - z) < 1.0), None)
+        if hit is None:
+            continue
+        carriers = [(t, pkg.model.masses[t][0]) for t in [hit[0]] + list(hit[1]) if pkg.model.masses.get(t) and pkg.model.masses[t][0] > 0]
+        tot = sum(m for t, m in carriers)
+        if tot <= 0:
+            continue
+        for t, m in carriers:
+            cur = list(ops.nodeMass(t))
+            d = min(mb * m / tot, 0.5 * cur[0])
+            cur[0] -= d; cur[1] -= d
+            ops.mass(t, *cur)
+        moved += mb
+    stats["link_mass_kip_s2_in"] = round(moved, 6)
+    _note(stats, "EBF links: own mass %.4f kip-s2/in (%.1f kip) placed on the link nodes and taken off the floor masses" % (moved, moved * G_IN))
+
+
 def finish_stats(stats, ctx, prm, plasticity):
     """Census + degradation disclosure common to both builders (NL-02 / NL-03 / NL-10)."""
     links = ctx.get("links") or {}
@@ -949,6 +1048,10 @@ def finish_stats(stats, ctx, prm, plasticity):
             _note(stats, "link %s (%s): %s" % (v["tag"], v["section"], v["skipped"]))
     if stats["link_census"]["n"]:
         _note(stats, "EBF links (%d): link axial force (AISC 342-22 E2.4c, PUF/Pye > 0.6 -> elastic) is NOT checked" % stats["link_census"]["n"])
+    if stats.get("brace_ebf_elastic"):                           # NL-R2-22
+        _note(stats, "EBF braces (%d): modelled ELASTIC (pin-ended truss, EA of the design model) -- brace axial force is "
+                     "force-controlled, Critical (AISC 341-22 Table A-1.7.3; AISC 342-22 E2.4a(b)); NLRHA: checked by ASCE 7-22 "
+                     "16.4.2.1 against phi Pn (AISC 360-22 E3, design buckling length) / phi Fy Ag" % stats["brace_ebf_elastic"])
     deg = dict(plasticity=plasticity)
     lam_mode = str((HM.param_group(prm, "cyclic_deterioration")[0]).get("mode", "none")).lower()
     if plasticity == "fibre":
@@ -1200,6 +1303,7 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
     _pt_mass_balance(pkg, ctx, stats)
+    _link_mass_balance(pkg, ctx, stats)                          # NL-R2-22
     finish_stats(stats, ctx, prm, "imk")
     if verbose:
         print("[nonlinear_model] hinges: %d  (cols %d, beams %d, brace elements %d of which nonlinear %d [BRB %d, physical-theory %d], "
@@ -1454,6 +1558,10 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
     A = [max(hinges[t]["spec"].a_pl, 1e-9) for t in hz]
     grav = [hinges[t]["kind"] != "brace" for t in hz]      # only gravity-carrying members define the b (collapse) limit
     rec["b_ratio"] = []; rec["a_ratio"] = []; rec["brace_b_ratio"] = []
+    ebf = ebf_brace_meta(pkg, prm)                                # NL-R2-22: elastic force-controlled EBF braces
+    ebf_tags = sorted(ebf)
+    if ebf_tags:
+        rec["ebf_N"] = []
     def snapshot():
         ops.reactions()
         V = -sum(ops.nodeReaction(t, dof) for t in fixed)
@@ -1468,6 +1576,8 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
         rec["a_ratio"].append(max([abs(pl[i]) / A[i] for i in range(len(pl)) if grav[i]] or [0.0]))
         rec["brace_b_ratio"].append(max([abs(pl[i]) / B[i] for i in range(len(pl)) if not grav[i]] or [0.0]))
         rec["col_N"].append([ops.eleResponse(c, "localForce")[0] for c in cols])
+        if ebf_tags:                                              # axial force, + tension (first entry = gravity state)
+            rec["ebf_N"].append([(ops.eleResponse(b, "axialForce") or [0.0])[0] for b in ebf_tags])
     snapshot()
     dU, umax, Vmax, halvings, step = dU0, max_roof_drift * H, 0.0, 0, 0
     if progress_s is None:
@@ -1530,4 +1640,5 @@ def pushover(pkg, hinges, direction, loads, prm, max_roof_drift=0.08, dU0=None, 
     return dict(direction=direction, H=H, col_tags=cols, tail=tail, elapsed_s=round(time.time() - progress.t0, 1),
                 gravity_table_QG=[r["QG_kip"] for r in (gravity_table or [])], heights=[lv[0][1]] + [lv[i][1] - lv[i - 1][1] for i in range(1, len(lv))],
                 pattern=pat, rec=rec, hinge_tags=hz, stop_reason=stop_reason, Vmax=Vmax, roof_node=roof,
-                n_moment_frame_members=moment_frame_members(pkg), monitored=kinds, analysis_objects=dict(an.issued))
+                n_moment_frame_members=moment_frame_members(pkg), monitored=kinds, analysis_objects=dict(an.issued),
+                ebf_brace_tags=ebf_tags, ebf_braces=ebf)

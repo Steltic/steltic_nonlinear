@@ -37,7 +37,8 @@ SCHEMA = "ASCE41-23/AISC342-22"
 E_KSI = 29000.0
 GROUPS = ("material", "beam_flexure", "column_flexure", "brace_axial",
           # nl-elements groups (NL-02 / NL-03 / NL-10): never collected, supplied manually by the user
-          "brb_axial", "ebf_link", "cyclic_deterioration")
+          "brb_axial", "ebf_link", "cyclic_deterioration",
+          "column_flexure_hss")                                    # NL-R2-28: rectangular HSS columns, Table C3.6 line 4
 TEMPLATE_NOTE = "(group not in the parameter file: repository TEMPLATE values used)"
 
 # keys inside a group that describe the values rather than being values the engine computes with

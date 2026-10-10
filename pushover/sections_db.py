@@ -19,7 +19,9 @@ def _table():
                 try:
                     rec[k] = float(v)
                 except (TypeError, ValueError):
-                    rec[k] = v
+                    # NL-R2-28: HSS / pipe rows carry "–" (or blank) in the W-shape columns d, tw, bf, tf, Cw, rts, ho:
+                    # a non-numeric property is None, never a string that later arithmetic trips over.
+                    rec[k] = v if k == "Type" else None
             out[lab] = rec
     return out
 
@@ -74,6 +76,76 @@ def link_shear_props(section: str, Fye: float) -> dict:
                 Alw=Alw, As=p["d"] * p["tw"], Vp=0.6 * Fye * Alw, Mp=p["Zx"] * Fye)
 
 
+_DIM = r"(\d+(?:\.\d+)?(?:-\d+/\d+)?|\d+/\d+)"
+
+
+def _dim(tok: str) -> float:
+    """'5-1/2' -> 5.5, '3/8' -> 0.375, '0.500' -> 0.5, '10' -> 10.0 (AISC Manual label dimensions)."""
+    whole, _, frac = tok.partition("-")
+    if "/" in whole:                                   # pure fraction, e.g. 3/8
+        a, b = whole.split("/"); return float(a) / float(b)
+    v = float(whole)
+    if frac:
+        a, b = frac.split("/"); v += float(a) / float(b)
+    return v
+
+
+def parse_hss_label(section) -> dict | None:
+    """Geometry encoded in an HSS / pipe label (NL-R2-28). AISC Manual labels:
+      rectangular / square HSS  'HSS10X10X5/16', 'HSS5-1/2X5-1/2X3/8', 'HSS12X8X1/2'  -> kind 'rect', H, B, t_nom
+      round HSS                 'HSS6.625X0.280', 'HSS5.563X.258'                     -> kind 'round', OD, t_nom
+      pipe                      'Pipe5STD', 'Pipe8XS', 'Pipe4XXS'                     -> kind 'pipe' (no dims in the label)
+    t_des = 0.93 t_nom (AISC 360-22 B4.2: HSS to standards other than A1065 / A1085, e.g. A500). None for other shapes."""
+    s = str(section or "").strip().upper().replace(" ", "")
+    if s.startswith("PIPE"):
+        return dict(kind="pipe", label=s)
+    if not s.startswith("HSS"):
+        return None
+    body = s[3:].replace("X.", "X0.")
+    m = re.fullmatch(_DIM + "X" + _DIM + "X" + _DIM, body)
+    if m:
+        H, B, t = (_dim(g) for g in m.groups())
+        return dict(kind="rect", H=H, B=B, t_nom=t, t_des=0.93 * t)
+    m = re.fullmatch(_DIM + "X" + _DIM, body)
+    if m:
+        D, t = (_dim(g) for g in m.groups())
+        return dict(kind="round", OD=D, t_nom=t, t_des=0.93 * t)
+    return None
+
+
+# NL-R2-28 (review D3): HSS / pipe material by shape type. Ry: AISC 341-22 Table A3.2 (RAG spec:AISC_341_22 A3.2:
+# A500 Gr. C 1.3, A53 1.6). Fy: ASTM A500 Gr. C 50 ksi shaped (rectangular / square) and 46 ksi round, ASTM A53 Gr. B
+# 35 ksi (AISC 360-22 B4.2 User Note: pipe designed as round HSS when it conforms to A53 Gr. B) -- the Fy values are the
+# ASTM minimums as tabulated in the AISC Manual (Table 2-4); they are not in the RAG corpus.
+HSS_MATERIALS = {
+    "rect": dict(Fy=50.0, Ry=1.3, spec="ASTM A500 Gr. C (rectangular / square HSS)"),
+    "round": dict(Fy=46.0, Ry=1.3, spec="ASTM A500 Gr. C (round HSS)"),
+    "pipe": dict(Fy=35.0, Ry=1.6, spec="ASTM A53 Gr. B (pipe)"),
+}
+
+
+def hss_material(section) -> dict | None:
+    """Default material of an HSS / pipe label by shape type (HSS_MATERIALS): dict(Fy, Ry, Fye, spec, kind); None for
+    other shapes."""
+    g = parse_hss_label(section)
+    if not g:
+        return None
+    m = dict(HSS_MATERIALS[g["kind"]])
+    m.update(kind=g["kind"], Fye=m["Fy"] * m["Ry"])
+    return m
+
+
+def hss_wall_slenderness(section) -> dict | None:
+    """Rectangular HSS wall slenderness with the design wall thickness (AISC 360-22 B4.1b / B4.2: b = B - 3t,
+    h = H - 3t when the corner radius is not known, t = 0.93 t_nom). -> dict(b_t, h_t, lam = max, t_des)."""
+    g = parse_hss_label(section)
+    if not g or g["kind"] != "rect":
+        return None
+    t = g["t_des"]
+    b_t, h_t = (g["B"] - 3.0 * t) / t, (g["H"] - 3.0 * t) / t
+    return dict(b_t=b_t, h_t=h_t, lam=max(b_t, h_t), t_des=t, H=g["H"], B=g["B"])
+
+
 def props(section: str) -> dict:
     """Section properties (in, in^2, in^4). Adds h/tw and bf/2tf compactness ratios (h ~ d - 2tf here;
     the tabulated h/tw is not in this csv, so the ratio is approximate and flagged as such).
@@ -99,6 +171,9 @@ def props(section: str) -> dict:
         raise KeyError(f"section {section!r} not in aisc_shapes.csv")
     else:
         p = dict(t[key])
+    hss = parse_hss_label(key)
+    if hss:
+        p["hss"] = hss                                    # NL-R2-28: HSS / pipe geometry from the label
     if all(k in p and isinstance(p[k], float) for k in ("d", "tw", "bf", "tf")):
         p["h_tw"] = (p["d"] - 2.0 * p["tf"]) / p["tw"]        # approx: clear web ~ d - 2tf (no fillets)
         p["bf_2tf"] = p["bf"] / (2.0 * p["tf"])

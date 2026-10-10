@@ -437,7 +437,7 @@ def _census_drifts(run, hinges, i):
     return table, worst, sorted(census.values(), key=lambda c: c["z_in"]), drifts, (float(max(colN)) if colN else None)
 
 
-def acceptance(run, hinges, disp, level_name):
+def acceptance(run, hinges, disp, level_name, prm=None):
     """Per-hinge plastic rotation at the first recorded roof displacement >= `disp` (delta_t), D/C against
     IO/LS/CP, grouped by (kind, section, level z); the yielded-hinge census that shows the mechanism; the
     storey drifts. ASCE 41-23 7.4.3.3.1: element deformations at the control-node displacement equalling or
@@ -493,10 +493,49 @@ def acceptance(run, hinges, disp, level_name):
         out.update(status=NOT_EVALUATED, evaluated=False, acceptable=None, worst_DC=dict(IO=None, LS=None, CP=None),
                    note="BPON NOT EVALUATED: %s -- no component acceptance can be claimed (ASCE 41-23 7.5.3)." % why)
         return out
+    fcb = ebf_brace_fc_nsp(run, i, prm)                              # NL-R2-22
+    if fcb:
+        out["ebf_brace_fc"] = fcb
     out.update(status=EVALUATED, evaluated=True, acceptable=None,
                note="%d monitored components (%s) at roof u = %.2f in >= delta_t %.2f in"
                     % (sum(kinds.values()), ", ".join("%d %s" % (v, k) for k, v in sorted(kinds.items())), out["roof_disp_in"], disp))
     return out
+
+
+EBF_GAMMA_CRITICAL = 1.3        # ASCE 41-23 Table 7-8: critical force-controlled action
+
+
+def ebf_brace_fc_nsp(run, i, prm=None):
+    """NL-R2-22: ASCE 41-23 7.5.3.2.3 Eq. (7-41) gamma chi (Q_UF - Q_G) + Q_G <= Q_CL for the axial force of the EBF braces
+    (AISC 341-22 Table A-1.7.3: Brace / Axial = Force-controlled, Critical -> gamma = 1.3, Table 7-8; chi = 1.0 for CP and
+    1.3 for LS / IO, gamma chi <= 1.5, 7.5.3.2.3 Exception 2), at analysis step i. Q_CL = lower-bound strength (AISC
+    342-22 B2.3b): Fy nominal (brace_axial.Fy_ksi), compression AISC 360-22 E3 on the design buckling length with the
+    0.85 factor on the elastic-buckling limit state (KL/r > 4.71 sqrt(E/Fy)), tension Fy Ag. None without EBF braces."""
+    tags = run.get("ebf_brace_tags") or []
+    N = (run.get("rec") or {}).get("ebf_N")
+    if not tags or not N or i is None or i >= len(N):
+        return None
+    from nlrha import acceptance as AC
+    Fy = float(((prm or {}).get("brace_axial") or {}).get("Fy_ksi", 50.0))
+    rows = []
+    for j, t in enumerate(tags):
+        m = run["ebf_braces"][t]
+        Pn, KLr = AC.column_Pn(m["section"], m["Lc_in"], Fy=Fy)
+        if KLr > 4.71 * math.sqrt(29000.0 / Fy):
+            Pn *= 0.85
+        from . import sections_db as SDB
+        Tn = Fy * SDB.props(m["section"])["A"]
+        QG, QUF = N[0][j], N[i][j]
+        dc = {}
+        for perf, chi in (("CP", 1.0), ("LS", 1.3), ("IO", 1.3)):
+            gc = min(EBF_GAMMA_CRITICAL * chi, 1.5)
+            Q = gc * (QUF - QG) + QG                              # + tension
+            dc[perf] = (-Q / Pn) if Q < 0 else (Q / Tn)
+        rows.append(dict(ele=t, section=m["section"], z_in=m["z"], N_kip=QUF, N_gravity_kip=QG, QCL_comp=Pn, QCL_tens=Tn, KLr=KLr, DC=dc))
+    worst = {p: max(r["DC"][p] for r in rows) for p in ("CP", "LS", "IO")}
+    return dict(rows=sorted(rows, key=lambda r: -r["DC"]["CP"])[:20], worst_DC=worst, n=len(rows),
+                basis="ASCE 41-23 Eq. (7-41), gamma 1.3 (Table 7-8 critical), chi 1.0 CP / 1.3 LS-IO, gamma chi <= 1.5; "
+                      "Q_CL per AISC 342-22 B2.3b (AISC 360-22 E3 / D2, Fy nominal)")
 
 
 def level_verdict(acc, perf):
@@ -510,6 +549,9 @@ def level_verdict(acc, perf):
         return False
     if st == NOT_EVALUATED:
         return None
+    fcb = acc.get("ebf_brace_fc")                                   # NL-R2-22: force-controlled EBF braces
+    if fcb and (fcb.get("worst_DC") or {}).get(perf if perf in ("CP", "LS", "IO") else "LS", 0.0) > 1.0:
+        return False
     v = (acc.get("worst_DC") or {}).get(perf)
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return None

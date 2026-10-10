@@ -28,3 +28,8 @@ pushover = ["aisc_shapes.csv", "hinge_params.json", "viewer_core.html", "vendor/
 nlrha = ["ch16_params.json", "viewer_core.html", "vendor/*"]
 steltic_ddm = ["data/*", "viewer_core.html", "vendor/*"]
 records = ["p695_farfield/*", "p695_farfield/*/*"]
+
+[tool.pytest.ini_options]
+# NL-R2-31: a passing test's tmp_path (where tests/conftest.py points tempfile and TMPDIR) is removed at its teardown;
+# a failing test keeps its files for debugging.
+tmp_path_retention_policy = "failed"

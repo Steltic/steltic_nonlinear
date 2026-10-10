@@ -65,7 +65,7 @@ def _direction_results(pkg, prm, run, hinges, site_class):
     from . import postprocess as PP, performance as PF
     nsp = {lvl: PP.nsp_target(run, pkg.basis, prm, f, site_class) for lvl, f in prm["nsp"]["hazard_levels"].items()}
     p695 = PP.p695_factors(run, pkg.basis, nsp["BSE-1N"])
-    acc = {lvl: PF.augment(PP.acceptance(run, hinges, n["target_disp_in"], lvl), run, hinges) for lvl, n in nsp.items()}
+    acc = {lvl: PF.augment(PP.acceptance(run, hinges, n["target_disp_in"], lvl, prm=prm), run, hinges) for lvl, n in nsp.items()}
     return dict(nsp=nsp, p695=p695, acc=acc, hinges=hinges)
 
 
@@ -83,6 +83,10 @@ def _print_direction(pkg, d, run, R):
                  _dc(a["worst_DC"]["IO"]), _dc(a["worst_DC"]["LS"]), _dc(a["worst_DC"]["CP"]), a["monitored"]))
         if a["status"] != PP.EVALUATED:
             print("  !! [%s %s] %s" % (d, lvl, a["note"]))
+        if a.get("ebf_brace_fc"):                                   # NL-R2-22
+            w = a["ebf_brace_fc"]["worst_DC"]
+            print("  [%s %s] force-controlled EBF braces (%d, critical): worst D/C CP %.2f LS %.2f IO %.2f -- %s"
+                  % (d, lvl, a["ebf_brace_fc"]["n"], w["CP"], w["LS"], w["IO"], a["ebf_brace_fc"]["basis"]))
     hm = nsp["BSE-1N"]["higher_modes"]                             # NL-R2-12: same ratios at both hazard levels (same shape)
     print("  [%s NSP 7.3.2.1] higher modes %s: %s; story shear ratio (90%%-mass CQC / mode 1) by story: %s -> %s"
           % (d, hm["status"].upper(), hm.get("reason", ""), " ".join("%d:%.2f" % (r["story"], r["ratio"]) for r in hm["ratios"]) or "-",

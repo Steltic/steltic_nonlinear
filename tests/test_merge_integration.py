@@ -134,7 +134,7 @@ def _prm_without(*groups):
     for k in [k for k in prm if k.startswith("_")]:
         prm.pop(k)
     # pretend the user verified everything that IS in the file
-    for g in ("material", "beam_flexure", "column_flexure", "brace_axial"):
+    for g in ("material", "beam_flexure", "column_flexure", "brace_axial", "column_flexure_hss"):   # NL-R2-28: + HSS columns
         prm[g]["source"] = "user-verified (test)"; prm[g].pop("unverified", None)
     prm["verified"] = True; prm["source"] = "user-verified (test)"
     return HM.PS.annotate(prm)

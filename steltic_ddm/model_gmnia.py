@@ -9,8 +9,10 @@ model_gmnia.py -- rebuild a Steltic elastic model as a GMNIA model in openseespy
     for braces (imperfections.py decides directions/magnitudes)
   * Steltic pins (elasticBeamColumn -releasey/-releasez) -> duplicate end node + zeroLength with stiff
     springs on the retained DOFs and NOTHING on the released rotation (true pin, no constraint chains)
-  * brace ends: pinned about all three axes (gusset idealisation); braces do NOT share a node at the
-    X-crossing (conservative: K = 1 on the full diagonal)
+  * brace ends: pinned about all three axes (gusset idealisation); at an X-crossing the two diagonals share their
+    mid-node translations (pinned crossing) when the HR design says they are connected there (calc_package:
+    "connected at the crossing", Lc <= 0.6 Lwp; NL-R2-28 (DDM)), otherwise they are independent (K = 1 on the
+    full diagonal)
   * rigid diaphragms and master nodes exactly as Steltic recorded them
   * bases: as recorded (fixed / pinned)
   * optional rigid_end_offset on primary beams: stiff elasticBeamColumn stubs
@@ -45,6 +47,10 @@ LINK_NODE0 = 50_000_000   # NL-03: link shear-spring node LINK_NODE0 + member ta
 LINK_ELE0 = 60_000_000    # NL-03: link shear-spring zeroLength LINK_ELE0 + member tag
 BRB_ELE0 = 70_000_000     # NL-02: BRB corotTruss BRB_ELE0 + member tag
 SPRING_MAT0 = 80_000_000  # BRB / link spring materials
+BRACE_NODE0 = 85_000_000  # NL-R2-27: deck node of a beam lateral-torsional brace (BRACE_NODE0 + running count)
+BRACE_ELE0 = 86_000_000   # NL-R2-27: zeroLength deck brace (BRACE_ELE0 + running count)
+TIED_BRACE_NSUB = 8      # review D2: minimum sub-elements of an X diagonal tied at its crossing
+BRACE_CONTINUOUS_N = 8    # NL-R2-27: L / Lb above this -> continuous bracing (every interior chain node braced)
 K_TRANS = 1.0e9      # kip/in   stiff pin springs
 K_ROT = 1.0e10       # kip-in/rad
 
@@ -83,6 +89,8 @@ class GMNIAModel:
         self._grav_loc = {}
         self.gravity_by_member = {}
         self.gravity_notes = []
+        self.beam_bracing = True     # NL-R2-27: brace diaphragm-level beams where the HR design relies on deck / infill bracing
+        self.braced = {}             # member tag -> (mode, brace positions in in from n1, Lb_in)
 
     # ------------------------------------------------------------------ geometry helpers
     def _coord(self, tag):
@@ -153,16 +161,32 @@ class GMNIAModel:
         self.builder = FiberSectionBuilder(ops, Fy=self.Fy, hardening=self.hardening,
                                            residual=self.residual, elastic=self.elastic, mat_tag0=1000)
         self.nonbuckling, self.special_log, self._spring_mat = set(), [], SPRING_MAT0
+        self.braced, self._nbrace, self._brace_slaves = {}, 0, {}
         self._prepare_special()
         if self._grav_geo is False and not self.elastic:
             self.special_log.append("gravity: HR static-model distribution unavailable (%s) -- legacy two-way 45-degree "
                                     "tributary used (ignores one-way decks / infill)" % self._grav_fail)
+        self._x_tie_plan()                                         # NL-R2-28 (DDM), before the chains are built
         for m in nm.members:
             self._add_member(m)
+        if self.braced:
+            nc = sum(1 for v in self.braced.values() if v[0] == "continuous")
+            self.special_log.append(
+                "beam bracing (NL-R2-27): %d diaphragm-level beams braced against lateral displacement and twist at their "
+                "chain nodes by the deck (rigid-diaphragm deck node + zeroLength) -- %d continuously (HR Lb <= L/%d), %d at "
+                "the HR design's brace spacing Lb (infill / joist points); lateral-torsional buckling BETWEEN brace points "
+                "is not represented and stays a Chapter F check of the HR design (AISC 360-22 App. 1, 1.3.1)"
+                % (len(self.braced), nc, BRACE_CONTINUOUS_N, len(self.braced) - nc))
+        if getattr(self, "_lb_conflicts", None):
+            self.special_log.append("beam bracing: HR groups with different Lb for the same role/section -> the LARGEST Lb "
+                                    "used: %s" % "; ".join("%s %s %s" % (r, sct, v) for (r, sct), v in sorted(self._lb_conflicts.items())[:6]))
+        self._tie_x_crossings()                                    # NL-R2-28 (DDM)
         for note in self.special_log:
             self.builder.log.append((0, "special", "note", 0, note))
         for master, slaves in nm.diaphragms.items():
             ops.rigidDiaphragm(3, master, *slaves)
+        for master, deck in self._brace_slaves.items():             # NL-R2-27 deck brace nodes follow the floor
+            ops.rigidDiaphragm(3, master, *deck)
         if with_mass:
             for t, mm in nm.masses.items():
                 ops.mass(t, *mm)
@@ -213,6 +237,186 @@ class GMNIAModel:
         self.pins.append(tag)
         return tag
 
+
+    # ------------------------------------------------------------------ NL-R2-28 (DDM): X-brace crossings
+    def _hr_x_crossing_sections(self):
+        """Brace sections the HR design treats as X-braces CONNECTED AT THE CROSSING (calc_package members[].inputs:
+        configuration / note mentions the crossing and Lc_in <= 0.6 x the work-point length)."""
+        out = set()
+        for m in (self.nm.calc_package or {}).get("members", []) or []:
+            inp = m.get("inputs") or {}
+            if str(inp.get("role", "")) != "brace" or not inp.get("section"):
+                continue
+            txt = " ".join(str(inp.get(k, "")) for k in ("configuration", "note", "Lc_note")).lower()
+            try:
+                lc = float(inp.get("Lc_in")); lwp = float(inp.get("Lwp_in") or inp.get("workpoint_length_in") or inp.get("length_in"))
+            except (TypeError, ValueError):
+                continue
+            if "cross" in txt and lwp > 0 and lc <= 0.6 * lwp:
+                out.add(str(inp["section"]).upper().replace(" ", ""))
+        return out
+
+    @staticmethod
+    def x_pairs(braces, tol=1.0):
+        """Pairs of brace members whose work-point lines cross at both their mid-lengths (an X in one bay).
+        braces: [(tag, p1, p2)] -> [(tag_a, tag_b)]. tol: in."""
+        mids = [(t, tuple((a[q] + b[q]) / 2 for q in range(3)), tuple(b[q] - a[q] for q in range(3))) for t, a, b in braces]
+        out, used = [], set()
+        for i in range(len(mids)):
+            ta, ma, da = mids[i]
+            if ta in used:
+                continue
+            for j in range(i + 1, len(mids)):
+                tb, mb, db = mids[j]
+                if tb in used or math.dist(ma, mb) > tol:
+                    continue
+                cr = (da[1] * db[2] - da[2] * db[1], da[2] * db[0] - da[0] * db[2], da[0] * db[1] - da[1] * db[0])
+                if math.sqrt(sum(c * c for c in cr)) < 0.1 * math.sqrt(sum(c * c for c in da)) * math.sqrt(sum(c * c for c in db)):
+                    continue                                       # (anti)parallel: not an X
+                out.append((ta, tb)); used.update((ta, tb))
+                break
+        return out
+
+    def _x_tie_plan(self):
+        """NL-R2-28 (DDM): {brace tag: partner tag} of the X pairs that will be connected at the crossing -- decided from
+        the work-point geometry BEFORE the chains are built, so the tied diagonals get their half-length imperfection
+        (review D2) and at least TIED_BRACE_NSUB sub-elements."""
+        self.x_ties = {}
+        if self.elastic:
+            return
+        secs = self._hr_x_crossing_sections()
+        self._x_secs = secs
+        if not secs:
+            return
+        from pushover import sections_db as SDB
+        cand = [m for m in self.nm.members if m.kind == "brace" and not SDB.is_brb(m.section)
+                and str(m.section).upper().replace(" ", "") in secs]
+        for ta, tb in self.x_pairs([(m.tag, self._coord(m.n1), self._coord(m.n2)) for m in cand]):
+            self.x_ties[ta] = tb; self.x_ties[tb] = ta
+
+    @staticmethod
+    def bow_offset(f, L, bmag, tied=False):
+        """Member bow at fraction f of a chain of length L: half-sine bmag * L. A diagonal tied at its crossing (review D2)
+        adds an antisymmetric half-sine of bmag * L / 2 on each half -- the half-length buckling mode with the crossing at
+        rest, out-of-straightness L/2 / 1000 between brace points (AISC 360-22 App. 1, 1.2.2a User Note: 1/1,000
+        member out-of-straightness; 1.3.3b: the pattern with the greatest destabilizing effect)."""
+        off = bmag * L * math.sin(math.pi * f)
+        if tied:
+            off += bmag * (L / 2) * math.sin(2 * math.pi * f)
+        return off
+
+    def _tie_x_crossings(self):
+        """NL-R2-28 (DDM): where the HR design says the two diagonals of an X are connected at the crossing (and designs
+        the compression diagonal on half its work-point length), the GMNIA connects them too -- the mid chain nodes share
+        their translations (pinned crossing, equalDOF 1-3). The restraint the tension diagonal gives the compression
+        diagonal then comes out of the analysis instead of an assumed K (AISC 360-22 App. 1, 1.3.1(a): all component and
+        connection deformations of the structure as designed). Before: the diagonals were independent (K = 1 on the full
+        length), i.e. ~1/4 of the buckling load the HR design relied on (Ex21: HSS5-1/2X5-1/2X3/8, KL/r 319 vs 171).
+        Review D2: a tied diagonal also carries an antisymmetric (L/2)/1000 half-sine on each half (see _add_member):
+        the full-length L/1000 bow alone is symmetric about the crossing and never seeds the half-length mode (pinned X
+        HSS5X5X3/8, 600 x 384 in: 81.1 kip with the full bow only vs 50.4 with the seed; Euler half length 48.8)."""
+        done = set()
+        for ta, tb in sorted(self.x_ties.items()):
+            if ta in done:
+                continue
+            na = self.sub_nodes[ta][len(self.sub_nodes[ta]) // 2]
+            nb = self.sub_nodes[tb][len(self.sub_nodes[tb]) // 2]
+            ops.equalDOF(na, nb, 1, 2, 3)
+            done.update((ta, tb))
+        if self.x_ties:
+            self.special_log.append(
+                "X-brace crossings (NL-R2-28): %d X pairs of %s connected at the crossing (mid chain nodes share their "
+                "translations, rotations free) as the HR design assumes (calc_package: connected at the crossing, Lc <= "
+                "0.6 Lwp); each tied diagonal carries the L/1000 full-length bow plus an antisymmetric (L/2)/1000 half-sine "
+                "per half (out-of-straightness between brace points, AISC 360-22 App. 1, 1.2.2a User Note / 1.3.3b)%s"
+                % (len(self.x_ties) // 2, ", ".join(sorted(self._x_secs)),
+                   "; tied diagonals use >= %d sub-elements" % TIED_BRACE_NSUB))
+
+    # ------------------------------------------------------------------ NL-R2-27 beam bracing by the deck / infill
+    def _hr_lb(self):
+        """(role, SECTION) -> unbraced length Lb (in) the HR member design used (calc_package members[].inputs.Lb_in).
+        When groups of the same role and section disagree the LARGEST Lb is kept (least bracing, conservative)."""
+        if getattr(self, "_lb_map", None) is None:
+            out, conflicts = {}, {}
+            for m in (self.nm.calc_package or {}).get("members", []) or []:
+                inp = m.get("inputs") or {}
+                lb, sec, role = inp.get("Lb_in"), inp.get("section"), inp.get("role")
+                try:
+                    lb = float(lb)
+                except (TypeError, ValueError):
+                    continue
+                if not sec or not role or lb < 0:
+                    continue
+                key = (str(role), str(sec).upper().replace(" ", ""))
+                if key in out and abs(out[key] - lb) > 1e-6:
+                    conflicts.setdefault(key, sorted({out[key]}))
+                    conflicts[key] = sorted(set(conflicts[key]) | {lb})
+                out[key] = max(out.get(key, 0.0), lb)
+            self._lb_map, self._lb_conflicts = out, conflicts
+        return self._lb_map
+
+    def _diaphragm_of(self, node):
+        if getattr(self, "_slave_master", None) is None:
+            self._slave_master = {t: mst for mst, sl in self.nm.diaphragms.items() for t in sl}
+        return self._slave_master.get(node)
+
+    def _brace_plan(self, m, L, off):
+        """NL-R2-27: how the deck braces beam m -- None (unbraced: no diaphragm at both ends, no HR Lb, or Lb ~ L),
+        ("continuous", (), Lb) or ("discrete", positions_in, Lb) with brace points every Lb from n1 (Lb from the HR
+        design). AISC 360-22 App. 1, 1.3.2c defines Lb between points braced against lateral displacement of the
+        compression flange or against twist; the GMNIA braces exactly those points, so the inelastic analysis does
+        not invent lateral-torsional buckling over a length the design (and the building) braces."""
+        if not self.beam_bracing or self._is_secondary(m) or m.tag in self.links:
+            return None
+        mst = self._diaphragm_of(m.n1)
+        if mst is None or self._diaphragm_of(m.n2) != mst:
+            return None
+        lb = self._hr_lb().get((str(m.role), str(m.section).upper().replace(" ", "")))
+        if lb is None:
+            return None
+        if lb <= L / BRACE_CONTINUOUS_N:
+            return ("continuous", (), lb)
+        # review: brace spacing never shorter than the design Lb (floor, not round: L/Lb 2.6 gave 0.87 Lb) -- conservative
+        n = int(math.floor(L / lb + 1e-6))
+        if n < 2:
+            return None
+        xs = [k * L / n for k in range(1, n)]
+        xs = [x for x in xs if off + 1.0 < x < L - off - 1.0]
+        # chain nodes are moved TO the brace points only when the gravity is applied by position (NL-R2-03 HR load
+        # path); the legacy tributary loads (and the elastic transfer-gate build) keep the regular chain and brace
+        # only the chain nodes that already sit at a brace point
+        return ("discrete", xs, lb, bool(self._grav_geo)) if xs else None
+
+    @staticmethod
+    def _brace_select(plan, xs_chain, nodes, L):
+        """Interior chain nodes to brace: all of them for continuous bracing, else those within 2 % of L of a brace point."""
+        if plan[0] == "continuous":
+            return list(nodes)
+        return [n for n, x in zip(nodes, xs_chain) if any(abs(x - xb) <= 0.02 * L for xb in plan[1])]
+
+    def _brace_chain(self, m, nodes, plan):
+        """NL-R2-27: brace the interior chain nodes of beam m: a deck node at the same point, slaved to the level's
+        rigid diaphragm (fixed out of plane), joined to the beam node by a zeroLength that is stiff ONLY in the
+        horizontal direction normal to the beam (local 2) and in twist about the beam axis (local 4); the vertical,
+        axial and bending DOFs stay free, so gravity and frame action are unchanged."""
+        mst = self._diaphragm_of(m.n1)
+        if mst is None or not nodes:
+            return
+        (x1, y1, _z1), (x2, y2, _z2) = self._coord(m.n1), self._coord(m.n2)
+        dx, dy = x2 - x1, y2 - y1
+        h = math.hypot(dx, dy)
+        if h < 1e-9:
+            return
+        ax = (dx / h, dy / h, 0.0); yp = (-ax[1], ax[0], 0.0)
+        for nd in nodes:
+            self._nbrace += 1
+            dn = BRACE_NODE0 + self._nbrace
+            ops.node(dn, *ops.nodeCoord(nd))
+            ops.fix(dn, 0, 0, 1, 1, 1, 0)
+            ops.element("zeroLength", BRACE_ELE0 + self._nbrace, dn, nd, "-mat", 1, 2, "-dir", 2, 4,
+                        "-orient", *ax, *yp)
+            self._brace_slaves.setdefault(mst, []).append(dn)
+        self.braced[m.tag] = (plan[0], tuple(round(x, 1) for x in plan[1]), plan[2])
 
     def _offset_frac(self):
         """Return rigid-end offset fraction, or 0 if disabled."""
@@ -307,6 +511,10 @@ class GMNIAModel:
         if m.kind == "brace" and SDB.is_brb(m.section):
             return self._add_brb(m)
         nsub = {"col": self.nsub_col, "beam": self.nsub_beam, "brace": self.nsub_brace}[m.kind]
+        if m.kind == "brace" and m.tag in self.x_ties:
+            # review D2: a tied diagonal buckles over each half -- at least 4 elements per half (2 per half over-predict:
+            # pinned X HSS5X5X3/8: 57.7 kip with 2, 50.4 with 4; Euler half length 48.8) and an even count (crossing node)
+            nsub = max(TIED_BRACE_NSUB, nsub + nsub % 2)
         tr = self._transf_for(m)
         p1, p2 = self._coord(m.n1), self._coord(m.n2)
         L = math.dist(p1, p2)
@@ -379,9 +587,15 @@ class GMNIAModel:
                                    secTag=0, s=nsub, n1=n_j, n2=end2, L=off, dirn=m.dirn, rigid_stub=True))
             secTag = self._section(m)
             L_fib = L - 2 * off
+            fr, seg_L = [s / nsub for s in range(1, nsub)], [L_fib / nsub] * nsub
+            plan = self._brace_plan(m, L, off) if m.kind == "beam" else None
+            if plan and plan[0] == "discrete" and plan[3]:         # NL-R2-27: chain nodes AT the brace points
+                fr = [(x - off) / L_fib for x in plan[1]]
+                fb = [0.0] + fr + [1.0]
+                seg_L = [(fb[q + 1] - fb[q]) * L_fib for q in range(len(fr) + 1)]
+            nseg = len(fr) + 1
             chain = [n_i]
-            for s in range(1, nsub):
-                f = s / nsub
+            for s, f in enumerate(fr, start=1):
                 offb = bmag * L * math.sin(math.pi * (off + f * L_fib) / L)
                 x = xi[0] + (xj[0] - xi[0]) * f + bv[0] * offb
                 y = xi[1] + (xj[1] - xi[1]) * f + bv[1] * offb
@@ -392,20 +606,28 @@ class GMNIAModel:
             chain.append(n_j)
             self.sub_nodes[m.tag] = [end1] + chain + [end2]
             etype = "dispBeamColumn" if self.fast else "forceBeamColumn"
-            for s in range(nsub):
+            for s in range(nseg):
                 tag = SUB_ELE0 + m.tag * 100 + s
                 extra = () if self.fast else ("-iter", 20, 1e-8)
                 ops.element(etype, tag, chain[s], chain[s + 1], tr, secTag, *extra)
                 self.elems.append(dict(tag=tag, mtag=m.tag, kind=m.kind, role=m.role, section=m.section,
                                        secTag=secTag, s=s, n1=chain[s], n2=chain[s + 1],
-                                       L=L_fib / nsub, dirn=m.dirn))
+                                       L=seg_L[s], dirn=m.dirn, nseg=nseg))
+            if plan:
+                self._brace_chain(m, self._brace_select(plan, [off + f * L_fib for f in fr], chain[1:-1], L), plan)
             return
 
         secTag = self._section(m)
+        fr, seg_L = [s / nsub for s in range(1, nsub)], [L / nsub] * nsub
+        plan = self._brace_plan(m, L, 0.0) if m.kind == "beam" and not is_link else None
+        if plan and plan[0] == "discrete" and plan[3]:             # NL-R2-27: chain nodes AT the brace points
+            fr = [x / L for x in plan[1]]
+            fb = [0.0] + fr + [1.0]
+            seg_L = [(fb[q + 1] - fb[q]) * L for q in range(len(fr) + 1)]
+        nseg = len(fr) + 1
         chain = [end1]
-        for s in range(1, nsub):
-            f = s / nsub
-            off = bmag * L * math.sin(math.pi * f)
+        for s, f in enumerate(fr, start=1):
+            off = self.bow_offset(f, L, bmag, tied=(m.kind == "brace" and m.tag in self.x_ties))
             x = p1[0] + (p2[0] - p1[0]) * f + bv[0] * off
             y = p1[1] + (p2[1] - p1[1]) * f + bv[1] * off
             z = p1[2] + (p2[2] - p1[2]) * f + bv[2] * off
@@ -415,12 +637,14 @@ class GMNIAModel:
         chain.append(end2)
         self.sub_nodes[m.tag] = chain
         etype = "dispBeamColumn" if self.fast else "forceBeamColumn"
-        for s in range(nsub):
+        for s in range(nseg):
             tag = SUB_ELE0 + m.tag * 100 + s
             extra = () if self.fast else ("-iter", 20, 1e-8)
             ops.element(etype, tag, chain[s], chain[s + 1], tr, secTag, *extra)
             self.elems.append(dict(tag=tag, mtag=m.tag, kind=m.kind, role=m.role, section=m.section,
-                                   secTag=secTag, s=s, n1=chain[s], n2=chain[s + 1], L=L / nsub, dirn=m.dirn))
+                                   secTag=secTag, s=s, n1=chain[s], n2=chain[s + 1], L=seg_L[s], dirn=m.dirn, nseg=nseg))
+        if plan:
+            self._brace_chain(m, self._brace_select(plan, [f * L for f in fr], chain[1:-1], L), plan)
 
     # ------------------------------------------------------------------ loads
     def _frac(self, m, n):
@@ -443,7 +667,7 @@ class GMNIAModel:
             if e["kind"] != "beam" or e.get("rigid_stub"):
                 continue
             m = self.nm.by_tag()[e["mtag"]] if not hasattr(self, "_bt") else self._bt[e["mtag"]]
-            w = beam_udl(self.cfg, self.nm, pres, m, e["s"], self.nsub_beam, fD, fL, fLr)
+            w = beam_udl(self.cfg, self.nm, pres, m, e["s"], e.get("nseg", self.nsub_beam), fD, fL, fLr)
             if w:
                 ops.eleLoad("-ele", e["tag"], "-type", "-beamUniform", 0.0, -w, 0.0)
                 total += w * e["L"]

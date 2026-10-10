@@ -73,10 +73,16 @@ def _f(v):
     return x if math.isfinite(x) else None
 
 
-def column_Pn(section, L_in, Fy=50.0, K=1.0):
-    """AISC 360-22 E3 nominal compressive strength (flexural buckling about the weaker axis, K = 1, Lc = member
-    length; slender-element reduction of E7 not applied -- W columns in seismic frames are non-slender)."""
-    p = SDB.props(section); r = min(p["rx"], p["ry"]); KLr = K * L_in / r
+def column_Pn(section, L_in, Fy=50.0, K=1.0, Lcx=None, Lcy=None):
+    """AISC 360-22 E3 nominal compressive strength, flexural buckling about the governing axis: Lc/r = max(Lcx/rx,
+    Lcy/ry) with the per-axis effective lengths Lc = KL of E2 when given (NL-R2-25: the HR design's bracing, see
+    design_column_lengths), else K x member length about the weaker axis. Slender-element reduction of E7 not
+    applied -- W columns in seismic frames are non-slender."""
+    p = SDB.props(section)
+    if Lcx or Lcy:
+        KLr = max((Lcx or K * L_in) / p["rx"], (Lcy or K * L_in) / p["ry"])
+    else:
+        r = min(p["rx"], p["ry"]); KLr = K * L_in / r
     Fe = math.pi ** 2 * E_KSI / KLr ** 2
     Fcr = (0.658 ** (Fy / Fe)) * Fy if KLr <= 4.71 * math.sqrt(E_KSI / Fy) else 0.877 * Fe
     return Fcr * p["A"], KLr
@@ -130,9 +136,13 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
     (cited by content: in the converted corpus these numbers collide with the drift equation 16.4-1.)
     Flexure classification per AISC 342-22 C3.4 (ASCE 41-23 7.5): deformation-controlled for P_G/P_ye <= 0.6, else
     force-controlled. Force-controlled flexure is transformed the same way as the axial force and resisted by phi Mn
-    (AISC 360 F2/F3/F6). Deformation-controlled flexure enters with the analysed moment itself and the expected
-    strength M_CE, per AISC 342-22 C3.4b.2.b (Eqs. C3-9..C3-11 with m = 1). Interaction per AISC 360-22 H1-1
-    (identical to AISC 342-22 C3-9 with C3-12 / C3-13); C3-10 (|P_UF| / Pye <= 0.75) where flexure is
+    (AISC 360 F2/F3/F6) in both equations. Deformation-controlled flexure enters with the analysed moment itself and
+    the expected strength M_CE (MCx = MCEx in C3-9), per AISC 342-22 C3.4a.2b: "Columns or braces classified as
+    deformation-controlled for flexure shall also satisfy Equations C3-9, C3-10, and C3-11 when the column or brace is
+    in compression except that values for mx and my shall be taken as unity" -- so ONLY in the compression case
+    (Eq. 16.4-1); in the counteracting case (Eq. 16.4-2, net tension) a deformation-controlled moment is judged by the
+    hinge rotation (C3.4a.2b, Table C3.6) and is not combined with the axial tension (NL-R2-30). Interaction per AISC
+    360-22 H1-1 (identical to AISC 342-22 C3-9 with C3-12 / C3-13); C3-10 (|P_UF| / Pye <= 0.75) where flexure is
     deformation-controlled. A deformation-controlled axis MODELLED elastic (e.g. the minor axis of concentrated-hinge
     columns) whose demand exceeds M_CE is flagged: yielding the model cannot represent (16.3.1)."""
     k1 = 1.2 + 0.12 * SMS; k2 = 0.9 - 0.12 * SMS
@@ -149,7 +159,8 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
         if Mu is None:
             return None
         if flex[{"Mmaj": "major", "Mmin": "minor"}[axis]] == "deformation":
-            return Mu                                              # deformation-controlled: analysed moment, not amplified
+            # deformation-controlled: analysed moment, not amplified, and only with compression (C3.4a.2b, NL-R2-30)
+            return Mu if eq == 1 else 0.0
         Dm, hLm = split(Mns)
         return (k1 * Dm + hLm if eq == 1 else k2 * Dm) + gamma * Ie * max(Mu - Mns, 0.0)
     def mcap(axis):
@@ -161,6 +172,8 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
             return None
         m = mx / mcap("Mmaj") + my / mcap("Mmin")
         r = Pr / Pc if Pc else float("inf")
+        if m == 0.0:
+            return r                                               # no flexure: plain axial ratio (H1-1b's r/2 needs moments)
         return r + 8.0 / 9.0 * m if r >= 0.2 else r / 2.0 + m
     mx1, my1 = mdem("Mmaj", 1), mdem("Mmin", 1); mx2, my2 = mdem("Mmaj", 2), mdem("Mmin", 2)
     flags = []
@@ -173,7 +186,10 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
     dc_c = h1(max(Pr1, 0.0), cap["phiPn"], mx1, my1)
     dc_t = h1(-Pr2, cap["phiTn"], mx2, my2) if Pr2 < 0 else None
     dc_310 = (max(Pr1, 0.0) / (0.75 * cap["Pye"])) if (flex["major"] == "deformation" or flex["minor"] == "deformation") else None
-    cands = [(dc_c, "H1-1 compression, Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns)"), (dc_t, "H1-1 tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)"),
+    t_lbl = ("H1-1 tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)" if (mx2 or my2) else
+             "axial tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)" + (" (deformation-controlled flexure not combined in tension, AISC 342-22 C3.4a.2b)"
+                                                                  if "deformation" in (flex["major"], flex["minor"]) else ""))
+    cands = [(dc_c, "H1-1 compression, Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns)"), (dc_t, t_lbl),
              (dc_310, "AISC 342 C3-10 |P|/Pye <= 0.75")]
     cands = [c for c in cands if c[0] is not None]
     if cands:
@@ -203,16 +219,92 @@ def _record_column_dc(ev, Qns, cap, flex, frac_D, SMS, Ie, gamma):
     return max(vals) if vals else None
 
 
+def _len(v):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x > 0 and math.isfinite(x) else None
+
+
+def design_column_lengths(pkg, section, z1, z2, L):
+    """NL-R2-25: the unbraced lengths the HR design used for this column, per axis (AISC 360-22 E2: Lc = K L for
+    buckling about each axis; F2: Lb between points braced against lateral displacement of the compression flange or
+    twist of the cross section). Source: design/calc_package.json members[*] with a column role/kind and this section:
+      * inputs.brace_points_in (elevations of the column's brace points, e.g. girts / inner-flange braces / crane
+        level): the element's span [z1, z2] is cut at the points inside it -> Lcy = Lb = the longest piece, Lcx =
+        inputs.Lcx_in or K L (strong axis spans the full member, frame-plane stability by the DAM, K = 1);
+      * inputs.Lcx_in / Lcy_in / Lb_in (per-axis lengths), used when the member's length_in equals this element's
+        length (a group record of a different length is not this element's bracing).
+    Several matching records (e.g. lateral and gravity groups of one section) -> the longest lengths (conservative).
+    None when the package gives nothing for this column: the caller keeps K = 1 and the member length about both axes
+    and Lb = member length (the previous, conservative default)."""
+    calc = getattr(pkg, "calc", None) or {}
+    recs = []
+    sec_n = str(section or "").strip().upper().replace(" ", "")
+    for m in calc.get("members") or []:
+        inp = (m or {}).get("inputs") or {}
+        role = str(inp.get("role") or "") + " " + str(inp.get("kind") or "")
+        # review D4(a): the role as a whole word ("lateral_col", "gravity_col", "col", "column"), never "collector"
+        if not ({"col", "column", "columns"} & set(re.split(r"[^a-z]+", role.lower()))) \
+                or str(inp.get("section") or "").strip().upper().replace(" ", "") != sec_n:
+            continue
+        K = _len(inp.get("K")) or 1.0
+        Lcx = _len(inp.get("Lcx_in")); Lcy = _len(inp.get("Lcy_in")) or _len(inp.get("Lc_weak_in")); Lb = _len(inp.get("Lb_in"))
+        Lm = _len(inp.get("length_in"))
+        pts = inp.get("brace_points_in")
+        src = "calc_package members[%s].inputs" % m.get("id")
+        if isinstance(pts, (list, tuple)) and len(pts) >= 2 and all(_len(x) is not None or x in (0, 0.0) for x in pts):
+            pts = sorted(float(x) for x in pts)
+            # review D4(b): only an element lying within the record's member (inside its brace-point span, no longer than
+            # the member)
+            if not (pts[0] - 1.0 <= min(z1, z2) and max(z1, z2) <= pts[-1] + 1.0) or (Lm is not None and L > Lm + 1.0):
+                continue
+            lo, hi = min(z1, z2), max(z1, z2)
+            cuts = [lo] + [x for x in pts if lo + 1e-6 < x < hi - 1e-6] + [hi]
+            seg = max(b - a for a, b in zip(cuts[:-1], cuts[1:]))
+            # review D4(b): the strong axis spans the whole MEMBER, not this element (an element split at a brace point,
+            # Ex33 336 / 120 in of the 456 in column): Lcx = max(Lcx_in, K x member length)
+            Lmem = Lm if Lm is not None else (pts[-1] - pts[0])
+            recs.append(dict(Lcx=max(Lcx or 0.0, K * Lmem, L), Lcy=seg, Lb=seg, K=K, source="%s.brace_points_in %s (element %.0f-%.0f in)" % (
+                src, "/".join("%.0f" % x for x in pts), lo, hi)))
+        elif Lcx or Lcy or Lb:
+            if Lm is None or abs(Lm - L) > 1.0:
+                continue
+            recs.append(dict(Lcx=Lcx or K * L, Lcy=Lcy or K * L, Lb=Lb or Lcy or L, K=K,
+                             source="%s.%s" % (src, "/".join(k for k in ("Lcx_in", "Lcy_in", "Lb_in") if _len(inp.get(k))))))
+    if not recs:
+        return None
+    if len(recs) == 1:
+        return recs[0]
+    # review D4(c): several matching records (e.g. lateral and gravity groups of one section) -> the longest length PER
+    # AXIS (conservative), as documented
+    return dict(Lcx=max(r["Lcx"] for r in recs), Lcy=max(r["Lcy"] for r in recs), Lb=max(r["Lb"] for r in recs),
+                K=max(r["K"] for r in recs), source="per-axis maxima of " + "; ".join(r["source"] for r in recs))
+
+
 def _column_caps(pkg, c, prm, phi_col, B):
     sec = pkg.schedule.get(c, {}).get("section"); e = next(e for e in pkg.model.elements if e["tag"] == c)
-    L = math.dist(pkg.model.nodes[e["n1"]], pkg.model.nodes[e["n2"]])
+    p1, p2 = pkg.model.nodes[e["n1"]], pkg.model.nodes[e["n2"]]
+    L = math.dist(p1, p2)
     Fy, Ry = _material(prm)
-    Pn, KLr = column_Pn(sec, L, Fy=Fy)
-    Mnx, Mny, notes = column_Mn(sec, L, Fy=Fy)
-    Mcx, Mcy, _ = column_Mn(sec, L, Fy=Ry * Fy)                  # expected strengths M_CE (Fye = Ry Fy), AISC 342 C3.3a.2
+    dl = design_column_lengths(pkg, sec, p1[2], p2[2], L)          # NL-R2-25: the design's per-axis bracing
+    if dl:
+        Pn, KLr = column_Pn(sec, L, Fy=Fy, Lcx=dl["Lcx"], Lcy=dl["Lcy"])
+        Lb = dl["Lb"]
+    else:
+        Pn, KLr = column_Pn(sec, L, Fy=Fy)
+        Lb = L
+    Mnx, Mny, notes = column_Mn(sec, Lb, Fy=Fy)
+    Mcx, Mcy, _ = column_Mn(sec, Lb, Fy=Ry * Fy)                 # expected strengths M_CE (Fye = Ry Fy), AISC 342 C3.3a.2
+    notes = list(notes)
+    if dl:
+        notes.append("%s: Lcx %.0f / Lcy %.0f / Lb %.0f in from the HR design (%s)" % (sec, dl["Lcx"], dl["Lcy"], dl["Lb"], dl["source"]))
     A = SDB.props(sec)["A"]
     return sec, e, L, KLr, notes, dict(phiPn=phi_col * B * Pn, phiTn=phi_col * B * Fy * A, phiMnx=phi_col * B * Mnx, phiMny=phi_col * B * Mny,
-                                       MCEx=Mcx, MCEy=Mcy, Pye=Ry * Fy * A, Pn=Pn, Fy=Fy)
+                                       MCEx=Mcx, MCEy=Mcy, Pye=Ry * Fy * A, Pn=Pn, Fy=Fy,
+                                       Lcx=(dl or {}).get("Lcx", L), Lcy=(dl or {}).get("Lcy", L), Lb=Lb,
+                                       length_source=(dl or {}).get("source", "member length, K = 1 (no per-axis bracing in the package)"))
 
 
 # --------------------------------------------------------------------------- NL-R2-16: ASCE 7-22 16.4.2.1 Exception 2
@@ -686,6 +778,7 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
                              Mu_maj=Q["Mmaj"], Mu_min=Q["Mmin"], Mns_maj=Qns.get("Mmaj"), Mns_min=Qns.get("Mmin"),
                              flexure_major=flex["major"], flexure_minor=flex["minor"], modelled=flex.get("modelled") or {}, phiBRn=cap["phiPn"], phiTn=cap["phiTn"],
                              phiMnx=cap["phiMnx"], phiMny=cap["phiMny"], MCEx=cap["MCEx"], MCEy=cap["MCEy"], Fy=cap["Fy"], KLr=KLr,
+                             Lcx_in=cap["Lcx"], Lcy_in=cap["Lcy"], Lb_in=cap["Lb"], length_source=cap["length_source"],
                              _Qns=Qns, _flex=flex, **chk))
     # group the worst per (section, z)
     best = {}; dflt = {}
@@ -731,6 +824,10 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         not_evaluated.append("column moments not recorded (results from an older build): 16.4.2.1 combined axial + flexure not evaluated -- re-run")
     mean_ok = all(s["ok"] for s in story_rows) if acc_runs else None
     fc_ok = (bool(col_table) and all(r["DC"] <= 1.0 for r in col_table)) if acc_runs else None
+    # NL-R2-22: EBF braces -- force-controlled, critical (AISC 341-22 Table A-1.7.3), modelled elastic
+    brace_fc, brace_fc_notes = ebf_brace_fc(acc_runs, results, frac_D, SMS, Ie, fc["gamma"], float(fc.get("B", B) or B), prm, suite_stat)
+    if brace_fc and fc_ok is not None:
+        fc_ok = fc_ok and all(r["DC"] <= 1.0 for r in brace_fc)
     if fc_ok and moments_missing:
         fc_ok = None                              # axial-only pass is not a pass of the combined check (an axial-only failure stays decisive)
     verdict = dict(
@@ -741,6 +838,7 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         deformation_ok=(all(r["DC_CP"] <= 1.0 for r in rows) if acc_runs else None), valid_range_ok=(all(r["DC_valid"] <= 1.0 for r in rows) if acc_runs else None),
         force_controlled_ok=fc_ok,
         worst_FC_DC=(max((r["DC"] for r in col_table), default=None)),
+        worst_FC_DC_ebf_braces=(max((r["DC"] for r in brace_fc), default=None)),
         worst_FC_DC_default=(max((r.get("DC_default_group_max", r["DC"]) for r in col_table), default=None)),
         FC_exception_2=_exc2_summary(col_table, ex2_on, ex2_note, snow_basis),
         residual_applicable=tall240, residual_ok=(None if not tall240 else (bool(np.max(mean_resid) <= ch16["residual_drift"]["limit"]) if mean_resid is not None else None)))
@@ -761,8 +859,74 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
     verdict["overall"] = status == "ACCEPTABLE"
     return dict(limits=lim, per_record=per, story=story_rows, mean_residual=(mean_resid.tolist() if mean_resid is not None else None),
                 deformation_groups=rows, force_controlled_columns=col_table, verdict=verdict, hn_in=hn,
+                force_controlled_ebf_braces=brace_fc,
                 per_record_fc=per_record_fc, governing_fc_records=governing_fc_records, records_not_run=not_run,
-                fc_notes=sorted(fc_notes), drift_method=("aligned_points" if all(r.get("drift_method") == "aligned_points" for r in results if record_status(r) == "completed") else "legacy_corner_nodes"))
+                fc_notes=sorted(fc_notes | set(brace_fc_notes)), drift_method=("aligned_points" if all(r.get("drift_method") == "aligned_points" for r in results if record_status(r) == "completed") else "legacy_corner_nodes"))
+
+
+def ebf_brace_capacity(section, Lc_in, prm, phi=0.9, B=1.0):
+    """NL-R2-22: phi B Rn of an EBF brace (critical force-controlled action, ASCE 7-22 16.4.2.1: phi of the material
+    standard): compression phi_c Pn, AISC 360-22 E3 flexural buckling on the design buckling length Lc (brace_Lc: the
+    HR design's brace length, else K_effective x work-point length); tension phi_t Fy Ag (AISC 360-22 D2(a)); phi = 0.90
+    for both. Fy = brace_axial.Fy_ksi (nominal). Rectangular HSS walls are checked against the AISC 360-22 Table B4.1a
+    case 6 limit 1.40 sqrt(E/Fy); a slender wall (E7 not applied) is flagged."""
+    ba = (prm or {}).get("brace_axial") or {}
+    Fy = float(ba.get("Fy_ksi", 50.0))
+    hm = SDB.hss_material(section)
+    if hm and hm["kind"] != "rect":                      # review D3: round HSS 46 ksi / pipe 35 ksi
+        Fy = hm["Fy"]
+    Pn, KLr = column_Pn(section, Lc_in, Fy=Fy)
+    A = SDB.props(section)["A"]
+    notes = []
+    from pushover import hinge_models as HM
+    Bo, tdes = HM._hss_outside_and_tdes(section) if str(section).upper().startswith("HSS") else (None, None)
+    if Bo and tdes and (Bo - 3.0 * tdes) / tdes > 1.40 * math.sqrt(E_KSI / Fy):
+        notes.append("%s: slender HSS wall (b/t > 1.40 sqrt(E/Fy)) -- AISC 360-22 E7 reduction NOT applied" % section)
+    return dict(phiPn=phi * B * Pn, phiTn=phi * B * Fy * A, Pn=Pn, Tn=Fy * A, KLr=KLr, Lc_in=Lc_in, Fy=Fy, notes=notes)
+
+
+def ebf_brace_fc(runs, all_results, frac_D, SMS, Ie, gamma, B, prm, suite_stat):
+    """NL-R2-22: ASCE 7-22 16.4.2.1 for the axial force of the EBF braces (AISC 341-22 Table A-1.7.3: Brace / Axial =
+    Force-controlled, Critical; AISC 342-22 E2.4a(b)), modelled elastic by nonlinear_model.ebf_brace_force_controlled.
+    Qu = suite statistic (16.4: mean, or max(1.2 median, mean) with an unacceptable record) of the record peaks, per
+    brace, compression and tension separately; Qns = the brace's axial force in the gravity state of the same model.
+      (16.4-1) (1.2 + 0.12 SMS) D + 0.5 L + 1.3 Ie (Qu - Qns) <= phi B Pn   [compression +]
+      (16.4-2) (0.9 - 0.12 SMS) D - 1.3 Ie (Qns - Qu,t) -> net tension <= phi B Fy Ag
+    Returns (rows grouped worst per (section, level), notes). [] when the runs carry no EBF brace envelope."""
+    meta = next(((r.get("stats") or {}).get("ebf_braces") for r in all_results if (r.get("stats") or {}).get("ebf_braces")), None)
+    if not meta or not runs:
+        return [], []
+    k1 = 1.2 + 0.12 * SMS; k2 = 0.9 - 0.12 * SMS
+    rows, notes, caps = [], set(), {}
+    for b, m in meta.items():
+        envs = [(r.get("ebf_brace_env") or {}).get(b) for r in runs]
+        envs = [ev for ev in envs if ev]
+        if not envs:
+            continue
+        key = (m["section"], round(m["Lc_in"], 1))
+        if key not in caps:
+            caps[key] = ebf_brace_capacity(m["section"], m["Lc_in"], prm, B=B)
+        cap = caps[key]; notes.update(cap["notes"])
+        Pns = -float(envs[0]["Pg"])                                   # compression + (gravity state of this model)
+        D = Pns * frac_D; hL = Pns - D
+        Qc = float(suite_stat(np.array([ev["Pc"] for ev in envs])))  # peak compression (+)
+        Qt = -float(suite_stat(np.array([ev["Pt"] for ev in envs])))  # most tensile, compression + sign
+        Pr1 = k1 * D + hL + gamma * Ie * max(Qc - Pns, 0.0)
+        Pr2 = k2 * D - gamma * Ie * max(Pns - Qt, 0.0)
+        dc_c = max(Pr1, 0.0) / cap["phiPn"]
+        dc_t = (-Pr2 / cap["phiTn"]) if Pr2 < 0 else 0.0
+        rows.append(dict(ele=b, section=m["section"], z_in=m["z"], Lc_in=m["Lc_in"], Lc_source=m.get("Lc_source"), KLr=cap["KLr"],
+                         Qns=Pns, Qu_comp=Qc, Qu_tens=-Qt, demand_comp=Pr1, demand_tens=(-Pr2 if Pr2 < 0 else 0.0),
+                         phiPn=cap["phiPn"], phiTn=cap["phiTn"], DC_comp=dc_c, DC_tens=dc_t, DC=max(dc_c, dc_t),
+                         governing=("compression, Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns) <= phi Pn (AISC 360-22 E3)" if dc_c >= dc_t else
+                                    "tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns) <= phi Fy Ag (AISC 360-22 D2)"),
+                         criticality="critical (AISC 341-22 Table A-1.7.3)"))
+    best = {}
+    for r in rows:
+        k = (r["section"], round(r["z_in"]))
+        if k not in best or r["DC"] > best[k]["DC"]:
+            best[k] = r
+    return sorted(best.values(), key=lambda r: (r["z_in"], r["section"])), sorted(notes)
 
 
 def _exc2_summary(col_table, on, note, snow_basis):

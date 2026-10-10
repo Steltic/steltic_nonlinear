@@ -86,6 +86,28 @@
     ],
     "note": "PG = gravity axial (ASCE 41-23 Eq. 7-3 combination as applied by the tool); Pye = Ag Fye; L = storey height. Mpce_axial_reduction = AISC 342-22 Eqs. C3-5 / C3-6 (major axis: (1 - |P|/2Pye) Mpex below 0.2κ, 9/8 (1 - |P|/Pye) Mpex above; written as the minimum, i.e. κ = 1). The ASCE 41-17-era 1.18 (1 - P/Py) form (AISC 342-22 Commentary Eq. C-C3-5) is superseded and is replaced by the engine if a file still carries it."
   },
+  "column_flexure_hss": {
+    "table": "AISC 342-22 Table C3.6 line 4 'Rectangular HSS and built-up box shapes' (columns and braces in compression)",
+    "a_expr": "1.1*lam**-1.2*(1-PG/Pye)**1.8",
+    "a_max": 0.05,
+    "a_min": 0.0,
+    "b_expr": "0.5*lam**-0.6*(1-PG/Pye)**1.2-0.01",
+    "b_max": 0.08,
+    "b_min": 0.0,
+    "c_expr": "0.25",
+    "IO": "0.5 a",
+    "LS": "0.75 b",
+    "CP": "b",
+    "Fy_ksi": 50.0,
+    "Ry_expected": 1.3,
+    "built_up_box": false,
+    "built_up_box_factor": 0.75,
+    "source": "",
+    "unverified": [
+      "*"
+    ],
+    "note": "lam = most slender wall b/t of the section (Table C3.6 note [b]) with b = B - 3t, t = 0.93 t_nom (AISC 360-22 B4.1b, B4.2). The a / b cells are a READING OF A DAMAGED CELL of the converted table ('1 1 1 0 05 1 2 1 8 . . . . lam' and '0 5 1 0 01 0 08 0 6 1 2 . . . . . lam', decoded with the same token order as line 1, which the printed W-shape expression confirms): a = 1.1 lam^-1.2 (1-PG/Pye)^1.8 <= 0.05, b = 0.5 lam^-0.6 (1-PG/Pye)^1.2 - 0.01 <= 0.08, c = 0.25 -- confirm against the printed table. IO = 0.5a, LS = 0.75b, CP = b as printed. Note [e]: built-up box columns x0.75 (set built_up_box). Fy/Ry: A500 Gr. C rectangular HSS, Ry = 1.3 per AISC 341-22 Table A3.2 -- confirm the project material. Round HSS / pipe columns have no Table C3.6 row: the engine treats their flexure as force-controlled."
+  },
   "brace_axial": {
     "mode": "table_C3_4",
     "table": "AISC 342-22 Table C3.4 (buckling braces subjected to axial force)",

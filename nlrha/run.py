@@ -73,6 +73,25 @@ def hht_algorithmic_damping(alpha, dt, T):
     return float(-ln.real / abs(ln))
 
 
+def transient_step(h):
+    """One transient step of size h. NL-R2-20 (residual): after a FAILED step, force a domainChanged cycle
+    (ops.domainChange) so the retry starts from the committed state.
+
+    A failed ops.analyze reverts the nodes and elements (Domain::revertToLastCommit) and the integrator vectors, but in
+    a transient analysis with the Transformation constraint handler the DOF groups of MP-constrained nodes (rigid-
+    diaphragm / equalDOF slaves) keep state from the failed iterations: the retry then starts from a corrupted state of
+    every diaphragm slave's own DOFs (UZ, RX, RY). After a diverged step this is garbage (Ex20 Gilroy #3: one Newton
+    iteration of the retry gave |du| ~1e5..1e26 rad at the work-point / joint rotations, every halving failed again ->
+    non-convergence); after a merely non-converged step the retry converges to a WRONG state (tests/
+    test_nlrha_retry_state.py: a 4-node frame with one equalDOF slave). domainChange rebuilds the DOF groups and
+    re-reads the integrator's response vectors from the committed nodal state (OpenSees 3.7/3.8; HHT and Newmark).
+    Steps that converge are untouched, so records without a failed step are bit-identical."""
+    ok = ops.analyze(1, h)
+    if ok != 0:
+        ops.domainChange()
+    return ok
+
+
 def _column_info(pkg, hinges, stats, PG=None, prm=None):
     """Per column element: the element tags at its i and j ends (sub-divided members: first and last segment), the
     local force indices of the major / minor moments, how each flexural axis is MODELLED (hinge / elastic / fibre) and
@@ -126,6 +145,40 @@ def _column_forces(ci):
     P = fi[0]                                                       # end-i local N: +ve = compression
     ti = (fi[0], abs(fi[ci["maj"][0]]), abs(fi[ci["mnr"][0]])); tj = (-fj[6], abs(fj[ci["maj"][1]]), abs(fj[ci["mnr"][1]]))
     return P, max(ti[1], tj[1]), max(ti[2], tj[2]), (ti, tj)
+
+
+def link_state_note(hinges):
+    """NL-R2-22: '' or '; EBF links at the last converged state: ...' -- how many link shear springs (AISC 342-22 Table
+    C2.4 backbone) are at or past the capping deformation a (strength loss begins) or past b (strength lost), with the
+    largest plastic shear rotation gamma_p = (|d| - Delta_y) / e. Read at the last committed state."""
+    rows = []
+    for t, h in hinges.items():
+        if h.get("kind") != "link":
+            continue
+        d, V = NM.zero_length_spring(t, 3)
+        s = h["spec"]
+        g, a, b = (abs(d) - s.theta_y) / s.e_in, s.a_pl / s.e_in, s.b_pl / s.e_in
+        # past b: once the MinMax wrapper (make_link_shear_material) has failed the link carries zero shear for good, but
+        # its deformation can come back below Delta_y + b e (Ex8 Gilroy: 5 links with V = 0 at d = 5.7-6.1 in < 6.21 in
+        # while the storey drift ran to 5.7 %), so a failed link is recognised by V = 0 beyond a (on the Table C2.4
+        # envelope the force beyond a is >= c Vp > 0)
+        lost = g >= b or (g >= 0.98 * a and abs(V) <= 1e-6 * max(abs(s.Vp_kip), 1.0))
+        rows.append((g, a, b, h["ele"], lost))
+    if not rows:
+        return ""
+    n_a = sum(1 for g, a, b, _, lost in rows if g >= 0.98 * a or lost)
+    n_b = sum(1 for g, a, b, _, lost in rows if lost)
+    g, a, b, ele, _ = max(rows)
+    if not n_a:
+        return ""
+    return ("; EBF links at the last converged state: %d of %d at or past the capping rotation a (strength loss, AISC 342-22 Table C2.4), "
+            "%d past b (shear strength lost); max gamma_p %.3f rad (link %s; a %.3f, b %.3f rad)" % (n_a, len(rows), n_b, g, ele, a, b))
+
+
+def _truss_axial(tag):
+    """NL-R2-22: axial force (kip, + tension) of a truss element."""
+    f = ops.eleResponse(tag, "axialForce")
+    return float(f[0]) if f else 0.0
 
 
 def arias_window(a1, a2, dt, lo=0.001, hi=0.995):
@@ -324,6 +377,10 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
         f = _column_forces(ci)
         if f is not None:
             col_grav[c] = dict(P=f[0], Mmaj=f[1], Mmin=f[2])
+    # NL-R2-22: EBF braces are elastic force-controlled members (AISC 341-22 Table A-1.7.3): gravity axial force (Qns) and
+    # the record envelope of the axial force at every committed step, + tension (eleResponse axialForce of the corotTruss)
+    ebf_br = sorted((stats.get("ebf_braces") or {}).keys())
+    ebf_env = {b: dict(Pg=_truss_axial(b), Pt=-1e30, Pc=-1e30) for b in ebf_br}
     modal = MD.modal(pkg, 6)
     T1 = max(modal["T1x"], modal["T1y"])
     damp = MD.set_damping(xi, T1, elastic)
@@ -395,7 +452,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     def _analyze(h):
         nonlocal calls
         calls += 1
-        return ops.analyze(1, h)
+        return transient_step(h)                                   # NL-R2-20 (residual): clean state for the retry
 
     while t < t_end - 1e-9:
         if (step_budget and calls >= step_budget) or (wall_budget_s and time.time() - t0 > wall_budget_s):
@@ -432,6 +489,12 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             if dt_cur < dt_max and n_ok_since_cut >= 8:                  # grow back towards the nominal step
                 dt_cur = min(dt_max, dt_cur * 2); n_ok_since_cut = 0
         step += 1
+        for b in ebf_br:                                            # NL-R2-22: EBF brace axial envelope (every step)
+            nb = _truss_axial(b); ev = ebf_env[b]
+            if nb > ev["Pt"]:
+                ev["Pt"] = nb
+            if -nb > ev["Pc"]:
+                ev["Pc"] = -nb
         # 16.4.1.2 drift at vertically aligned points, both directions (NL-12)
         disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
         dnow, at = DR.story_drifts(pts, disp)
@@ -492,6 +555,8 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             if sample_brace and sample_brace in hinges:
                 d = ops.eleResponse(sample_brace, "deformation")
                 brace_hist.append((d[0] if d else 0.0, HM.brace_axial_force(sample_brace, hinges[sample_brace])))   # NL-10: physical-theory braces
+    if status == "nonconvergence":                                  # NL-R2-22: say when the EBF links have lost strength
+        reason += link_state_note(hinges)
     # residual drift (structure at rest after free vibration) -- only meaningful when the record completed
     if status == "completed":
         disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
@@ -508,6 +573,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                damping=damp, algorithmic_damping=alg_damp, solver=dict(newton_disp_tol_in=tol, fallback="legacy ladder" if ladder else "none (Newton with dt halving)"), peak_story_drift=peak_drift.tolist(), peak_drift_at=peak_at, drift_method="aligned_points",
                drift_points=DR.summary(pts), peak_roof_in=peak_roof.tolist(), residual_drift=resid.tolist(),
                peak_def=peak_def, signed_def=signed_def, peak_colN=peak_colN, col_env=col_env, col_grav=col_grav,
+               ebf_brace_env={b: dict(Pg=v["Pg"], Pt=max(v["Pt"], v["Pg"]), Pc=max(v["Pc"], -v["Pg"])) for b, v in ebf_env.items()},
                col_flexure={c: ci["flexure"] for c, ci in colinfo.items()}, hist_t=hist_t, hist_roof=hist_roof, brace_hist=brace_hist,
                frames=dict(t=frames_t, story=frames_story, brace_tags=braces, brace=frames_brace, ag=frames_ag,
                            hinge_tags=list(hz), hinge=frames_hinge, masters=masters),

@@ -76,15 +76,34 @@ def shape(label):
 
 
 def hss_dims(label):
-    """'HSS8X8X1/2' -> (H, B, t_nominal). Returns None for round/other."""
-    m = re.match(r"HSS(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)X(\d+(?:/\d+)?(?:\.\d+)?)$", label.upper().replace("-", ""))
-    if not m:
+    """'HSS8X8X1/2' -> (H, B, t_nominal); fractional dimensions too ('HSS5-1/2X5-1/2X3/8' -> 5.5, 5.5, 0.375;
+    NL-R2-28: the old pattern stripped the '-' and read '51/2'). Returns None for round HSS / pipe / other shapes."""
+    from pushover.sections_db import parse_hss_label
+    g = parse_hss_label(label)
+    if not g or g["kind"] != "rect":
         return None
-    H, B = float(m.group(1)), float(m.group(2))
-    t = m.group(3)
-    t = float(t.split("/")[0]) / float(t.split("/")[1]) if "/" in t else float(t)
-    return H, B, t
+    return g["H"], g["B"], g["t_nom"]
 
+
+def round_hss_dims(label):
+    """Round HSS / pipe -> (OD, t) of the equivalent ring whose area and moment of inertia equal the tabulated
+    A and Ix (so the design wall thickness of the table is honoured: 0.93 t_nom for A500 HSS, AISC 360-22 B4.2).
+    None for other shapes or when A / Ix are missing."""
+    from pushover.sections_db import parse_hss_label
+    g = parse_hss_label(label)
+    if not g or g["kind"] not in ("round", "pipe"):
+        return None
+    try:
+        r = shape(label)
+    except KeyError:
+        return None
+    A, Ix = _f(r["A"]), _f(r["Ix"])
+    if not A or not Ix:
+        return None
+    s2 = 4.0 * Ix / A                       # Ro^2 + Ri^2
+    d2 = A / math.pi                        # Ro^2 - Ri^2
+    Ro = math.sqrt((s2 + d2) / 2.0); Ri = math.sqrt(max((s2 - d2) / 2.0, 0.0))
+    return 2.0 * Ro, Ro - Ri
 
 
 # Hardcoded secondary Z props (same as export_cfs_portal_3d_bay.py)
@@ -132,9 +151,11 @@ class FiberSectionBuilder:
         self._mat_cache = {}
 
     # ---- materials -------------------------------------------------------------------------
-    def _mat(self, sig0_frac):
-        """Steel01 (+InitStress) for a residual-stress level sig0_frac*Fy; cached per level."""
-        key = round(sig0_frac, 4)
+    def _mat(self, sig0_frac, Fy=None):
+        """Steel01 (+InitStress) for a residual-stress level sig0_frac*Fy; cached per level. Fy: a yield stress other
+        than the builder's (NL-R2-28: HSS members of a different material grade), cached separately."""
+        key = round(sig0_frac, 4) if Fy is None else (round(sig0_frac, 4), round(float(Fy), 4))
+        Fy = self.Fy if Fy is None else float(Fy)
         if key in self._mat_cache:
             return self._mat_cache[key]
         tag = self.next_mat; self.next_mat += 1
@@ -142,10 +163,10 @@ class FiberSectionBuilder:
             self.ops.uniaxialMaterial("Elastic", tag, self.E)
             self._mat_cache[key] = tag
             return tag
-        self.ops.uniaxialMaterial("Steel01", tag, self.Fy, self.E, self.b)
+        self.ops.uniaxialMaterial("Steel01", tag, Fy, self.E, self.b)
         if abs(sig0_frac) > 1e-9:
             wtag = self.next_mat; self.next_mat += 1
-            self.ops.uniaxialMaterial("InitStressMaterial", wtag, tag, sig0_frac * self.Fy)
+            self.ops.uniaxialMaterial("InitStressMaterial", wtag, tag, sig0_frac * Fy)
             self._mat_cache[key] = wtag
             return wtag
         self._mat_cache[key] = tag
@@ -192,7 +213,9 @@ class FiberSectionBuilder:
         elif res == "eccs":
             a = 0.5 if d / bf <= 1.2 else 0.3
             def sig_fl(zfrac): return a * (1 - 2 * zfrac)            # +a at junction, -a at tips
-            sig_web = a                                              # ECCS: web +a at flanges -> -a mid; use mean + for simplicity
+            # NL-R2-27: web +a at the flanges -> -a at mid-depth (linear). The old uniform +a web left a net tension
+            # a*Fy*Aw locked into every member at zero load (not self-equilibrating); the linear web has zero mean.
+            sig_web = lambda yfrac: a * (2 * yfrac - 1)              # yfrac 0 (mid-depth) .. 1 (flange)
         else:
             def sig_fl(zfrac): return 0.0
             sig_web = 0.0
@@ -212,10 +235,10 @@ class FiberSectionBuilder:
                         self.ops.fiber(zc, yc, dz * tf / nt, m)
                     nfib += 1
         nwy, nwz = nf_web
-        m = self._mat(sig_web)
         dy = hw / nwy; dzw = tw / nwz
         for j in range(nwy):
             yc = -hw / 2 + (j + 0.5) * dy
+            m = self._mat(sig_web(abs(yc) / (hw / 2)) if callable(sig_web) else sig_web)
             for q in range(nwz):
                 zc = -tw / 2 + (q + 0.5) * dzw
                 if axis == "y":
@@ -228,7 +251,7 @@ class FiberSectionBuilder:
                     Iy=2 * tf * bf ** 3 / 12 + hw * tw ** 3 / 12, d=d, bf=bf, tf=tf, tw=tw, nfib=nfib)
 
     # ---- rectangular HSS --------------------------------------------------------------------
-    def hss_rect(self, secTag, label, t_design_factor=0.93, n_per_side=8, n_thick=2, residual=None, material=None):
+    def hss_rect(self, secTag, label, t_design_factor=0.93, n_per_side=8, n_thick=2, residual=None, material=None, Fy=None):
         """Fibre rectangular HSS (A500: design thickness = 0.93 t_nom, AISC B4.2). Corners squared off,
         area then scaled to the CSV gross area by adjusting the fibre areas (keeps A, ~I).
         material: optional explicit fibre material spec (see _mat_spec; residual stresses are then not applied)."""
@@ -245,9 +268,8 @@ class FiberSectionBuilder:
         # walls as strips: two flanges (width B, thick t) at +/-(H-t)/2 ; two webs (height H-2t) at +/-(B-t)/2
         A_model = 2 * B * t + 2 * (H - 2 * t) * t
         scale = (A_csv / A_model) if A_csv else 1.0
-        nfib = 0
-        def fib(y, z, a, sig):
-            self.ops.fiber(y, z, a * scale, self._mat_spec(material) if material else self._mat(sig))
+        # fibre layout (y, z, area, residual fraction): two flanges (width B) then two webs (height H - 2t)
+        fibs = []
         for sgn in (+1, -1):
             for i in range(n_per_side):
                 zc = -B / 2 + (i + 0.5) * B / n_per_side
@@ -258,7 +280,7 @@ class FiberSectionBuilder:
                     sig = -0.15 + 0.30 * frac ** 2
                 for j in range(n_thick):
                     yc = sgn * ((H - t) / 2 - t / 2 + (j + 0.5) * t / n_thick)
-                    fib(yc, zc, (B / n_per_side) * (t / n_thick), sig); nfib += 1
+                    fibs.append((yc, zc, (B / n_per_side) * (t / n_thick), sig))
         for sgn in (+1, -1):
             for i in range(n_per_side):
                 yc = -(H - 2 * t) / 2 + (i + 0.5) * (H - 2 * t) / n_per_side
@@ -268,9 +290,42 @@ class FiberSectionBuilder:
                     sig = -0.15 + 0.30 * frac ** 2
                 for j in range(n_thick):
                     zc = sgn * ((B - t) / 2 - t / 2 + (j + 0.5) * t / n_thick)
-                    fib(yc, zc, ((H - 2 * t) / n_per_side) * (t / n_thick), sig); nfib += 1
+                    fibs.append((yc, zc, ((H - 2 * t) / n_per_side) * (t / n_thick), sig))
+        if res == "cf_hss_membrane" and not material:
+            # NL-R2-27: make the membrane pattern self-equilibrating. -0.15 + 0.30 frac^2 has a wall mean of about
+            # -0.05 Fy, i.e. a net COMPRESSION of ~0.05 Fy A locked into every HSS at zero load (Ex13: brace -27 kip
+            # at lambda = 0, roof sway +0.011 in). Shift by the area-weighted mean: same shape, zero net force (the
+            # pattern is doubly symmetric, so the moments are zero too).
+            mean = sum(a * s for _y, _z, a, s in fibs) / sum(a for _y, _z, a, _s in fibs)
+            fibs = [(y, z, a, s - mean) for y, z, a, s in fibs]
+        nfib = 0
+        for yc, zc, a, sig in fibs:
+            self.ops.fiber(yc, zc, a * scale, self._mat_spec(material) if material else self._mat(sig, Fy)); nfib += 1
         self.log.append((secTag, label, "HSS", nfib, "residual=%s t_des=%.3f" % (res, t)))
         return dict(A=A_csv or A_model, H=H, B=B, t=t, nfib=nfib)
+
+    # ---- round HSS / pipe (NL-R2-28) --------------------------------------------------------
+    def hss_round(self, secTag, label, n_circ=16, n_thick=2, material=None, Fy=None):
+        """Fibre ring for round HSS / pipe: OD and wall from the tabulated A and Ix (round_hss_dims), so the fibre
+        A and I match the table. No residual stress pattern (none calibrated here)."""
+        dims = round_hss_dims(label)
+        if dims is None:
+            raise ValueError("%s is not a round HSS / pipe label with A, Ix in the table" % label)
+        OD, t = dims
+        r = shape(label)
+        J = _f(r["J"]) or (math.pi * (OD ** 4 - (OD - 2 * t) ** 4) / 32.0)
+        self.ops.section("Fiber", secTag, "-GJ", G_KSI * J)
+        Ro = OD / 2.0
+        nfib = 0
+        for j in range(n_thick):
+            r_in = Ro - t + j * t / n_thick; r_out = r_in + t / n_thick
+            rc = 0.5 * (r_in + r_out); a = math.pi * (r_out ** 2 - r_in ** 2) / n_circ
+            for i in range(n_circ):
+                th = 2.0 * math.pi * (i + 0.5) / n_circ
+                self.ops.fiber(rc * math.cos(th), rc * math.sin(th), a, self._mat_spec(material) if material else self._mat(0.0, Fy))
+                nfib += 1
+        self.log.append((secTag, label, "HSS-round", nfib, "OD=%.3f t=%.3f (ring matching A, Ix)" % (OD, t)))
+        return dict(A=_f(r["A"]), OD=OD, t=t, nfib=nfib)
 
     # ---- generic dispatcher ----------------------------------------------------------------
 
@@ -341,8 +396,15 @@ class FiberSectionBuilder:
 
     def build(self, secTag, label, kind, axis=None):
         lab = str(label).upper()
+        # review D3: HSS / pipe take the NOMINAL Fy of their own material (A500 Gr. C 50 rectangular / 46 round, A53 Gr. B
+        # 35 pipe -- pushover.sections_db.HSS_MATERIALS), never the frame's W-shape Fy
+        from pushover.sections_db import hss_material
+        hm = hss_material(lab)
         if lab.startswith("HSS") and hss_dims(lab):
-            return self.hss_rect(secTag, lab, residual=("none" if self.residual == "none" else "cf_hss_membrane"))
+            return self.hss_rect(secTag, lab, residual=("none" if self.residual == "none" else "cf_hss_membrane"),
+                                 Fy=(hm["Fy"] if hm else None))
+        if lab.startswith(("HSS", "PIPE")) and round_hss_dims(lab):
+            return self.hss_round(secTag, lab, Fy=(hm["Fy"] if hm else None))
         if lab.startswith(("W", "HP", "M", "S")) and not lab.startswith("MC"):
             return self.w_shape(secTag, lab, axis=(axis or ("y" if kind == "col" else "z")))
         props = cfs_section_props(label)
