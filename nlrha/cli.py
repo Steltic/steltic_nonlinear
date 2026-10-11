@@ -14,6 +14,8 @@ def _load(args):
     from pushover import package_reader as PR, hinge_models as HM, nonlinear_model as NM
     from . import model as MD
     pkg = PR.load(args.package); print(PR.summary(pkg))
+    from pushover import existing as EX                           # NL-R2-04 (warning only): new-building criteria
+    EX.print_warning(EX.existing_structure(getattr(pkg, "root", None)), "the NLRHA (ASCE 7-22 Chapter 16)")
     prm = HM.load_params(args.params)
     ch16 = json.load(open(os.path.join(os.path.dirname(__file__), "ch16_params.json")))
     b = pkg.basis

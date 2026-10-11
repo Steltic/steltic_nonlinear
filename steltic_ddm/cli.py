@@ -55,6 +55,8 @@ def _sweep_one(args):
     import io, contextlib
     nm = ingest.load_package(job, engine_dir)
     cfg = nm.cfg
+    from pushover import existing as EX                           # NL-R2-04 (warning only): new-building criteria
+    EX.print_warning(EX.existing_structure(cfg=cfg), "the DDM (design by GMNIA)", EX.DDM_CRITERIA)
     from types import SimpleNamespace
     from pushover import hinge_models as HM
     why = HM.unsupported_system(SimpleNamespace(**{k: (cfg or {}).get(k) for k in ("system", "system_X", "system_Y")}), engine="ddm")
@@ -121,6 +123,8 @@ def run(args):
     print(">> ingest", job)
     nm = ingest.load_package(job, engine_dir)
     cfg = nm.cfg
+    from pushover import existing as EX                           # NL-R2-04 (warning only): new-building criteria
+    EX.print_warning(EX.existing_structure(cfg=cfg), "the DDM (design by GMNIA)", EX.DDM_CRITERIA)
     from types import SimpleNamespace
     from pushover import hinge_models as HM
     why = HM.unsupported_system(SimpleNamespace(**{k: (cfg or {}).get(k) for k in ("system", "system_X", "system_Y")}), engine="ddm")
@@ -341,6 +345,8 @@ def report(args):
     out_dir = args.out or job
     nm = ingest.load_package(job, engine_dir)
     cfg = nm.cfg
+    from pushover import existing as EX                           # NL-R2-04 (warning only): new-building criteria
+    EX.print_warning(EX.existing_structure(cfg=cfg), "the DDM (design by GMNIA)", EX.DDM_CRITERIA)
     from types import SimpleNamespace
     from pushover import hinge_models as HM
     why = HM.unsupported_system(SimpleNamespace(**{k: (cfg or {}).get(k) for k in ("system", "system_X", "system_Y")}), engine="ddm")

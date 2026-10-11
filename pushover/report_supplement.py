@@ -201,6 +201,9 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
     H.append("<h1>Nonlinear static (pushover) supplement — %s</h1>" % pkg.name)
     H.append('<div class="sub">Supplement to the Steltic AISC 360/341 design package <code>%s</code> · generated %s · '
              'Pushover Analyst prototype · analysis time %.0f s</div>' % (pkg.root.name, ts, elapsed_s))
+    from . import existing as _EX                                 # NL-R2-04 (warning only)
+    _exist = _EX.existing_structure(getattr(pkg, "root", None))
+    H.append(_EX.banner_html(_exist, "the pushover (ASCE 41-23 NSP)"))
     if not prm.get("verified"):
         _which = _PS.unverified_text(prm)
         H.append('<div class="banner">UNVERIFIED MODELLING PARAMETERS — %s Values not supplied and verified by the user: %s. '
@@ -417,6 +420,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
               numerics=prm.get("numerics", {}),
               basis=vars(b) | {"sources": b.sources}, hinge_stats=hinge_stats, gravity=gravity_table, directions={},
               complete=not pending, directions_pending=pending, elapsed_s=round(elapsed_s, 1))
+    if _exist:                                                       # NL-R2-04: only for a declared existing structure
+        pk["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "the pushover (ASCE 41-23 NSP)"))
     for d, run in runs.items():
         R = results[d]
         pk["directions"][d] = dict(T1=run["pattern"]["T1"], mode=run["pattern"]["mode"], meff_frac=run["pattern"]["meff_frac"],

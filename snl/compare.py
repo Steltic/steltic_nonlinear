@@ -454,6 +454,12 @@ def build(job, out_name="four_analyses.html", title=None):
         provs = sorted({r["phi"].get("status", "") for r in dd["runs"] if r["phi"].get("phi_s") is not None})
         disc.append("DDM φ<sub>s</sub> classes used: " + ", ".join(f"{r['phi']['cls']} = {fmt(r['phi']['phi_s'])} ({r['phi'].get('status', '')})" for r in {r['phi']['cls']: r for r in dd['runs'] if r['phi'].get('phi_s') is not None}.values()) + ".")
 
+    from pushover import existing as _EX                          # NL-R2-04 (warning only)
+    _exist = _EX.existing_structure(job)
+    exist_banner = _EX.banner_html(_exist, "every nonlinear check on this sheet (pushover, NLRHA, DDM)")
+    if _exist:
+        summary["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "every nonlinear check on this sheet (pushover, NLRHA, DDM)"))
+        disc.insert(0, "EXISTING STRUCTURE declared by the package: assessed with NEW-building criteria, not an ASCE 41 evaluation (banner at the top).")
     css = open(os.path.join(_HERE, "four_analyses.css"), encoding="utf-8").read()
     title = title or f"{name} Four Analyses"
     sys_ = basis.get("system") or (st["capacity_design"].get("system") if isinstance(st["capacity_design"], dict) else "") or ""
@@ -478,6 +484,7 @@ def build(job, out_name="four_analyses.html", title=None):
     <div>Date</div><div>{date} · not for construction</div>
   </div>
 </header>
+{exist_banner}
 
 <section class="sheet">
   <div class="sheet-head"><h2>Four verdicts on the same steel</h2><span class="no">SHEET 1</span></div>

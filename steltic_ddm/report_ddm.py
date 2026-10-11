@@ -180,6 +180,8 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     parts.append('<h1>%s — system capacity by advanced analysis</h1>' % _h(name))
     parts.append('<div class="meta"><span>%s</span><span>steltic_ddm 0.1</span><span>kip · in · ksi</span><span>openseespy GMNIA</span>'
                  '<span>cfg.py %s · model_opensees.py %s · calc_package.json %s</span></div>' % (now, prov["cfg.py"], prov["model_opensees.py"], prov["design/calc_package.json"]))
+    from pushover import existing as _EX                          # NL-R2-04 (warning only)
+    parts.append(_EX.banner_html(_EX.existing_structure(cfg=cfg), "the DDM (design by GMNIA)", _EX.DDM_CRITERIA))
     statuses = sorted({r["phi"]["status"] for r in runs})
     parts.append('<div class="flag"><b>System resistance factors — status: %s.</b> %s φ<sub>s</sub> is a literature value — it has no '
                  'specification clause.</div>' % (", ".join(statuses), phi_s_status_text(runs)))

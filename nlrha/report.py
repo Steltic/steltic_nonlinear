@@ -166,6 +166,9 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append("<h1>Nonlinear response history (ASCE 7-22 Chapter 16) supplement — %s</h1>" % pkg.name)
     H.append('<div class="sub">Supplement to the Steltic AISC 360/341 package <code>%s</code> and its pushover supplement · generated %s · Non Linear Dynamic Bot prototype · %.0f s</div>' % (pkg.root.name, ts, elapsed_s))
     deg = next((r.get("stats", {}).get("degradation_16_3_1") for r in results if r.get("stats", {}).get("degradation_16_3_1")), None)
+    from pushover import existing as _EX                          # NL-R2-04 (warning only)
+    _exist = _EX.existing_structure(getattr(pkg, "root", None))
+    H.append(_EX.banner_html(_exist, "the NLRHA (ASCE 7-22 Chapter 16)"))
     if not prm.get("verified"):
         H.append('<div class="banner">UNVERIFIED COMPONENT PARAMETERS — the hinge and brace backbones come from steltic_pushover/hinge_params.json (verified=false, ASCE 41 / AISC 342 placeholders). '
                  '%s The Chapter 16 procedure itself (spectrum, period range, scaling, gravity, damping, acceptance rules) was read against the converted ASCE 7-22 text (pdf pp. 248–251).</div>'
@@ -414,6 +417,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                         "label": r.get("label"), "record": r.get("record"), "reason": r.get("reason"), "retry": r.get("retry"),
                         "drift_points": r.get("drift_points"), "peak_drift_at": r.get("peak_drift_at"), "algorithmic_damping": r.get("algorithmic_damping"),
                         "window": r.get("window"), "budget": r.get("budget")} for r in results])
+    if _exist:                                                       # NL-R2-04: only for a declared existing structure
+        pk["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "the NLRHA (ASCE 7-22 Chapter 16)"))
     with open(os.path.join(outdir, "nlrha_package.json"), "w", encoding="utf-8") as f:
         json.dump(pk, f, indent=1, default=str)
     return os.path.join(outdir, "nlrha_report.html")
