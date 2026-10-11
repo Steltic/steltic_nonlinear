@@ -1,4 +1,5 @@
 """NL-R2-22 (round 4): EBF link shear spring keeps the AISC 342-22 Table C2.4 residual strength beyond b.
+NL-R2-34: the NLRHA deformation acceptance reads the record PEAK of every hinge (tracked at every committed step).
 
 Table C2.4 (shear-controlled row, as transcribed in pushover/hinge_params.json and checked against the RAG): a = 0.15,
 b = 0.17 rad plastic shear deformation, residual strength ratio c = 0.8; Figure C1.1 (Type 1) envelope B-C-D.
@@ -133,3 +134,55 @@ def test_residual_above_capping_strength_is_clamped():
     assert V.max() <= sh.Vc_over_Vy * sh.Vp_kip * (1 + 1e-9)          # no hardening branch past D
 
 
+# ----------------------------------------------------------------------------- NL-R2-34: peaks, not the last state
+def test_update_peaks_keeps_the_envelope():
+    peak, signed = {1: 0.0, 2: 0.0}, {1: (0.0, 0.0), 2: (0.0, 0.0)}
+    for vals in ([0.1, -0.2], [0.7, -0.1], [0.2, 0.3], [-0.4, 0.0]):
+        RN.update_peaks(peak, signed, [1, 2], vals)
+    assert peak == {1: 0.7, 2: 0.3} and signed == {1: (0.7, -0.4), 2: (0.3, -0.2)}
+
+
+def test_run_record_tracks_hinge_peaks_every_committed_step():
+    """The peak is folded in right after each committed step, before (and independently of) the viewer-frame sampling
+    (every rec_every * dt_max of analysis time), which only stores what was already computed."""
+    src = inspect.getsource(RN.run_record)
+    i_step = src.index("step += 1")
+    i_peak = src.index("update_peaks(peak_def, signed_def, hz, hvals)")
+    i_frame = src.index("if t >= next_rec - 1e-9:")
+    assert i_step < i_peak < i_frame
+    assert src.count("hinge_deformations(") == 1 and "peak_def[tg] = max(" not in src
+    assert "link_state_note(hinges, peak_def)" in src
+
+
+def test_frame_sampling_misses_a_link_peak_that_every_step_tracking_keeps():
+    """A link driven past b and back within one viewer-frame interval: sampling every 5th step (the former
+    behaviour) reads a deformation below b; every-step tracking keeps the peak, and the 16.4.1.1 screen flags it."""
+    sh, prm = _spec()
+    ops.wipe(); ops.model("basic", "-ndm", 3, "-ndf", 6)
+    ops.node(1, 0, 0, 0); ops.node(2, 0, 0, 0)
+    ops.fix(1, 1, 1, 1, 1, 1, 1); ops.fix(2, 1, 1, 0, 1, 1, 1)
+    HM.make_link_shear_material(77, sh, prm)
+    ops.element("zeroLength", 9001, 1, 2, "-mat", 77, 77, 77, 77, 77, 77, "-dir", 1, 2, 3, 4, 5, 6)
+    hinges = {9001: dict(kind="link", ele=4, spec=sh, dof=3, K0=sh.Ks)}
+    hz, K0 = [9001], {9001: sh.Ks}
+    ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1); ops.sp(2, 3, 1.0)
+    ops.system("UmfPack"); ops.numberer("Plain"); ops.constraints("Transformation"); ops.test("NormDispIncr", 1e-10, 10)
+    ops.algorithm("Newton")
+    target = [0.0] + list(np.linspace(0.5, sh.theta_y + sh.b_pl + 0.4, 9)) + [sh.theta_y + 0.5 * (sh.a_pl + sh.b_pl)] * 6
+    every, sampled = ({9001: 0.0}, {9001: (0.0, 0.0)}), ({9001: 0.0}, {9001: (0.0, 0.0)})
+    for k in range(1, len(target)):
+        ops.integrator("LoadControl", target[k] - target[k - 1]); ops.analysis("Static"); assert ops.analyze(1) == 0
+        vals = RN.hinge_deformations(hz, hinges, K0)
+        RN.update_peaks(*every, hz, vals)
+        if k % 5 == 0:                                                # the former frame-only update
+            RN.update_peaks(*sampled, hz, vals)
+    assert every[0][9001] > sh.b_pl > sampled[0][9001]
+    from test_nlrha_fixes import _rec, _eval
+    recs = [_rec(i) for i in range(11)]
+    for r, pk in [(recs[0], every)] + [(r, sampled) for r in recs[1:]]:      # one hinge set in every record
+        r.update(peak_def=dict(pk[0]), signed_def=dict(pk[1]), specs={9001: sh},
+                 hinges_meta={9001: dict(kind="link", section="W14X74", z=144.0)})
+    acc = _eval(recs, planned=[dict(record="R%d" % i) for i in range(11)])
+    f0 = " ".join(acc["per_record"][0]["flags"]); f1 = " ".join(acc["per_record"][1]["flags"])
+    assert "beyond the valid modelling range (b)" in f0 and acc["per_record"][0]["unacceptable"]
+    assert "beyond the valid modelling range (b)" not in f1

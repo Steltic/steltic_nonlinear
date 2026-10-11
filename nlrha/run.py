@@ -562,6 +562,11 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                 ev["Pt"] = nb
             if -nb > ev["Pc"]:
                 ev["Pc"] = -nb
+        # NL-R2-34: hinge deformation peaks at EVERY committed step (they were sampled only at the viewer frames, every
+        # rec_every * dt_max of analysis time, so a peak between frames -- e.g. an EBF link passing b and coming back --
+        # was missed and the acceptance read a smaller, later deformation)
+        hvals = hinge_deformations(hz, hinges, K0)
+        update_peaks(peak_def, signed_def, hz, hvals)
         # 16.4.1.2 drift at vertically aligned points, both directions (NL-12)
         disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
         dnow, at = DR.story_drifts(pts, disp)
@@ -579,8 +584,6 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             frames_story.append([[round(ops.nodeDisp(m, 1), 3), round(ops.nodeDisp(m, 2), 3), round(ops.nodeDisp(m, 6), 6)] for m in masters])
             frames_brace.append([round(ops.eleResponse(b, "deformation")[0], 4) for b in braces])
             ir = min(int(t / dt_rec), n_rec - 1); frames_ag.append([round(float(ax[ir] * sf), 4), round(float(ay[ir] * sf), 4)])
-            hvals = hinge_deformations(hz, hinges, K0)
-            update_peaks(peak_def, signed_def, hz, hvals)
             frames_hinge.append([round(v, 6) for v in hvals])
             for c in cols:
                 f = _column_forces(colinfo[c])
