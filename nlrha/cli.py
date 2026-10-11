@@ -19,14 +19,16 @@ def _load(args):
     b = pkg.basis
     if b.SDS is None or b.SD1 is None:
         sys.exit("design basis incomplete (SDS/SD1) -- add cfg.py to the package")
-    TL = 8.0
-    try:                                                  # TL from cfg if present
-        import re
-        src = open(os.path.join(str(pkg.root), "cfg.py")).read()
-        m = re.search(r"TL\s*=\s*([0-9.]+)", src); TL = float(m.group(1)) if m else TL
-    except Exception:
-        pass
+    TL = cfg_TL(pkg)
     return pkg, prm, ch16, TL
+
+
+def cfg_TL(pkg, default=8.0):
+    """Long-period transition period T_L (s): the EXECUTED cfg's seis TL (NL-R2-06 remainder -- never regexed out of the
+    text), else `default` (8.0 s, the value this tool has always used when the package gives none)."""
+    from pushover import cfg_values as CV
+    v = CV.number(CV.seis_value(CV.executed_cfg(pkg.root)[0], "TL"))
+    return v if v is not None and v > 0 else default
 
 
 def _refuse_unsupported(pkg):

@@ -54,7 +54,7 @@ def describe(rc) -> str:
 
 
 def risk_category(pkg, override=None) -> str:
-    """Same resolution as the NLRHA (--risk-category, else cfg.py text, else Ie)."""
+    """Same resolution as the NLRHA (--risk-category, else the executed cfg risk_category, else Ie)."""
     if override:
         return normalise_rc(override)
     try:

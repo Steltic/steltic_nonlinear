@@ -60,24 +60,29 @@ def section_weight_lb_ft(section, A=None):
     return None
 
 
-def _cfg_values(text):
-    """The cfg.py scalars a plan needs, by regex (cfg.py is never exec'd here)."""
+def cfg_values(job):
+    """The cfg.py values a plan needs, from the EXECUTED cfg (NL-R2-06 remainder; pushover.cfg_values) -- never regexed
+    out of the text, where a docstring or comment can carry the same words (Ex27: SD1 = 2.0 read from a comment; Ex33:
+    the X-direction R of seis_X read as the building R). Keys present only when the executed cfg has them; {} (plus
+    has_relief False) when cfg.py is absent or cannot be executed -- the callers already fall back to the package basis."""
+    from pushover import cfg_values as CV
+    cfg, _why = CV.executed_cfg(job)
     out = {}
     for key in ("drift_limit", "rho"):
-        m = re.search(r"\b%s\s*=\s*([0-9.]+)" % key, text)
-        if m:
-            out[key] = float(m.group(1))
+        v = CV.number(CV.get(cfg, key))
+        if v is not None:
+            out[key] = v
     for key in ("Ie", "Cd", "R", "SDS", "SD1"):
-        m = re.search(r"\b%s\s*=\s*([0-9.]+)" % key, text) or re.search(r'"%s"\s*:\s*([0-9.]+)' % key, text)
-        if m:
-            out[key] = float(m.group(1))
-    m = re.search(r"system\s*=\s*['\"]([^'\"]+)['\"]", text)
-    if m:
-        out["system"] = m.group(1)
-    out["has_relief"] = "drift_relief_16_1_2" in text
-    m = re.search(r"risk[\s_]*category\s*[:=]?\s*['\"]?\b(IV|III|II|I)\b", text, flags=re.I)
-    if m:
-        out["risk_category"] = m.group(1).upper()
+        v = CV.number(CV.seis_value(cfg, key))
+        if v is not None:
+            out[key] = v
+    sysname = CV.get(cfg, "system") or CV.seis_value(cfg, "system")
+    if isinstance(sysname, str) and sysname.strip():
+        out["system"] = sysname
+    out["has_relief"] = CV.get(cfg, "drift_relief_16_1_2") is not None
+    rc = str(CV.get(cfg, "risk_category") or "").strip().upper()
+    if rc in ("I", "II", "III", "IV"):
+        out["risk_category"] = rc
     return out
 
 
@@ -94,7 +99,7 @@ def read_job(job):
     job = os.path.abspath(job)
     pkg = PR.load(job)
     cfg_text = open(os.path.join(job, "cfg.py"), encoding="utf-8", errors="replace").read() if os.path.exists(os.path.join(job, "cfg.py")) else ""
-    cfgv = _cfg_values(cfg_text)
+    cfgv = cfg_values(job)
     nodes = pkg.model.nodes
     zs = sorted({round(z, 3) for (_, _, z) in nodes.values()})
     levels = [z for z in zs if z > 1e-6]                                       # level k (1-based) -> levels[k-1]

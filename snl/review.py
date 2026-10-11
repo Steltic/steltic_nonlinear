@@ -78,6 +78,28 @@ def _r(v, n=4):
     return v
 
 
+
+_CFG_SEISMIC = ("SDS", "SD1", "S1", "R", "Cd", "Om0", "Ie", "system", "site_class", "risk_category", "drift_limit", "drift_relief_16_1_2")
+
+
+def cfg_seismic(job):
+    """The cfg.py design values shown to the reviewer -- from the EXECUTED cfg (NL-R2-06 remainder; pushover.cfg_values:
+    cfg['seis'] first, then the top level), not regexed out of the text (which returned raw source fragments such as
+    '"II", sdc="D", site_class="C",'). {} when cfg.py cannot be executed."""
+    from pushover import cfg_values as CV
+    cfg, _why = CV.executed_cfg(job)
+    out = {}
+    if cfg is None:
+        return out
+    for k in _CFG_SEISMIC:
+        v = CV.get(cfg, k) if k in ("system", "site_class", "risk_category", "drift_limit", "drift_relief_16_1_2") else CV.seis_value(cfg, k)
+        if v is None and k == "system":
+            v = CV.seis_value(cfg, k)
+        if v is not None:
+            out[k] = v
+    return out
+
+
 def gather(job: str) -> dict:
     """Everything the reviewer may cite, bounded (a few tens of kB), every number from a file in the job folder."""
     job = os.path.abspath(job)
@@ -161,10 +183,8 @@ def gather(job: str) -> dict:
         ev["design"]["base_shear"] = {"V_kip": st.get("V_kip"), "W_kip": st.get("W_kip"), "Cs": st.get("Cs"), "wind_X_kip": st.get("wind_X"), "wind_Y_kip": st.get("wind_Y")}
     except Exception:                                            # noqa: BLE001
         pass
-    cfg = os.path.join(job, "cfg.py")
-    if os.path.exists(cfg):
-        txt = open(cfg, encoding="utf-8", errors="replace").read()
-        ev["design"]["cfg_seismic"] = {k: v for k, v in re.findall(r"^\s*(SDS|SD1|S1|R|Cd|Om0|Ie|system|site_class|risk_category|drift_limit|drift_relief_16_1_2)\s*=\s*([^\n#]+)", txt, re.M)}
+    if os.path.exists(os.path.join(job, "cfg.py")):
+        ev["design"]["cfg_seismic"] = cfg_seismic(job)
     # the 16.1.4 draft and the four-analyses readings
     ev["design_criteria_draft"] = _text_of_html(os.path.join(job, "design_criteria_16_1_4.html"), 5000)
     fa = _text_of_html(os.path.join(job, "four_analyses.html"), 12000)

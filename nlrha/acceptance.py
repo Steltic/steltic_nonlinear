@@ -8,16 +8,18 @@ E_KSI = 29000.0
 
 
 def risk_category(pkg, override=None):
-    """'I_II' | 'III' | 'IV' -- from --risk-category, else cfg.py text ('Risk Category IV', RC III, risk="IV"), else Ie."""
+    """'I_II' | 'III' | 'IV' -- from --risk-category, else the EXECUTED cfg's risk_category (NL-R2-06 remainder: never the
+    text, where 'Risk Category IV' can be a comment about a neighbour), else Ie (ASCE 7-22 Table 1.5-2)."""
     if override:
         o = override.upper().replace(" ", "")
         return "I_II" if o in ("I", "II", "I_II", "I/II") else o
     try:
-        src = (pkg.root / "cfg.py").read_text(encoding="utf-8", errors="replace")
-        mo = re.search(r"(?:risk[\s_]*category|\bRC)\s*[:=]?\s*['\"]?\b(IV|III|II|I)\b", src, re.I)
-        if mo:
-            v = mo.group(1).upper(); return "I_II" if v in ("I", "II") else v
-    except Exception:
+        from pushover import cfg_values as CV
+        v = str(CV.get(CV.executed_cfg(pkg.root)[0], "risk_category") or "").strip().upper().replace(" ", "")
+        v = v.replace("RISKCATEGORY", "").replace("RC", "")
+        if v in ("I", "II", "I_II", "I/II", "III", "IV"):
+            return "I_II" if v in ("I", "II", "I_II", "I/II") else v
+    except Exception:                                             # noqa: BLE001
         pass
     Ie = getattr(pkg.basis, "Ie", None) or 1.0
     return "IV" if Ie >= 1.5 - 1e-9 else ("III" if Ie >= 1.25 - 1e-9 else "I_II")

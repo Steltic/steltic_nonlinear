@@ -167,7 +167,7 @@ def main(argv=None):
     r.add_argument("--max-drift", type=float, default=0.08); r.add_argument("--site-class", default="D"); r.add_argument("--params")
     r.add_argument("--system")
     r.add_argument("--risk-category", choices=["I", "II", "III", "IV"],
-                   help="ASCE 7 Risk Category -> BPON performance levels, ASCE 41-23 Table 2-5 (default: cfg.py text, else Ie)")
+                   help="ASCE 7 Risk Category -> BPON performance levels, ASCE 41-23 Table 2-5 (default: the executed cfg.py risk_category, else Ie)")
     r.add_argument("--tail", default="auto", help="descending-branch escalation: auto (fine_step then arclength) | fine_step | arclength | none")
     r.add_argument("--post-cap-ratio", type=float, help="RUNG 3 (modelling change, user consent): fraction of `a` over which hinges descend to residual (default 0.15; try 0.5)")
     r.add_argument("--plasticity", default="fibre", choices=["fibre", "fiber", "imk"], help="fibre=distributed forceBeamColumn (default); imk=concentrated ModIMK")

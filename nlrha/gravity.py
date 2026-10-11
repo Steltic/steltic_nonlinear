@@ -28,7 +28,6 @@ engineer can see its share. A level without detectable bays (skewed or non-ortho
 hull of its slaves, loaded on its column nodes only, and says so in the table (`method`).
 """
 from __future__ import annotations
-import ast, re
 
 _R = 1
 
@@ -37,42 +36,31 @@ def _k(x):
     return round(float(x), _R)
 
 
-# --------------------------------------------------------------------------- cfg.py (read, never imported)
+# --------------------------------------------------------------------------- cfg.py (executed values, NL-R2-06)
 def cfg_loads(pkg):
-    """Live-load inputs from the package's cfg.py (regex + literal_eval; the file imports the engine and is never
-    executed here). Keys: L_floor, Lr, L_by_level {k: psf}, source notes. Missing keys -> None."""
+    """Live-load inputs from the package's EXECUTED cfg (pushover.cfg_values; NL-R2-06 remainder -- the text is never
+    regexed, so a docstring / comment can no longer supply a load). Keys: L_floor, Lr, L_by_level {k: psf}, snow,
+    snow_by_level, source notes. Missing keys -> None / {}; L_floor then falls back to the package basis as before."""
+    from pushover import cfg_values as CV
     out = dict(L_floor=None, Lr=None, L_by_level={}, sources={})
     path = getattr(pkg, "root", None)
-    src = ""
-    try:
-        src = (path / "cfg.py").read_text(encoding="utf-8", errors="replace") if path is not None else ""
-    except Exception:
-        src = ""
-    num = r"([0-9]+(?:\.[0-9]+)?)"
+    cfg, why = CV.executed_cfg(path) if path is not None else (None, "no package root")
     for key in ("L_floor", "Lr"):
-        mo = re.search(r"(?<![A-Za-z0-9_])['\"]?" + key + r"['\"]?\s*[:=]\s*" + num, src)
-        if mo:
-            out[key] = float(mo.group(1)); out["sources"][key] = "cfg.py"
-    mo = re.search(r"(?<![A-Za-z0-9_])['\"]?L_by_level['\"]?\s*[:=]\s*(\{[^{}]*\})", src)
-    if mo:
-        try:
-            out["L_by_level"] = {int(k): float(v) for k, v in ast.literal_eval(mo.group(1)).items()}
-            out["sources"]["L_by_level"] = "cfg.py"
-        except Exception:
-            pass
+        v = CV.number(CV.get(cfg, key))
+        if v is not None:
+            out[key] = v; out["sources"][key] = "cfg.py"
+    lbl = CV.num_map(CV.get(cfg, "L_by_level"))
+    if lbl:
+        out["L_by_level"] = lbl; out["sources"]["L_by_level"] = "cfg.py"
     # NL-R2-16: roof snow S (psf) for Eq. (16.4-3) of 16.4.2.1 Exception 2 (cfg `snow`, per level `snow_by_level`)
-    mo = re.search(r"(?<![A-Za-z0-9_])['\"]?snow['\"]?\s*[:=]\s*" + num, src)
-    out["snow"] = float(mo.group(1)) if mo else None
-    if mo:
+    out["snow"] = CV.number(CV.get(cfg, "snow"))
+    if out["snow"] is not None:
         out["sources"]["snow"] = "cfg.py"
-    out["snow_by_level"] = {}
-    mo = re.search(r"(?<![A-Za-z0-9_])['\"]?snow_by_level['\"]?\s*[:=]\s*(\{[^{}]*\})", src)
-    if mo:
-        try:
-            out["snow_by_level"] = {int(k): float(v) for k, v in ast.literal_eval(mo.group(1)).items()}
-            out["sources"]["snow_by_level"] = "cfg.py"
-        except Exception:
-            pass
+    out["snow_by_level"] = CV.num_map(CV.get(cfg, "snow_by_level"))
+    if out["snow_by_level"]:
+        out["sources"]["snow_by_level"] = "cfg.py"
+    if cfg is None:
+        out["sources"]["cfg"] = why
     if out["L_floor"] is None and getattr(pkg.basis, "L_floor_psf", None) is not None:
         out["L_floor"] = float(pkg.basis.L_floor_psf); out["sources"]["L_floor"] = pkg.basis.sources.get("L_floor_psf", "package basis")
     return out

@@ -49,21 +49,22 @@ def gather(job, params_path=None, risk_category=None):
     prm = HM.load_params(prm_path) if prm_path else HM.load_params(None)
     cfg_text = open(os.path.join(job, "cfg.py"), encoding="utf-8", errors="replace").read() if os.path.exists(os.path.join(job, "cfg.py")) else ""
     rc = _rc(pkg, pkg.calc, cfg_text, risk_category)
-    relief = None
-    m = re.search(r"drift_relief_16_1_2['\"]?\]?\s*=\s*(\{.*?\})\s*$", cfg_text, flags=re.M | re.S)
-    if m:
-        try:
-            relief = json.loads(m.group(1).replace("'", '"'))
-        except Exception:
-            relief = {"present": True}
+    # NL-R2-06 (remainder): drift relief, drift_limit, rho, T_L and the analyses from the EXECUTED cfg, never the text
+    from pushover import cfg_values as CV
+    from .cli import cfg_TL
+    cfg = CV.executed_cfg(job)[0]
+    relief = CV.get(cfg, "drift_relief_16_1_2")
+    if relief is not None and not isinstance(relief, dict):
+        relief = {"present": True}
+    analyses = CV.get(cfg, "analyses") or []
     return dict(job=job, pkg=pkg, name=pkg.name, ch16=ch16, prm=prm, prm_path=prm_path, rc=rc, cfg_text=cfg_text, relief=relief,
                 calc=pkg.calc or {}, hazard=_json(os.path.join(job, "nlrha", "site_hazard.json")),
                 gm=(_json(os.path.join(job, "nlrha", "gm_scaling.json")) or {}).get("gm"),
                 nl=_json(os.path.join(job, "nlrha", "nlrha_package.json")), po=_json(os.path.join(job, "pushover", "pushover_package.json")),
                 dor=_json(os.path.join(job, "design", "design_of_record.json")),
                 retrieval=next((open(p, encoding="utf-8", errors="replace").read() for p in (os.path.join(job, "retrieval_log.md"), os.path.join(job, "nlrha", "retrieval_log.md"), os.path.join(job, "pushover", "retrieval_log.md")) if os.path.exists(p)), None),
-                drift_limit=(float(re.search(r"drift_limit\s*=\s*([0-9.]+)", cfg_text).group(1)) if re.search(r"drift_limit\s*=\s*([0-9.]+)", cfg_text) else None),
-                rho=(float(re.search(r"\brho\s*=\s*([0-9.]+)", cfg_text).group(1)) if re.search(r"\brho\s*=\s*([0-9.]+)", cfg_text) else None))
+                drift_limit=CV.number(CV.get(cfg, "drift_limit")), rho=CV.number(CV.get(cfg, "rho")), TL=cfg_TL(pkg),
+                mrsa=any(str(a).upper() in ("RS", "MRSA", "RSA") for a in (analyses if isinstance(analyses, (list, tuple)) else [analyses])))
 
 
 def _readable(v, limit=400):
@@ -243,7 +244,7 @@ def content(g, project=None, engineer=None, reviewer=None):
     hz = g["hazard"]
     s.t([["Parameter", "Value", "Source"],
          ["S_DS / S_D1 (g)", "%s / %s" % (b.SDS, b.SD1), "cfg.py"], ["S_MS / S_M1 (g) = 1.5 x design", "%.3f / %.3f" % (1.5 * (b.SDS or 0), 1.5 * (b.SD1 or 0)), "16.2.1.1 -> 11.4.6"],
-         ["S_1 (g) · T_L (s)", "%s · %s" % (b.S1, (re.search(r"TL\s*=\s*([0-9.]+)", g["cfg_text"]).group(1) if re.search(r"TL\s*=\s*([0-9.]+)", g["cfg_text"]) else "8.0")), "cfg.py"],
+         ["S_1 (g) · T_L (s)", "%s · %s" % (b.S1, g["TL"]), "cfg.py"],
          ["Site class", (hz["site"]["site_class"] if hz else (b.site_class or "[site class from the geotechnical report]")), "site_hazard.json" if hz else "input"],
          ["Seismic Design Category", str(hz["design"].get("sdc")) if hz else "[per 11.6]", "USGS service" if hz else "input"]])
     if hz:
@@ -368,7 +369,7 @@ def content(g, project=None, engineer=None, reviewer=None):
     bdir = getattr(b, "by_dir", None) or {}                          # NL-R2-17: mixed systems (12.2.2)
     rel = g["relief"]
     s.t([["Item", "Value", "Source"],
-         ["Design procedure", "ASCE 7-22 Chapter 12 %s; AISC 360/341 LRFD member and connection design (HR Steel package)" % ("ELF + MRSA" if "RS" in g["cfg_text"] else "ELF"), "cfg.py analyses"],
+         ["Design procedure", "ASCE 7-22 Chapter 12 %s; AISC 360/341 LRFD member and connection design (HR Steel package)" % ("ELF + MRSA" if g["mrsa"] else "ELF"), "cfg.py analyses"],
          ["R / C_d / Omega_0 / I_e", ("%s / %s / %s / %s" % (b.R, b.Cd, b.Om0, b.Ie)) if not bdir else
           " · ".join("%s (%s): %s / %s / %s / %s" % (d, x.get("system"), x.get("R"), x.get("Cd"), x.get("Om0"), b.Ie) for d, x in sorted(bdir.items())),
           "cfg.py" if not bdir else "per direction (12.2.2): " + b.sources.get("by_dir", "")],

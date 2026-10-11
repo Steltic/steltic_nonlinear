@@ -5,8 +5,8 @@ What we read (all produced by steltic's pipeline.design_and_report / bundle.make
   <building>/model_opensees.py        the EXACT elastic OpenSeesPy model (replayed ops.* calls)
   <building>/design/member_schedule.csv   ele_tag -> member kind (col/beam/brace) + AISC section
   <building>/design/calc_package.json     roles, demands, agent capacities, capacity_design block
-  <building>/cfg.py                   the agent's cfg (seis params, system, heights, loads) -- optional; scalars are
-                                      regexed, `heights` comes from the EXECUTED cfg (NL-R2-06, steltic_ddm.ingest.load_cfg)
+  <building>/cfg.py                   the agent's cfg (seis params, system, heights, loads) -- optional; every value comes
+                                      from the EXECUTED cfg (NL-R2-06, pushover.cfg_values), never from the text
   <building>/report.html              fallback source for SDS/SD1/R/Cd/Om0/Ie, W, V, T (regex on text)
 
 Nothing here runs the model: model_opensees.py is PARSED (regex on `ops.<cmd>(...)` lines), never
@@ -183,24 +183,25 @@ _NUM = r"([0-9]+(?:\.[0-9]+)?)"
 
 
 def _basis_from_cfg(cfg_py: Path, b: DesignBasis):
-    """Regex the seis(...) / dict literals out of cfg.py WITHOUT importing it (it imports engine3d)."""
-    src = cfg_py.read_text(encoding="utf-8", errors="replace")
-    def grab(key, pat):
-        mo = re.search(pat, src)
-        if mo:
-            setattr(b, key, float(mo.group(1)) if key not in ("system",) else mo.group(1))
-            b.sources[key] = "cfg.py"
+    """NL-R2-06 (remainder): the design-basis scalars from the EXECUTED cfg (pushover.cfg_values; cfg['seis'] first, then
+    the top level), never regexed out of the text -- the text regex read a docstring / comment or the wrong dict first
+    (Ex12: S1 = 1.5 read from a comment instead of seis S1 = 0.62). When cfg.py cannot be executed or lacks a value,
+    the value stays None and read_basis falls back to report.html / design_report.md as before."""
+    from . import cfg_values as CV
+    cfg, why = CV.executed_cfg(cfg_py.parent)
+    if cfg is None:
+        b.sources["cfg"] = why                                        # disclosed: values below come from report.html
+        return
     for key in ("SDS", "SD1", "S1", "R", "Cd", "Om0", "Ie"):
-        grab(key, rf"['\"]{key}['\"]\s*:\s*{_NUM}")
-        if getattr(b, key) is None:
-            grab(key, rf"\b{key}\s*=\s*{_NUM}")
-    mo = re.search(r"seis\(\s*" + r"\s*,\s*".join([_NUM] * 4), src)   # seis(SDS,SD1,S1,R,...) positional
-    if mo and b.SDS is None:
-        b.SDS, b.SD1, b.S1, b.R = (float(mo.group(i)) for i in range(1, 5)); b.sources["SDS"] = "cfg.py seis()"
-    mo = re.search(r"['\"]?\bsystem['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]", src)
-    if mo: b.system = mo.group(1); b.sources["system"] = "cfg.py"
-    mo = re.search(r"['\"]?L_floor['\"]?\s*[:=]\s*" + _NUM, src)
-    if mo: b.L_floor_psf = float(mo.group(1)); b.sources["L_floor_psf"] = "cfg.py"
+        v = CV.number(CV.seis_value(cfg, key))
+        if v is not None:
+            setattr(b, key, v); b.sources[key] = CV.SOURCE
+    sysname = CV.get(cfg, "system") or CV.seis_value(cfg, "system")
+    if isinstance(sysname, str) and sysname.strip():
+        b.system = sysname; b.sources["system"] = CV.SOURCE
+    v = CV.number(CV.get(cfg, "L_floor"))
+    if v is not None:
+        b.L_floor_psf = v; b.sources["L_floor_psf"] = CV.SOURCE
     # NL-R2-06: `heights` is NOT regexed here -- the first `heights = [...]` in the text can be a docstring/comment
     # (Ex13: "heights = [14,6,6,10,2,12] ft" -> feet read as inches, h_n 4 ft instead of 50). See _heights().
 
@@ -212,14 +213,13 @@ def _heights(root: Path, model: Optional["ElasticModel"]) -> tuple:
     (else of its mass nodes). (None, reason) when neither exists."""
     why = "no cfg.py"
     if (root / "cfg.py").exists():
-        try:
-            from steltic_ddm.ingest import load_cfg
-            h = load_cfg(str(root)).get("heights")
+        from . import cfg_values as CV
+        cfg, why = CV.executed_cfg(root)                              # cached: executed once per package
+        if cfg is not None:
+            h = cfg.get("heights")
             if isinstance(h, (list, tuple)) and h and all(isinstance(v, (int, float)) and v > 0 for v in h):
                 return [float(v) for v in h], "cfg.py (executed cfg['heights'])"
             why = "cfg['heights'] absent or not a list of positive numbers"
-        except Exception as ex:                                       # noqa: BLE001 -- engine missing, cfg error, ...
-            why = "cfg.py not executable (%s)" % str(ex)[:80]
     if model is not None and model.nodes:
         zs = sorted({round(model.nodes[ma][2], 3) for _p, ma, _s in model.diaphragms if ma in model.nodes})
         src = "diaphragm master elevations"
@@ -257,25 +257,18 @@ def _basis_from_report(report_html: Path, b: DesignBasis):
     grab("T_design_s", r"design period T\s*=\s*min\([^)]*\)\s*=\s*" + _NUM)
 
 
-def _cfg_dir_dicts(src: str) -> dict:
-    """cfg.py `seis_X=dict(R=8, Cd=5.5, Om0=3.0, system="SMF")` / `seis_Y={...}` and `system_X="SMF"` -- literal values
-    only, read without importing cfg.py (NL-R2-17)."""
+def _cfg_dir_dicts(cfg) -> dict:
+    """cfg `seis_X=dict(R=8, Cd=5.5, Om0=3.0, system="SMF")` / `seis_Y={...}` and `system_X="SMF"` (NL-R2-17) -- from the
+    EXECUTED cfg dict (NL-R2-06 remainder; pushover.cfg_values), never from the text. {} without an executed cfg."""
     out = {}
+    if not isinstance(cfg, dict):
+        return out
     for d in ("X", "Y"):
-        v = {}
-        mo = re.search(r"['\"]?\bseis_%s['\"]?\s*[:=]\s*(dict\([^()]*\)|\{[^{}]*\})" % d, src)
-        if mo:
-            try:
-                node = ast.parse(mo.group(1), mode="eval").body
-                if isinstance(node, ast.Call):
-                    v = {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords if kw.arg}
-                else:
-                    v = {str(k): x for k, x in ast.literal_eval(node).items()}
-            except Exception:
-                v = {}
-        mo = re.search(r"['\"]?\bsystem_%s['\"]?\s*[:=]\s*['\"]([^'\"]+)['\"]" % d, src)
-        if mo and "system" not in v:
-            v["system"] = mo.group(1)
+        sd = cfg.get("seis_%s" % d)
+        v = {str(k): x for k, x in sd.items()} if isinstance(sd, dict) else {}
+        sysd = cfg.get("system_%s" % d)
+        if isinstance(sysd, str) and sysd.strip() and "system" not in v:
+            v["system"] = sysd
         if v:
             out[d] = v
     return out
@@ -287,7 +280,8 @@ def _by_direction(root: Path, calc: dict, b: DesignBasis) -> dict:
     else the building's single set for that item. Kept only when R, Cd or Omega0 really differ between X and Y
     (mixed systems, ASCE 7-22 12.2.2): a single-system building keeps the single set, so its results do not change."""
     sbd = calc.get("seismic_by_direction") or {}
-    cfgd = _cfg_dir_dicts((root / "cfg.py").read_text(encoding="utf-8", errors="replace")) if (root / "cfg.py").exists() else {}
+    from . import cfg_values as CV
+    cfgd = _cfg_dir_dicts(CV.executed_cfg(root)[0])
     rep = {}
     if (root / "report.html").exists():                             # "per-direction ELF ...: V_X = 82.6 k, V_Y = 30.1 k"
         t = html.unescape(re.sub(r"<[^>]+>", " ", (root / "report.html").read_text(encoding="utf-8", errors="replace")))
