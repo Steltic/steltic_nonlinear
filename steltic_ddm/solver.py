@@ -218,11 +218,12 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
           verbose=True, snapshot_every=3, time_limit=None, post_peak_steps=8, plateau_frac=0.02, frame_every=2,
           max_bridges=10):
     label, fD, fL, fLr, lat, col_only = combo
+    uplift = getattr(combo, "uplift", None)       # NL-R2-L3: 0.9D+1.0W "(roof uplift)" cases carry (dirn, sgn)
     t0 = time.time()
     def _setup():
         model.build().prepare()
         ops.timeSeries("Linear", 1); ops.pattern("Plain", 1, 1)
-        W = model.apply_gravity(fD, fL, fLr, pres)
+        W = model.apply_gravity(fD, fL, fLr, pres, uplift=uplift) if uplift else model.apply_gravity(fD, fL, fLr, pres)
         model.apply_lateral(lat)
         _solver_settings()
         ops.integrator("LoadControl", 0.0); ops.analysis("Static")
@@ -300,6 +301,8 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
     disp_hist = {}                                # hist index -> master displacements (cheap; lets the peak frame be exact)
     fails = 0; consecutive_fail = 0
     log = []; plateau = False
+    if uplift and getattr(model, "uplift_note", None):
+        log.append(model.uplift_note)              # NL-R2-L3 disclosure (ddm_results.json / report QA table)
     # NL-R2-27: how the sweep ended. kind: "limit" (no equilibrium above lambda_u: limit point or unstable bifurcation),
     # "post-peak" / "plateau" / "disp-cap" (structural ends past or at the peak), "budget" (time / step budget used while
     # lambda was still rising: lambda_u is a lower bound), "numerical" (the solver gave up without evidence of a limit).
@@ -460,7 +463,7 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
     return dict(label=label, lambda_u=lam_max, step_at_max=step_at_max, d_at_max=d_at_max,
                 first_yield=first_yield, lam_at_1p25d=lam_125, hist=hist, control=(cnode, cdof),
                 lateral=(ldir, lsgn), gravity_kip=W, lam_probe=lam_probe, d_zero=d_zero, probe_slope=slope, steps=len(hist), fails=fails, log=log, plateau=plateau,
-                snapshot=snap, frames=frames, seconds=round(time.time() - t0, 1), termination=termination, bridges=bridges)
+                roof_uplift=(getattr(model, "uplift_note", None) if uplift else None), snapshot=snap, frames=frames, seconds=round(time.time() - t0, 1), termination=termination, bridges=bridges)
 
 
 def classify(res, model):

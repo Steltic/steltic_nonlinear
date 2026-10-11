@@ -334,7 +334,8 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
         parts.append('<tr><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>' % (
             _h(r["combo"][0]), res["steps"], str(res["fails"]) if res.get("fails") is not None else "—", ("%.3f" % res["lam_at_1p25d"]) if res.get("lam_at_1p25d") else "not reached",
             _h(("[end: %s] %s; " % (res["termination"]["kind"], res["termination"].get("detail", "")) if res.get("termination") else "")   # NL-R2-27
-               + ("; ".join(res.get("log", [])[-3:]) or "clean"))))
+               + ("[%s] " % res["roof_uplift"] if res.get("roof_uplift") else "")                   # NL-R2-L3
+               + ("; ".join(l for l in res.get("log", [])[-3:] if l != res.get("roof_uplift")) or "clean"))))
     parts.append('</table></div>')
     parts.append('<h2>9 · Caveats</h2><ul>'
                  '<li>Beam lateral-torsional buckling and local buckling are not represented by fibre beam elements: beams are taken as braced by the composite deck (Steltic L<sub>b</sub> convention) and compact (design of record).</li>'

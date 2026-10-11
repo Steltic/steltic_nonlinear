@@ -319,7 +319,8 @@ def _finish(job, out_dir, nm, cfg, gate, runs, sens, opts_rep, member_table, t0,
                                                                    seconds=r["res"]["seconds"], log=r["res"]["log"], state=r["state"],
                                                                    snapshot=r["res"]["snapshot"], control=r["res"].get("control"), lateral=r["res"].get("lateral"),
                                                                    d_at_max=r["res"].get("d_at_max"), frames=r["res"].get("frames", []),
-                                                                   termination=r["res"].get("termination"), bridges=r["res"].get("bridges")) for r in runs],
+                                                                   termination=r["res"].get("termination"), bridges=r["res"].get("bridges"),
+                                                                   roof_uplift=r["res"].get("roof_uplift")) for r in runs],
                    not_evaluated=nev, verdict=block["verdict"],
                    sensitivity=sens, member_table=member_table, elapsed_s=(elapsed if elapsed is not None else round(time.time() - t0))),
               open(os.path.join(out_dir, "ddm_results.json"), "w"), indent=1, default=str)
@@ -331,7 +332,8 @@ def _runs_from_results(d):
     for r in d["runs"]:
         res = dict(lambda_u=r["lambda_u"], first_yield=r.get("first_yield"), hist=r["hist"], steps=r["steps"], fails=r.get("fails"), lam_at_1p25d=r.get("lam_at_1p25d"),
                    seconds=r["seconds"], snapshot=r.get("snapshot"), control=r.get("control"), lateral=r.get("lateral"), d_at_max=r.get("d_at_max"),
-                   log=r.get("log", []), frames=r.get("frames", []), termination=r.get("termination"), bridges=r.get("bridges"))
+                   log=r.get("log", []), frames=r.get("frames", []), termination=r.get("termination"), bridges=r.get("bridges"),
+                   roof_uplift=r.get("roof_uplift"))
         runs.append(dict(combo=(r["label"],), summary=dict(kind=r["kind"]), res=res, cls=r["cls"], phi=r["phi"], check=r["check"], imp=r["imp"], state=r["state"]))
     return runs
 

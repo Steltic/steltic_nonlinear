@@ -100,6 +100,7 @@ class GMNIAModel:
         self.gravity_notes = []
         self.beam_bracing = True     # NL-R2-27: brace diaphragm-level beams where the HR design relies on deck / infill bracing
         self.braced = {}             # member tag -> (mode, brace positions in in from n1, Lb_in)
+        self.uplift_note = None      # NL-R2-L3: roof-uplift disclosure of the last apply_gravity
         self.column_bracing = True   # NL-R2-33: brace GMNIA columns where the HR design braces them
         self.col_braced = {}         # member tag -> plan dict (weak / strong / twist positions in in from n1, Lc, source)
 
@@ -816,12 +817,21 @@ class GMNIAModel:
         L2 = sum(v * v for v in d) or 1.0
         return min(max(sum((c[q] - p1[q]) * d[q] for q in range(3)) / L2, 0.0), 1.0)
 
-    def apply_gravity(self, fD, fL, fLr, pres):
+    def apply_gravity(self, fD, fL, fLr, pres, uplift=None):
         """Gravity of one combination on every beam element (kip/in and kip, local z down). NL-R2-03: distributed
         by the HR static model (floor_system / deck_span / infill one-way load path, roof bays, cladding); the
-        legacy two-way tributary only when that geometry is unavailable."""
+        legacy two-way tributary only when that geometry is unavailable.
+        NL-R2-L3: uplift = the case's (dirn, sgn) roof-uplift flag (design_pipeline.combos, 0.9D+1.0W "(roof uplift)"):
+        the HR engine's MWFRS roof pressure p = qh (G Cp - GCpi) on every roof bay (ASCE 7-22 Eq. 27.3-1, roof Cp of
+        Fig. 27.3-1 by distance from the windward edge, static_model._case_pieces) is added to the roof bay load, so the
+        GMNIA sweep scales the SAME net roof load the member design used. Without the HR geometry the uplift cannot be
+        placed -> RuntimeError (the sweep fails and the combination is reported NOT EVALUATED, never run without it)."""
+        if uplift and not self._grav_geo:
+            raise RuntimeError("roof uplift %s%s not applied: the HR static-model load path is unavailable (%s) -- "
+                               "combination NOT EVALUATED rather than analysed without its roof suction (NL-R2-L3)"
+                               % (uplift[0], "+" if uplift[1] > 0 else "-", self._grav_fail or "no HR geometry"))
         if self._grav_geo:
-            return self._apply_gravity_hr(fD, fL, fLr)
+            return self._apply_gravity_hr(fD, fL, fLr, uplift)
         from .loads import beam_udl
         total = 0.0
         for e in self.elems:
@@ -834,12 +844,22 @@ class GMNIAModel:
                 total += w * e["L"]
         return total
 
-    def _apply_gravity_hr(self, fD, fL, fLr):
+    def _apply_gravity_hr(self, fD, fL, fLr, uplift=None):
         import static_model as SM
         from .loads import hr_member_location
         geo = self._grav_geo
         bt = self._bt if hasattr(self, "_bt") else self.nm.by_tag()
-        pcs = SM._case_pieces(self.cfg, geo["model"], fD, fL, fLr, None, geo["modes"])
+        # NL-R2-L3: the roof-uplift flag goes to the HR piece builder exactly as static_model.apply_case_gravity does
+        pcs = SM._case_pieces(self.cfg, geo["model"], fD, fL, fLr, tuple(uplift) if uplift else None, geo["modes"])
+        self.uplift_note = None
+        if uplift:
+            from .loads import roof_uplift_pressures
+            qh, pb = roof_uplift_pressures(self.cfg, geo["model"], uplift)
+            self.uplift_note = ("roof uplift W%s%s (NL-R2-L3): MWFRS roof pressure p = qh (G Cp - GCpi), qh = %.1f psf "
+                                "(ASCE 7-22 Eq. 27.3-1, roof Cp Fig. 27.3-1 -- HR static_model), %.1f to %.1f psf on %d roof "
+                                "bays, added to %.2fD on the roof and scaled with lambda"
+                                % (uplift[0], "+" if uplift[1] > 0 else "-", qh, min(pb.values(), default=0.0),
+                                   max(pb.values(), default=0.0), len(pb), fD))
         total = 0.0; by_mem = {}; on_span = {}; notes = []
         for e in self.elems:
             if e["kind"] != "beam":
