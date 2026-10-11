@@ -923,7 +923,8 @@ def build_link_imk(pkg, e, sec, prm, mat, hinges, stats, ctx, beam_side=None):
     """NL-03 EBF link, concentrated-plasticity form:
         n1 -[zeroLength: shear spring on global Z (link shear), rigid elsewhere]- s -[IMK flexural spring]- ni
            == elastic interior (I x (n+1)/n) == nj -[IMK flexural spring]- n2
-    Shear spring: hinge_models.link_specs / make_link_shear_material (Table C2.4 backbone, Vp = 0.6 Fye Alw), registered
+    Shear spring: hinge_models.link_specs / make_link_shear_material (Table C2.4 backbone, Vp = 0.6 Fye Alw; residual
+    c Vp kept beyond b, NL-R2-22 round 4), registered
     as kind 'link' (deformation = transverse displacement; limits = gamma x e). Flexural springs: Table C2.2 values,
     registered as kind 'beam' with section '<sec> link'."""
     m = pkg.model
@@ -1119,7 +1120,8 @@ def finish_stats(stats, ctx, prm, plasticity):
         deg["brb"] = ("BRB (%d): no cyclic degradation modelled -- AISC 342-22 Commentary E3: BRBs 'are expected to withstand significant "
                       "inelastic deformations without strength or stiffness degradation'; strength is lost beyond b (Table C3.3)" % stats["brb"])
     if stats.get("links"):
-        deg["links"] = ("EBF link shear springs (%d): Table C2.4 backbone with post-capping loss to c*Vp and loss beyond b; cyclic damage "
+        deg["links"] = ("EBF link shear springs (%d): Table C2.4 backbone with post-capping loss to the residual c*Vp, KEPT beyond b "
+                        "(b = end of the valid modelling range in the acceptance, not a loss of strength in the model); cyclic damage "
                         "per ebf_link.shear.damage1/2" % stats["links"])
     stats["degradation"] = deg
     return stats

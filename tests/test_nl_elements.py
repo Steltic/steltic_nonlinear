@@ -155,7 +155,7 @@ def test_single_link_push_vs_Vp():
     ops.constraints("Plain"); ops.numberer("RCM"); ops.system("UmfPack"); ops.test("NormDispIncr", 1e-9, 50); ops.algorithm("Newton")
     ops.integrator("DisplacementControl", 2, 3, 0.002); ops.analysis("Static")
     u, V = [], []
-    while not u or u[-1] < 0.19 * e:
+    while not u or u[-1] < 0.25 * e:
         assert ops.analyze(1) == 0
         ops.reactions(); u.append(ops.nodeDisp(2, 3)); V.append(-ops.nodeReaction(1, 3))
     u, V = np.array(u), np.array(V)
@@ -164,7 +164,9 @@ def test_single_link_push_vs_Vp():
     assert abs(np.interp(1.2 * gy, u, V) / sh.Vp_kip - 1.0) < 0.02      # yields at Vp = 0.6 Fye Alw
     assert np.interp(0.10 * e, u, V) > sh.Vp_kip                      # hardening within a
     assert V.max() / sh.Vp_kip <= sh.Vc_over_Vy + 1e-6
-    assert V[-1] < 0.05 * sh.Vp_kip                                   # beyond b: strength lost
+    # NL-R2-22 (round 4): beyond b the link keeps the Table C2.4 residual strength c Vp (no drop to zero)
+    beyond_b = u > sh.theta_y + sh.b_pl + 0.2
+    assert beyond_b.sum() > 5 and np.allclose(V[beyond_b], sh.c_res * sh.Vp_kip, rtol=0.03)
     # the monitor quantity the pushover / NLRHA use: deformation - V/K0 = plastic transverse displacement (gamma_p * e)
     d = ops.eleResponse(tags[0], "deformation")
     assert d[2] > sh.b_pl

@@ -152,32 +152,75 @@ def _column_forces(ci):
     return P, max(ti[1], tj[1]), max(ti[2], tj[2]), (ti, tj)
 
 
-def link_state_note(hinges):
-    """NL-R2-22: '' or '; EBF links at the last converged state: ...' -- how many link shear springs (AISC 342-22 Table
-    C2.4 backbone) are at or past the capping deformation a (strength loss begins) or past b (strength lost), with the
-    largest plastic shear rotation gamma_p = (|d| - Delta_y) / e. Read at the last committed state."""
+def link_state_note(hinges, peak=None):
+    """NL-R2-22: '' or '; EBF links over the record: ...' -- how many link shear springs (AISC 342-22 Table C2.4
+    backbone) reached the capping deformation a (strength loss to c Vp begins) or went past b (end of the valid
+    modelling range), with the largest plastic shear rotation gamma_p = plastic transverse displacement / e.
+
+    NL-R2-34: `peak` = {hinge tag: peak |plastic deformation| over the record} (run_record's peak_def, tracked at every
+    committed step) -- a link's deformation can come back below a or b after it passed them, so the state at the last
+    converged step under-reports. Without `peak` the last committed state is read (plastic = |d| - |V|/K0, the
+    quantity peak_def tracks; |d| - Delta_y when the hinge has no K0)."""
     rows = []
     for t, h in hinges.items():
         if h.get("kind") != "link":
             continue
-        d, V = NM.zero_length_spring(t, 3)
         s = h["spec"]
-        g, a, b = (abs(d) - s.theta_y) / s.e_in, s.a_pl / s.e_in, s.b_pl / s.e_in
-        # past b: once the MinMax wrapper (make_link_shear_material) has failed the link carries zero shear for good, but
-        # its deformation can come back below Delta_y + b e (Ex8 Gilroy: 5 links with V = 0 at d = 5.7-6.1 in < 6.21 in
-        # while the storey drift ran to 5.7 %), so a failed link is recognised by V = 0 beyond a (on the Table C2.4
-        # envelope the force beyond a is >= c Vp > 0)
-        lost = g >= b or (g >= 0.98 * a and abs(V) <= 1e-6 * max(abs(s.Vp_kip), 1.0))
-        rows.append((g, a, b, h["ele"], lost))
+        if peak is not None and t in peak:
+            g = abs(peak[t]) / s.e_in
+        else:
+            d, V = NM.zero_length_spring(t, 3)
+            g = ((abs(d) - abs(V) / h["K0"]) if h.get("K0") else (abs(d) - s.theta_y)) / s.e_in
+        rows.append((g, s.a_pl / s.e_in, s.b_pl / s.e_in, h["ele"]))
     if not rows:
         return ""
-    n_a = sum(1 for g, a, b, _, lost in rows if g >= 0.98 * a or lost)
-    n_b = sum(1 for g, a, b, _, lost in rows if lost)
-    g, a, b, ele, _ = max(rows)
+    n_a = sum(1 for g, a, b, _ in rows if g >= 0.98 * a)
+    n_b = sum(1 for g, a, b, _ in rows if g >= b)
+    g, a, b, ele = max(rows)
     if not n_a:
         return ""
-    return ("; EBF links at the last converged state: %d of %d at or past the capping rotation a (strength loss, AISC 342-22 Table C2.4), "
-            "%d past b (shear strength lost); max gamma_p %.3f rad (link %s; a %.3f, b %.3f rad)" % (n_a, len(rows), n_b, g, ele, a, b))
+    return ("; EBF links %s: %d of %d reached the capping rotation a (strength loss to the residual c Vp, AISC 342-22 Table C2.4), "
+            "%d past b (beyond the valid modelling range; residual strength c Vp kept); max gamma_p %.3f rad (link %s; a %.3f, b %.3f rad)"
+            % ("over the record (peak)" if peak is not None else "at the last converged state", n_a, len(rows), n_b, g, ele, a, b))
+
+
+def hinge_deformations(hz, hinges, K0):
+    """NL-R2-34: plastic deformation of every registered hinge (in `hz` order) at the current committed state -- the
+    quantity of the deformation acceptance (brace: total axial deformation; fibre end: plastic rotation; IMK / link
+    spring: d - F/K0)."""
+    out = []
+    for tg in hz:
+        h = hinges[tg]
+        if h["kind"] == "brace":
+            d = ops.eleResponse(tg, "deformation"); v = d[0] if d else 0.0
+        elif h.get("form") == "fibre_end":            # fibre beam/column end region (pushover NL-01)
+            v = NM.fibre_end_rotation(h)
+        elif h.get("form") == "fbc_cp":
+            # ConcentratedPlasticity end IP: Uniaxial M-theta_p (comp 0). Subtract My/Ke elastic.
+            ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
+            d = ops.eleResponse(h["ele"], "section", ip, "deformation")
+            f = ops.eleResponse(h["ele"], "section", ip, "force")
+            if d and len(d) > jc:
+                fj = f[jc] if (f and len(f) > jc) else 0.0
+                v = d[jc] - fj / K0[tg]
+            else:
+                v = 0.0
+        else:
+            th, M = NM.zero_length_spring(h.get("zl", tg), h["dof"])  # spring force = node-2 force (sign fix); NL-R2-32 minor key -> its zeroLength
+            v = th - M / K0[tg]
+        out.append(v)
+    return out
+
+
+def update_peaks(peak_def, signed_def, hz, vals):
+    """NL-R2-34: fold one committed state's hinge deformations (`vals`, in `hz` order) into the record envelopes:
+    peak_def[t] = max |v|, signed_def[t] = (max v, min v)."""
+    for tg, v in zip(hz, vals):
+        if abs(v) > peak_def[tg]:
+            peak_def[tg] = abs(v)
+        p, n = signed_def[tg]
+        if v > p or v < n:
+            signed_def[tg] = (max(p, v), min(n, v))
 
 
 def _truss_axial(tag):
@@ -536,30 +579,9 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             frames_story.append([[round(ops.nodeDisp(m, 1), 3), round(ops.nodeDisp(m, 2), 3), round(ops.nodeDisp(m, 6), 6)] for m in masters])
             frames_brace.append([round(ops.eleResponse(b, "deformation")[0], 4) for b in braces])
             ir = min(int(t / dt_rec), n_rec - 1); frames_ag.append([round(float(ax[ir] * sf), 4), round(float(ay[ir] * sf), 4)])
-            hinge_row = []
-            for tg in hz:
-                h = hinges[tg]
-                if h["kind"] == "brace":
-                    d = ops.eleResponse(tg, "deformation"); v = d[0] if d else 0.0
-                elif h.get("form") == "fibre_end":            # fibre beam/column end region (pushover NL-01)
-                    v = NM.fibre_end_rotation(h)
-                elif h.get("form") == "fbc_cp":
-                    # ConcentratedPlasticity end IP: Uniaxial M–θ_p (comp 0). Subtract My/Ke elastic.
-                    ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
-                    d = ops.eleResponse(h["ele"], "section", ip, "deformation")
-                    f = ops.eleResponse(h["ele"], "section", ip, "force")
-                    if d and len(d) > jc:
-                        fj = f[jc] if (f and len(f) > jc) else 0.0
-                        v = d[jc] - fj / K0[tg]
-                    else:
-                        v = 0.0
-                else:
-                    th, M = NM.zero_length_spring(h.get("zl", tg), h["dof"])      # spring force = node-2 force (sign fix); NL-R2-32 minor key -> its zeroLength
-                    v = th - M / K0[tg]
-                peak_def[tg] = max(peak_def[tg], abs(v))
-                p, n = signed_def[tg]; signed_def[tg] = (max(p, v), min(n, v))
-                hinge_row.append(round(v, 6))
-            frames_hinge.append(hinge_row)
+            hvals = hinge_deformations(hz, hinges, K0)
+            update_peaks(peak_def, signed_def, hz, hvals)
+            frames_hinge.append([round(v, 6) for v in hvals])
             for c in cols:
                 f = _column_forces(colinfo[c])
                 if f is None:
@@ -580,7 +602,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                 d = ops.eleResponse(sample_brace, "deformation")
                 brace_hist.append((d[0] if d else 0.0, HM.brace_axial_force(sample_brace, hinges[sample_brace])))   # NL-10: physical-theory braces
     if status == "nonconvergence":                                  # NL-R2-22: say when the EBF links have lost strength
-        reason += link_state_note(hinges)
+        reason += link_state_note(hinges, peak_def)
     reason += frac.summary()                                        # NL-R2-20 (round 4): '' unless a brace fractured through
     # residual drift (structure at rest after free vibration) -- only meaningful when the record completed
     if status == "completed":

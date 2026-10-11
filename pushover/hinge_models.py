@@ -999,7 +999,8 @@ def link_specs(section: str, e_in: float, prm: dict):
     Classification (C2.1): rho = e/(M_CE/V_CE): <= 1.6 shear, >= 2.6 flexure, else shear-flexure.
     Shear spring: Ks = G*As/e (As = d*tw, Commentary Eq. C-E2-2) so the series flexure + spring stiffness equals Eq.
     C-E2-1. Backbone (Figure C1.1): B (Vp, Delta_y = Vp/Ks), C = B + a*e with slope alpha_h*Ke (C2.4a.2.b: alpha_h = 6%
-    of the elastic slope permitted), capped at Vc_over_Vy_max*Vp; descent to c*Vp; strength lost beyond b*e.
+    of the elastic slope permitted), capped at Vc_over_Vy_max*Vp; descent to c*Vp; the residual strength c*Vp is kept
+    beyond b*e (NL-R2-22 round 4, user decision; b remains the end of the valid modelling range in the acceptance).
     Flexural end springs: Table C2.2 row 1 (a = 9 theta_y, b = 11 theta_y, c = 0.6, IO 0.25a, LS a, CP b) with
     theta_y = Mp e/(6EI), scaled by f_flex; for a shear-controlled link the flexural acceptance tends to 0, i.e. flexural
     yielding of a shear link is not a permitted deformation (limit 1e-5 rad), while the modelling a/b are kept unscaled
@@ -1063,8 +1064,21 @@ def link_specs(section: str, e_in: float, prm: dict):
 
 def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
     """Force-deformation (kip, in) material of the link shear spring: Hysteretic (full, non-pinched loops; shear links
-    show stable hysteresis until web fracture) with the Figure C1.1 envelope B-C-D, wrapped in MinMax at Delta_y + b*e
-    (loss of strength beyond b). Optional cyclic damage via ebf_link.shear.damage1 / damage2 (Hysteretic damfc1/2)."""
+    show stable hysteresis until web fracture) on the AISC 342-22 Figure C1.1 envelope (Type 1, ASCE 41-23 7.5) with the
+    Table C2.4 modelling parameters: B (V_CE = Vp at Delta_y), C (Vc at Delta_y + a e), D = residual strength c Vp
+    (Table C2.4 'Residual Strength Ratio' c, shear-controlled row: 0.8) reached post_cap_frac_of_a * a e after C.
+
+    NL-R2-22 (round 4) -- the residual strength is KEPT beyond Delta_y + b e (user decision). The envelope used to be
+    wrapped in MinMax at Delta_y + b e, i.e. the Figure C1.1 drop at point E to zero strength: in the Ex8 NLRHA the
+    five storey-1 links of one frame line passed b together (Loma Prieta Gilroy #3, t = 5.75 s), carried V = 0 for
+    the rest of the record, and that zero-strength rule alone made a storey mechanism (drift ran away, record NC).
+    OpenSees Hysteretic holds the stress of its third point for any strain beyond it (the descent C -> D has a
+    negative slope), so the spring carries c Vp at every deformation past D, in both directions and on every
+    reloading cycle; no deformation cap is applied (none is needed: the envelope is bounded and never reaches zero
+    stiffness-and-strength). Exceeding b is still reported: the deformation acceptance (pushover postprocess, NLRHA
+    16.4.2.2 'valid range b' and the per-record 16.4.1.1 screen) compares the peak plastic deformation with b e and
+    CP e exactly as before -- only the force the model carries past b changed.
+    Optional cyclic damage via ebf_link.shear.damage1 / damage2 (Hysteretic damfc1/2)."""
     import openseespy.opensees as ops
     g, _ = param_group(prm, "ebf_link")
     sh = g.get("shear") or {}
@@ -1072,13 +1086,31 @@ def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
     e2 = dy + s.a_pl
     drop = max(float(sh.get("post_cap_frac_of_a", 0.1)) * s.a_pl, 1e-4)
     e3 = e2 + drop
+    c = min(s.c_res, s.Vc_over_Vy)                  # a residual above the capping strength would make the last branch harden
     d1, d2 = float(sh.get("damage1", 0.0) or 0.0), float(sh.get("damage2", 0.0) or 0.0)
-    inner = tag + INNER_MAT_OFFSET
-    ops.uniaxialMaterial("Hysteretic", inner, Vy, dy, s.Vc_over_Vy * Vy, e2, s.c_res * Vy, e3,
-                         -Vy, -dy, -s.Vc_over_Vy * Vy, -e2, -s.c_res * Vy, -e3, 1.0, 1.0, d1, d2, 0.0)
-    eu = dy + s.b_pl
-    ops.uniaxialMaterial("MinMax", tag, inner, "-min", -eu, "-max", eu)
-    return "Hysteretic+MinMax"
+    ops.uniaxialMaterial("Hysteretic", tag, Vy, dy, s.Vc_over_Vy * Vy, e2, c * Vy, e3,
+                         -Vy, -dy, -s.Vc_over_Vy * Vy, -e2, -c * Vy, -e3, 1.0, 1.0, d1, d2, 0.0)
+    return "Hysteretic"
+
+
+def link_shear_envelope(s: LinkShearSpec, prm: dict, d: float) -> float:
+    """Monotonic envelope force (kip) of make_link_shear_material at deformation d (in, signed): the closed form the
+    unit tests compare the OpenSees material with. Beyond D (and beyond b) the force stays at c Vp."""
+    g, _ = param_group(prm, "ebf_link")
+    sh = g.get("shear") or {}
+    Vy, dy = s.Vp_kip, s.theta_y
+    e2 = dy + s.a_pl; e3 = e2 + max(float(sh.get("post_cap_frac_of_a", 0.1)) * s.a_pl, 1e-4)
+    Vc, Vr = s.Vc_over_Vy * Vy, min(s.c_res, s.Vc_over_Vy) * Vy
+    x = abs(d)
+    if x <= dy:
+        f = Vy * x / dy
+    elif x <= e2:
+        f = Vy + (Vc - Vy) * (x - dy) / (e2 - dy)
+    elif x <= e3:
+        f = Vc + (Vr - Vc) * (x - e2) / (e3 - e2)
+    else:
+        f = Vr
+    return math.copysign(f, d) if d else 0.0
 
 
 # NL-R2-13: lateral systems this module has no element model for. A package declaring one is REFUSED (NOT EVALUATED)

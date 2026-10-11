@@ -145,15 +145,18 @@ def test_nsp_brace_force_check_eq_7_41():
 
 
 def test_nc_reason_names_links_past_capping():
-    """The non-convergence reason says how many EBF links are past a / b (Table C2.4) at the last converged state."""
+    """The non-convergence reason says how many EBF links reached a / went past b (Table C2.4): from the record peak
+    (NL-R2-34) when given, else at the last converged state."""
     from nlrha import run as RN
     sh, _, _ = HM.link_specs("W14X74", 36.0, HM.load_params())
     ops.wipe(); ops.model("basic", "-ndm", 3, "-ndf", 6)
     ops.node(1, 0, 0, 0); ops.node(2, 0, 0, 0)
     ops.fix(1, 1, 1, 1, 1, 1, 1); ops.fix(2, 1, 1, 0, 1, 1, 1)
-    ops.uniaxialMaterial("Elastic", 1, 1.0e3)
-    ops.element("zeroLength", 30000043, 1, 2, "-mat", 1, 1, 1, 1, 1, 1, "-dir", 1, 2, 3, 4, 5, 6)
-    hinges = {30000043: dict(kind="link", ele=4, spec=sh, dof=3)}
+    HM.make_link_shear_material(77, sh, HM.load_params())
+    ops.element("zeroLength", 30000043, 1, 2, "-mat", 77, 77, 77, 77, 77, 77, "-dir", 1, 2, 3, 4, 5, 6)
+    hinges = {30000043: dict(kind="link", ele=4, spec=sh, dof=3, K0=sh.Ks)}
+    hz = [30000043]; K0 = {30000043: sh.Ks}
+    peak, signed = {30000043: 0.0}, {30000043: (0.0, 0.0)}
     k = [0]
     def to(d):
         ops.wipeAnalysis()
@@ -163,31 +166,23 @@ def test_nc_reason_names_links_past_capping():
         ops.timeSeries("Constant", k[0]); ops.pattern("Plain", k[0], k[0]); ops.sp(2, 3, d)
         ops.system("UmfPack"); ops.numberer("Plain"); ops.constraints("Transformation"); ops.test("NormDispIncr", 1e-10, 10)
         ops.algorithm("Newton"); ops.integrator("LoadControl", 1.0); ops.analysis("Static"); assert ops.analyze(1) == 0
+        RN.update_peaks(peak, signed, hz, RN.hinge_deformations(hz, hinges, K0))
     to(0.5 * sh.a_pl)
-    assert RN.link_state_note(hinges) == ""                             # below a: nothing to say
-    to(-(sh.theta_y + sh.a_pl + 0.01))
+    assert RN.link_state_note(hinges) == "" and RN.link_state_note(hinges, peak) == ""     # below a: nothing to say
+    for f in (0.5, 0.9, 1.0):
+        to(-(sh.theta_y + f * sh.a_pl))
+    to(-(sh.theta_y + sh.a_pl + 0.2 * (sh.b_pl - sh.a_pl)))                 # between a and b, on the residual branch
     note = RN.link_state_note(hinges)
-    assert "1 of 1 at or past the capping rotation a" in note and "0 past b" in note
-    to(sh.theta_y + sh.b_pl + 0.05)
-    assert "1 past b" in RN.link_state_note(hinges)
-    # the production link material (Hysteretic + MinMax at Delta_y + b e): once failed, V = 0 for good, also when the
-    # deformation comes back below b -- the link must still be counted as past b
-    to(0.0)                                                            # back to the origin before the swap
-    HM.make_link_shear_material(77, sh, HM.load_params())
-    ops.remove("element", 30000043)
-    ops.element("zeroLength", 30000043, 1, 2, "-mat", 1, 1, 77, 1, 1, 1, "-dir", 1, 2, 3, 4, 5, 6)
-    for f in (0.3, 0.6, 0.9):
-        to(sh.theta_y + f * sh.a_pl)
-    to(sh.theta_y + 0.5 * (sh.a_pl + sh.b_pl))                         # between a and b: on the descending branch, V > 0
+    assert "at the last converged state: 1 of 1 reached the capping rotation a" in note and "0 past b" in note
+    to(sh.theta_y + sh.b_pl + 0.3)                                     # past b: residual strength kept
     d, V = NM.zero_length_spring(30000043, 3)
-    assert abs(V) > 0.1 * sh.Vp_kip
-    note = RN.link_state_note(hinges)
-    assert "1 of 1 at or past the capping rotation a" in note and "0 past b" in note
-    to(sh.theta_y + sh.b_pl + 0.05)                                    # MinMax fails
-    to(sh.theta_y + 0.5 * (sh.a_pl + sh.b_pl))                         # back below b: still failed (V = 0)
-    d, V = NM.zero_length_spring(30000043, 3)
-    assert V == 0.0 and abs(d) < sh.theta_y + sh.b_pl
-    assert "1 past b (shear strength lost)" in RN.link_state_note(hinges)
+    assert V == pytest.approx(sh.c_res * sh.Vp_kip, rel=1e-6)
+    assert "1 past b (beyond the valid modelling range; residual strength c Vp kept)" in RN.link_state_note(hinges, peak)
+    to(0.5 * sh.theta_y)                                               # back near the origin
+    assert "0 past b" in RN.link_state_note(hinges) or RN.link_state_note(hinges) == ""   # the last state forgets ...
+    note = RN.link_state_note(hinges, peak)                            # ... the record peak does not (NL-R2-34)
+    assert "over the record (peak): 1 of 1 reached" in note and "1 past b" in note
+    assert peak[30000043] > sh.b_pl and signed[30000043][0] > sh.b_pl and signed[30000043][1] < -sh.a_pl
 
 
 def _one_link_level(analysis):
