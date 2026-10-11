@@ -22,6 +22,7 @@ from pushover import hinge_models as HM
 from . import model as MD
 from . import drift as DR
 from . import ground_motions as GM
+from . import brace_fracture as BF
 
 G_IN = 386.4
 
@@ -415,6 +416,18 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
         alg_damp = dict(integrator="HHT", alpha=0.9, xi_T1=hht_algorithmic_damping(0.9, dt_max, T1),
                         xi_02T1=hht_algorithmic_damping(0.9, dt_max, 0.2 * T1))
     ops.analysis("Transient")
+
+    def _rebuild_analysis():
+        # NL-R2-20 (round 4): the same analysis on a domain that lost a fractured brace's elements and nodes (wipe and
+        # re-create: OpenSees' UmfPack SOE cannot shrink on a domainChange; the integrator re-reads the committed state)
+        ops.wipeAnalysis()
+        ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
+        ops.test("NormDispIncr", tol, 30, 0); ops.algorithm("Newton")
+        if integrator == "newmark":
+            ops.integrator("Newmark", 0.5, 0.25)
+        else:
+            ops.integrator("HHT", 0.9)
+        ops.analysis("Transient")
     dt = dt_max                                                   # Path series interpolates the record; dt_max ~ T_lower/15
     dt_cur = dt_max; n_ok_since_cut = 0; consec_fail = 0; crawl = 0; n_fallback = 0; dt_floor = dt_max / 32.0; dt_min_used = dt_max
     next_rec = rec_every * dt_max; next_hist = 5 * dt_max                 # time-based recording (the step is adaptive)
@@ -443,6 +456,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     frames_hinge = []
     masters = [m for k, z, m, s in lv]
     braces = [t for t in hz if hinges[t]["kind"] == "brace"]
+    frac = BF.FractureMonitor(hinges, _rebuild_analysis)                             # NL-R2-20 (round 4): fractured-through braces leave the model
     n_rec = len(ax)
     n_nominal = max(1, int(math.ceil(t_end / dt_max)))
     step_budget = int(step_budget_factor * n_nominal) if step_budget_factor else 0
@@ -489,6 +503,12 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             if dt_cur < dt_max and n_ok_since_cut >= 8:                  # grow back towards the nominal step
                 dt_cur = min(dt_max, dt_cur * 2); n_ok_since_cut = 0
         step += 1
+        if frac.braces:
+            for ev in frac.check(t + toff):
+                if verbose:
+                    print("[nlrha]   t=%.3f s: brace %d (%s, z %.0f in) fractured through at segment %d/%d section %d%s -- removed from the model"
+                          % (ev["t"], ev["brace"], ev["section"], ev["z"], ev["segment"], ev["n_segments"], ev["ip"],
+                             "" if ev["n_units"] == 1 else " (X half %d of %d)" % (ev["unit"] + 1, ev["n_units"])), flush=True)
         for b in ebf_br:                                            # NL-R2-22: EBF brace axial envelope (every step)
             nb = _truss_axial(b); ev = ebf_env[b]
             if nb > ev["Pt"]:
@@ -557,6 +577,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                 brace_hist.append((d[0] if d else 0.0, HM.brace_axial_force(sample_brace, hinges[sample_brace])))   # NL-10: physical-theory braces
     if status == "nonconvergence":                                  # NL-R2-22: say when the EBF links have lost strength
         reason += link_state_note(hinges)
+    reason += frac.summary()                                        # NL-R2-20 (round 4): '' unless a brace fractured through
     # residual drift (structure at rest after free vibration) -- only meaningful when the record completed
     if status == "completed":
         disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
@@ -580,11 +601,13 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                hinges_meta={t: dict(kind=hinges[t]["kind"], section=hinges[t]["section"], z=hinges[t]["z"], ele=hinges[t]["ele"], end=hinges[t]["end"],
                                     rbs_offset_in=hinges[t].get("rbs_offset_in")) for t in hz},     # NL-R2-16: hinge offset for the Emc beam shear
                specs={t: hinges[t]["spec"] for t in hz}, heights=H, stats=stats)
+    if frac.events:                                                 # NL-R2-20 (round 4)
+        out["brace_fractures"] = frac.events
     if verbose:
         print("[nlrha] %-40s sf=%.2f  %s  steps=%d fails=%d fallback=%d  max drift X %.2f%% Y %.2f%%  roof %.1f/%.1f in  (%.0f s)%s"
               % (out["label"][:40], sf, {"completed": "ok ", "nonconvergence": "NC ", "incomplete": "INC"}[status], step, fails, n_fallback,
                  100 * peak_drift[:, 0].max(), 100 * peak_drift[:, 1].max(), peak_roof[0], peak_roof[1], out["seconds"],
-                 "" if status == "completed" else "  -- " + reason))
+                 "" if (status == "completed" and not frac.events) else "  -- " + reason))
     return out
 
 

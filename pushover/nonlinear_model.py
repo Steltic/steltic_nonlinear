@@ -865,10 +865,22 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
     cr = g["cross"].get(tag)
     ptp = (prm.get("brace_axial") or {}).get("physical_theory") or {}
     c = dict(n=0, e=0, z=0, s=0, A=A_in2, pin_factor=float(ptp.get("pin_stiffness_factor", 1000.0)))
+    units = []                                                    # NL-R2-20 (round 4): what a through-fracture removes
+
+    def unit(gA, pA, gB, pB, eA, eB, sign, pinA, pinB):
+        z0 = c["z"]
+        sg, ch = _pt_unit(tag, c, gA, pA, gB, pB, eA, eB, sign, w, fp["camber"], nseg, st, tr, tr_rigid, etype, mL,
+                          pinA, pinB, ax, yv)
+        # the chain's own nodes (an unpinned chain end is the X-crossing node, shared with the other half): removed
+        # with the segments and the pin springs; the gusset end zones (rigid stubs on the frame) stay
+        own = ch[(0 if pinA else 1):(len(ch) if pinB else len(ch) - 1)]
+        units.append(dict(segs=list(sg), pins=[PT_ZL_BASE + tag * 100 + k for k in range(z0 + 1, c["z"] + 1)],
+                          nodes=list(own), ends=(gA, gB)))
+        return sg, ch
+
     if cr is None:
         Lcl = min(Lc, L); ez = 0.5 * (L - Lcl)
-        segs, chain = _pt_unit(tag, c, e["n1"], p1, e["n2"], p2, ez, ez, 1.0, w, fp["camber"], nseg, st, tr,
-                               tr_rigid, etype, mL, True, True, ax, yv)
+        segs, chain = unit(e["n1"], p1, e["n2"], p2, ez, ez, 1.0, True, True)
         geom = "single: clear length %.0f in of %.0f in (%s), end zones %.0f in" % (Lcl, L, lc_src, ez)
     else:
         # X connected at the crossing: this diagonal's own crossing node, translations tied to the partner's
@@ -881,10 +893,8 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
             ops.equalDOF(pn, xn, 1, 2, 3)
         s = cr["s"]; L1 = s * L; L2 = (1 - s) * L
         e1 = max(0.0, L1 - min(Lc, L1)); e2 = max(0.0, L2 - min(Lc, L2))
-        segs1, ch1 = _pt_unit(tag, c, e["n1"], p1, xn, X, e1, 0.0, 1.0, w, fp["camber"], nseg, st, tr,
-                              tr_rigid, etype, mL, True, False, ax, yv)
-        segs2, ch2 = _pt_unit(tag, c, xn, X, e["n2"], p2, 0.0, e2, -1.0, w, fp["camber"], nseg, st, tr,
-                              tr_rigid, etype, mL, False, True, ax, yv)
+        segs1, ch1 = unit(e["n1"], p1, xn, X, e1, 0.0, 1.0, True, False)
+        segs2, ch2 = unit(xn, X, e["n2"], p2, 0.0, e2, -1.0, False, True)
         segs, chain = segs1 + segs2, ch1 + ch2[1:]
         geom = "X crossing at s=%.2f with brace %d: halves %.0f / %.0f in, clear %.0f / %.0f in (%s)" % (
             s, cr["partner"], L1, L2, L1 - e1, L2 - e2, lc_src)
@@ -893,7 +903,8 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
     ops.uniaxialMaterial("Elastic", mat, 1.0e-6)
     ops.element("corotTruss", tag, e["n1"], e["n2"], 1.0, mat)  # deformation monitor (no stiffness)
     hinges[tag] = _brace_hinge(e, sec, p1, p2, spec, mat, E_KSI_AL(spec), form="physical_theory", force_ele=segs[0],
-                               segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"], geometry=geom, Lc=Lc)
+                               segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"], geometry=geom, Lc=Lc,
+                               pt_units=units, nip=max(3, fp["nip"]))
     stats["brace_physical_theory"] = stats.get("brace_physical_theory", 0) + 1
     stats.setdefault("pt_ele_tags", []).extend(segs)
     stats.setdefault("pt_geometry", []).append(geom + "; pin springs %s kip/in" % "/".join("%.3g" % k for k in c.get("pin_k", [])))

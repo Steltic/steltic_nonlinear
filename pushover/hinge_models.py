@@ -1214,6 +1214,8 @@ def brace_axial_force(tag: int, h: dict) -> float:
     (h['force_ele'] set), the basic axial force of its first fibre segment (the registered tag is a zero-stiffness
     monitor truss that only measures the end-to-end deformation)."""
     import openseespy.opensees as ops
+    if h.get("fractured"):                      # NL-R2-20 (round 4): fractured through, fibre chain removed (nlrha.brace_fracture)
+        return 0.0
     if h.get("force_ele"):
         f = ops.eleResponse(h["force_ele"], "basicForce")
         return f[0] if f else 0.0
