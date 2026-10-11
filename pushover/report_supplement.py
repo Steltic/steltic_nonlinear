@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from . import params_schema as _PS, performance as _PF
+from . import params_schema as _PS, performance as _PF, postprocess as _PP
 
 CSS = """
 body{font-family:Georgia,'Times New Roman',serif;max-width:1050px;margin:32px auto;padding:0 20px;color:#1b1b1b;line-height:1.45}
@@ -145,6 +145,50 @@ def _tag(ok, txt_ok="PASS", txt_ng="NG"):
     return '<span class="ok">%s</span>' % txt_ok if ok else '<span class="ng">%s</span>' % txt_ng
 
 
+def _sle_json(sle):
+    """NL-R2-35: the strength-loss events for pushover_package.json (drops with their causes; no per-step arrays)."""
+    if not sle:
+        return None
+    keep = ("step", "u_in", "ele", "kind", "section", "z_in", "brb", "why", "force_before", "force_after", "deformation", "b")
+    return dict(drop_frac=sle.get("drop_frac"), loss_frac=sle.get("loss_frac"), n_drops=sle.get("n_drops"),
+                n_unattributed=sle.get("n_unattributed"), text=sle.get("text"),
+                drops=[{k: v for k, v in d.items() if k != "causes"} | {"causes": [{k: c.get(k) for k in keep} for c in d["causes"]]}
+                       for d in sle.get("drops") or []],
+                n_component_losses=len(sle.get("losses") or []))
+
+
+def _strength_loss_html(sle, hinge_stats):
+    """NL-R2-35: attribute every single-step drop of the capacity curve (>= 5 % of Vmax) to the components that lost their
+    strength in that step, so a fibre run whose beams/columns cannot degrade never shows an unexplained drop."""
+    if not sle or not sle.get("drops"):
+        return ""
+    fibre = (hinge_stats or {}).get("plasticity") == "fibre"
+    H = ["<h3>Strength-loss events on the capacity curve</h3>",
+         "<p>Every step in which the base shear fell by %.0f%% of V<sub>max</sub> or more, with the components whose force collapsed "
+         "(to below %.0f%% of their own peak) in that same step.%s</p>"
+         % (100 * sle["drop_frac"], 100 * sle["loss_frac"],
+            " Fibre beams and columns cannot lose strength in this model; the drops come from the components listed (BRBs / EBF "
+            "links past b are removed by their MinMax wrapper, AISC 342-22 E3.2b(c) and Table C3.3 / C2.4) and from the drift "
+            "they concentrate in their storey (P-Δ). Drops past V<sub>max</sub> govern α<sub>2</sub> (Figure 7-3), μ<sub>max</sub> "
+            "and δ<sub>u</sub> / μ<sub>T</sub>, not δ<sub>t</sub> or the acceptance checks before them." if fibre else ""),
+         "<table><tr><th>Step</th><th>Roof u (in)</th><th>V (kip)</th><th>ΔV / V<sub>max</sub></th><th>Cause</th></tr>"]
+    for d in sle["drops"]:
+        if d["causes"]:
+            cause = "<br>".join("%s %s %s%s: force %s → %s kip" % ("BRB" if c.get("brb") else c.get("kind"), c.get("ele"), c.get("section") or "",
+                                                                   (" (top z = %.0f in)" % c["z_in"]) if isinstance(c.get("z_in"), (int, float)) else "",
+                                                                   _f(c.get("force_before"), 0), _f(c.get("force_after"), 0))
+                                for c in d["causes"][:8]) + ("<br>+%d more" % (len(d["causes"]) - 8) if len(d["causes"]) > 8 else "") \
+                + "<br><span class='note'>%s</span>" % d["causes"][0]["why"] \
+                + ("<br><span class='warn'>%s</span>" % (_PP.MULTI_LEVEL_NOTE % d["n_levels"]) if d.get("multi_level") else "")
+        else:
+            cause = ("<span class='warn'>NOT attributed</span> — no component lost its strength in this step: drift concentration "
+                     "after an earlier loss, P-Δ, or a numerical jump to another equilibrium branch. Inspect before using α<sub>2</sub> / δ<sub>u</sub>.")
+        H.append("<tr><td>%d</td><td>%.2f → %.2f</td><td>%.0f → %.0f</td><td>%.0f%%</td><td>%s</td></tr>"
+                 % (d["step"], d["u_from"], d["u_to"], d["V_from"], d["V_to"], 100 * d["frac_Vmax"], cause))
+    H.append("</table>")
+    return "\n".join(H)
+
+
 def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s, pending=()):
     """`pending` (NL-R2-14): directions still running -- the files are written after each direction and marked
     PARTIAL until the last one is in (pushover_package.json: complete / directions_pending)."""
@@ -226,6 +270,7 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
         H.append('<figure><img src="%s"><figcaption>Figure. Base shear vs roof displacement, bilinear idealisation to Δ<sub>d</sub> = min(δ<sub>t</sub>, Δ at V<sub>max</sub>) (ASCE 41-23 §7.4.3.2.5, Figure 7-3) '
                  'and target displacements for BSE-1N (design) and BSE-2N (MCE<sub>R</sub>). Run stopped: %s.</figcaption></figure>'
                  % (fig_capacity(run, R["nsp"], R["p695"]), run["stop_reason"]))
+        H.append(_strength_loss_html(R.get("strength_loss"), hinge_stats))      # NL-R2-35
         H.append("<p>Load pattern: mode %d of the hinge model (T<sub>1</sub> = %.3f s, %.0f%% of mass in %s); lateral force at each level "
                  "∝ m<sub>k</sub>φ<sub>k</sub> (§7.4.3.2.3). Control node: roof diaphragm master.</p>"
                  % (run["pattern"]["mode"], run["pattern"]["T1"], 100 * run["pattern"]["meff_frac"], d))
@@ -377,7 +422,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
         pk["directions"][d] = dict(T1=run["pattern"]["T1"], mode=run["pattern"]["mode"], meff_frac=run["pattern"]["meff_frac"],
                                    stop_reason=run["stop_reason"], tail=run.get("tail"), curve_u_in=[round(x, 4) for x in run["rec"]["u"]],
                                    curve_V_kip=[round(x, 2) for x in run["rec"]["V"]], nsp=R["nsp"], p695=R["p695"],
-                                   acceptance={k: {kk: vv for kk, vv in a.items()} for k, a in R["acc"].items()})
+                                   acceptance={k: {kk: vv for kk, vv in a.items()} for k, a in R["acc"].items()},
+                                   strength_loss_events=_sle_json(R.get("strength_loss")))
         with open(os.path.join(outdir, "curve_%s.csv" % d), "w") as f:
             f.write("roof_disp_in,base_shear_kip\n" + "\n".join("%.5f,%.3f" % (u, V) for u, V in zip(run["rec"]["u"], run["rec"]["V"])))
     tmp = os.path.join(outdir, "pushover_package.json.tmp")

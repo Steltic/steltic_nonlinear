@@ -1037,6 +1037,22 @@ def _link_mass_balance(pkg, ctx, stats):
     _note(stats, "EBF links: own mass %.4f kip-s2/in (%.1f kip) placed on the link nodes and taken off the floor masses" % (moved, moved * G_IN))
 
 
+def fibre_strength_loss_sources(stats, n_buckling=None):
+    """NL-R2-35: the components of a FIBRE model that do lose strength (the fibre beams/columns never do):
+    BRBs -- strength lost beyond b (AISC 342-22 E3.2b(c): Figure C1.1 with the C3 parameters, post-peak beyond b down to a
+    near-zero residual; here MinMax at Delta_y + b, Table C3.3); EBF link shear springs (Table C2.4, loss beyond b);
+    buckling braces (post-buckling loss on the Table C3.4 backbone, or Steel02 + Fatigue fracture)."""
+    nb = (stats.get("brace_nonlinear", 0) - stats.get("brb", 0)) if n_buckling is None else n_buckling
+    out = []
+    if stats.get("brb"):
+        out.append("BRBs (%d) reaching deformation b (AISC 342-22 Table C3.3, E3.2b(c); removed by their MinMax wrapper)" % stats["brb"])
+    if stats.get("links"):
+        out.append("EBF link shear springs (%d) reaching b (AISC 342-22 Table C2.4; removed by their MinMax wrapper)" % stats["links"])
+    if nb > 0:
+        out.append("buckling braces (%d) after buckling (AISC 342-22 Table C3.4 backbone)" % nb)
+    return out
+
+
 def finish_stats(stats, ctx, prm, plasticity):
     """Census + degradation disclosure common to both builders (NL-02 / NL-03 / NL-10)."""
     links = ctx.get("links") or {}
@@ -1054,16 +1070,30 @@ def finish_stats(stats, ctx, prm, plasticity):
                      "16.4.2.1 against phi Pn (AISC 360-22 E3, design buckling length) / phi Fy Ag" % stats["brace_ebf_elastic"])
     deg = dict(plasticity=plasticity)
     lam_mode = str((HM.param_group(prm, "cyclic_deterioration")[0]).get("mode", "none")).lower()
+    nb = stats.get("brace_nonlinear", 0) - stats.get("brb", 0)
     if plasticity == "fibre":
-        deg["members"] = ("NONE: fibre forceBeamColumn sections are Steel01 with 1% hardening -- no local buckling, no in-cycle or "
-                          "cyclic strength degradation, no fracture; the capacity curve has no member-level strength loss, so Vmax, "
-                          "Omega and mu_T are upper/lower bounds respectively")
-        _note(stats, "FIBRE NSP: member strength degradation is NOT modelled (no local buckling / fracture in the fibres); "
-                     "use --plasticity imk for the AISC 342 backbones with post-capping strength loss")
+        # NL-R2-35: the fibre beams/columns never lose strength, but BRBs / EBF link springs (MinMax at b) and buckling braces
+        # (Table C3.4 backbone) do -- the curve can drop, and each drop is attributed (postprocess.strength_loss_events).
+        losers = fibre_strength_loss_sources(stats, nb)
+        if losers:
+            deg["members"] = ("beams / columns: NONE -- fibre forceBeamColumn sections are Steel01 with 1%% hardening (no local "
+                              "buckling, no in-cycle or cyclic strength degradation, no fracture). The capacity curve CAN still lose "
+                              "strength, through %s and P-Delta; every single-step drop is attributed in the report (strength-loss "
+                              "events). Without beam/column degradation, Vmax and Omega are upper bounds and delta_u / mu_T may be "
+                              "overestimated" % "; ".join(losers))
+            _note(stats, "FIBRE NSP: beam/column strength degradation is NOT modelled (no local buckling / fracture in the fibres); "
+                         "the capacity curve still loses strength through %s -- each drop is attributed in the report (strength-loss "
+                         "events); use --plasticity imk for the AISC 342 beam/column backbones with post-capping strength loss"
+                  % "; ".join(losers))
+        else:
+            deg["members"] = ("NONE: fibre forceBeamColumn sections are Steel01 with 1% hardening -- no local buckling, no in-cycle or "
+                              "cyclic strength degradation, no fracture; the capacity curve has no member-level strength loss, so Vmax, "
+                              "Omega and mu_T are upper/lower bounds respectively")
+            _note(stats, "FIBRE NSP: member strength degradation is NOT modelled (no local buckling / fracture in the fibres); "
+                         "use --plasticity imk for the AISC 342 backbones with post-capping strength loss")
     else:
         deg["members"] = ("IMK hinges: in-cycle post-capping strength loss to c*My per the AISC 342 backbone; cyclic (energy-based) "
                           "deterioration %s" % ("ON (cyclic_deterioration.mode=%s)" % lam_mode if lam_mode not in ("none", "off") else "OFF"))
-    nb = stats.get("brace_nonlinear", 0) - stats.get("brb", 0)
     if nb > 0:
         deg["braces"] = ("physical-theory fibre braces with Steel02 + Fatigue: buckling, cyclic degradation and low-cycle-fatigue "
                          "fracture (%d braces)" % stats.get("brace_physical_theory", 0)) if stats.get("brace_physical_theory") else \

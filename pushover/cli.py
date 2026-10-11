@@ -66,7 +66,8 @@ def _direction_results(pkg, prm, run, hinges, site_class):
     nsp = {lvl: PP.nsp_target(run, pkg.basis, prm, f, site_class) for lvl, f in prm["nsp"]["hazard_levels"].items()}
     p695 = PP.p695_factors(run, pkg.basis, nsp["BSE-1N"])
     acc = {lvl: PF.augment(PP.acceptance(run, hinges, n["target_disp_in"], lvl, prm=prm), run, hinges) for lvl, n in nsp.items()}
-    return dict(nsp=nsp, p695=p695, acc=acc, hinges=hinges)
+    sle = PP.strength_loss_events(run, hinges)                    # NL-R2-35: what made the curve drop
+    return dict(nsp=nsp, p695=p695, acc=acc, hinges=hinges, strength_loss=sle)
 
 
 def _print_direction(pkg, d, run, R):
@@ -93,6 +94,9 @@ def _print_direction(pkg, d, run, R):
              nsp["BSE-1N"]["nsp_status_text"]))
     print("  [%s P-695] Vmax=%.0f kip Omega=%s (Om0=%s) mu_T=%.2f (%s)" % (d, p695["Vmax_kip"], "%.2f" % p695["Omega"] if p695["Omega"] else "n/a",
                                                                       p695.get("Omega0_design", pkg.basis.Om0), p695["mu_T"], p695["delta_u_basis"]))     # NL-R2-17: per direction
+    sle = R.get("strength_loss") or {}
+    for line in sle.get("text") or []:                             # NL-R2-35
+        print("  [%s DROP] %s" % (d, line))
     t = run["tail"]
     print("  [%s TAIL] status=%s tried=%s max(theta_pl/a)=%.2f max(theta_pl/b)=%.2f -- %s" % (d, t["status"], [x["strategy"] for x in t["tried"]],
           run["rec"]["a_ratio"][-1], run["rec"]["b_ratio"][-1], t["message"]))
