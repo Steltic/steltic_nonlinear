@@ -148,6 +148,24 @@ def _hinge_row(group, u, kind):
     return txt[:300] + " -- " + _run_text(u, kind)
 
 
+def _minor_axis_text(cf, u):
+    """NL-R2-32: how the minor axis of concentrated-hinge columns is modelled -- the run's census when on file, else what
+    the parameter file would build (column_flexure.minor_axis_hinge, default true)."""
+    from pushover import hinge_models as HM
+    st = u.get("nls") or u.get("pos") or {}
+    if st.get("plasticity") == "fibre":
+        return "; minor axis: fibre sections yield about both axes"
+    on = str(st["column_minor_axis"]).startswith("hinge") if st.get("column_minor_axis") else HM.minor_axis_hinge_on(dict(column_flexure=cf))
+    if not on:
+        return ("; minor axis of IMK columns ELASTIC (column_flexure.minor_axis_hinge = false): minor moments above M_CE,y are "
+                "flagged in the 16.4.2.1 column check (yielding not represented, 16.3.1)")
+    n = st.get("col_minor_hinges")
+    return ("; minor axis of IMK columns: an independent uniaxial spring per axis at each hinged end%s -- M_CE = Mpcey (AISC 342-22 "
+            "Eqs. C3-7/C3-8 for W shapes, C3-5/C3-6 with Mpey for HSS), theta_y by Eq. C3-15 with Iy, a/b/c and IO/LS/CP of Table C3.6 "
+            "(not axis-specific); no biaxial interaction in the springs; minor-axis rotations get the same deformation acceptance; "
+            "switch off with column_flexure.minor_axis_hinge = false" % ((" (%s springs as built)" % n) if n is not None else ""))
+
+
 def _lambda_text(ls):
     if not ls:
         return ""
@@ -320,7 +338,8 @@ def content(g, project=None, engineer=None, reviewer=None):
           "component parameters material.Fy_ksi / Ry_expected (AISC 342 A5.2)"],
          ["Beam hinges", _hinge_row(bf, u, "beam") if u["n_beam"] else "no beams in the package schedule", "AISC 342 Table C5.5 / C2.2"],
          ["Adjustments to beam hinges", adj, "AISC 342 C5.4a.1.a.1"],
-         ["Column hinges", _hinge_row(cf, u, "col") if u["n_col"] else "no columns in the package schedule", "AISC 342 Table C3.6"],
+         ["Column hinges", (_hinge_row(cf, u, "col") + _minor_axis_text(cf, u)) if u["n_col"] else "no columns in the package schedule",
+          "AISC 342 Table C3.6; C3.4a.2 (Mpcey)"],
          ["Braces", brace_txt, "AISC 342 Table C3.4 / Commentary C3"],
          *([["Buckling-restrained braces", "%d BRBs in the package; AISC 342 Table C3.3 backbone, core strength (F_ysc, omega, beta, R_y) from the parameter file or the HR package%s"
              % (u["n_brb"], ("; NLRHA built %s BRB elements" % u["nls"]["brb"]) if (u["nls"] or {}).get("brb") is not None else "; NLRHA not run"), "AISC 342 Table C3.3 / AISC 341 F4.2a"]] if u["n_brb"] else []),

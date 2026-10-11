@@ -116,6 +116,8 @@ def _column_info(pkg, hinges, stats, PG=None, prm=None):
         slot = NM.strong_I_slot(pkg, e, "col")
         maj = (5, 11) if slot == "Iz" else (4, 10); mnr = (4, 10) if slot == "Iz" else (5, 11)
         ends = {h["end"] for h in hinges.values() if h.get("ele") == c and h.get("kind") == "col"}
+        maj_ends = {h["end"] for h in hinges.values() if h.get("ele") == c and h.get("kind") == "col" and h.get("axis") != "minor"}
+        min_ends = {h["end"] for h in hinges.values() if h.get("ele") == c and h.get("kind") == "col" and h.get("axis") == "minor"}
         fc_col = False
         sec = pkg.schedule.get(c, {}).get("section")
         if sec and prm is not None:
@@ -125,7 +127,9 @@ def _column_info(pkg, hinges, stats, PG=None, prm=None):
             except Exception:                                       # noqa: BLE001
                 fc_col = False
         cls = "force" if fc_col else "deformation"
-        modelled = dict(major=("fibre" if fibre else ("hinge" if ends else "elastic")), minor=("fibre" if fibre else "elastic"))
+        # NL-R2-32: IMK columns carry a minor-axis spring too unless column_flexure.minor_axis_hinge = false
+        modelled = dict(major=("fibre" if fibre else ("hinge" if maj_ends else "elastic")),
+                        minor=("fibre" if fibre else ("hinge" if min_ends else "elastic")))
         try:                                                        # proxy strengths, only to pick the concurrent instants
             from pushover import sections_db as SDB
             pp = SDB.props(sec); Fye = float(((prm or {}).get("material") or {}).get("Fy_ksi", 50.0)) * float(((prm or {}).get("material") or {}).get("Ry_expected", 1.1))
@@ -550,7 +554,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                     else:
                         v = 0.0
                 else:
-                    th, M = NM.zero_length_spring(tg, h["dof"])      # spring force = node-2 force (sign fix)
+                    th, M = NM.zero_length_spring(h.get("zl", tg), h["dof"])      # spring force = node-2 force (sign fix); NL-R2-32 minor key -> its zeroLength
                     v = th - M / K0[tg]
                 peak_def[tg] = max(peak_def[tg], abs(v))
                 p, n = signed_def[tg]; signed_def[tg] = (max(p, v), min(n, v))
@@ -599,7 +603,8 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                frames=dict(t=frames_t, story=frames_story, brace_tags=braces, brace=frames_brace, ag=frames_ag,
                            hinge_tags=list(hz), hinge=frames_hinge, masters=masters),
                hinges_meta={t: dict(kind=hinges[t]["kind"], section=hinges[t]["section"], z=hinges[t]["z"], ele=hinges[t]["ele"], end=hinges[t]["end"],
-                                    rbs_offset_in=hinges[t].get("rbs_offset_in")) for t in hz},     # NL-R2-16: hinge offset for the Emc beam shear
+                                    rbs_offset_in=hinges[t].get("rbs_offset_in"), **({"axis": hinges[t]["axis"]} if hinges[t].get("axis") else {}))
+                            for t in hz},     # NL-R2-16: hinge offset for the Emc beam shear; NL-R2-32: column minor-axis springs
                specs={t: hinges[t]["spec"] for t in hz}, heights=H, stats=stats)
     if frac.events:                                                 # NL-R2-20 (round 4)
         out["brace_fractures"] = frac.events

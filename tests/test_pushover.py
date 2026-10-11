@@ -28,7 +28,10 @@ def test_short_push():
     loads, table = NM.gravity_loads(pkg, prm)
     PG = NM.column_gravity_axials(pkg, loads)
     hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False, plasticity="imk")
-    assert len(hinges) == 660 and stats["col"] == 210 and stats["beam"] == 348 and stats["released_ends"] == 456  # Ex22: pinned gravity framing
+    # Ex22: pinned gravity framing; NL-R2-32: + one minor-axis spring per hinged column end (2 x 210)
+    assert len(hinges) == 660 + 420 and stats["col_minor_hinges"] == 420
+    assert sum(1 for h in hinges.values() if h.get("axis") != "minor") == 660
+    assert stats["col"] == 210 and stats["beam"] == 348 and stats["released_ends"] == 456
     run = NM.pushover(pkg, hinges, "X", loads, prm, max_roof_drift=0.004, verbose=False, gravity_table=table)
     assert run["rec"]["V"][-1] > 1000 and 0.8 < run["pattern"]["T1"] < 1.1
 
@@ -43,7 +46,7 @@ def test_panel_zones_default_rigid():
     hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False, plasticity="imk")
     assert stats.get("panel_zone_mode", "rigid") == "rigid"
     assert stats.get("panel_zones", 0) == 0
-    assert len(hinges) == 660
+    assert len(hinges) == 660 + stats["col_minor_hinges"] and stats["col_minor_hinges"] == 420     # NL-R2-32
 
 
 def test_panel_zones_scissors_builds():
@@ -62,7 +65,7 @@ def test_panel_zones_scissors_builds():
     hinges, stats = NM.build_nonlinear(pkg, prm, PG, verbose=False, plasticity="imk")
     assert stats["panel_zone_mode"] == "scissors"
     assert stats["panel_zones"] == len(plan)
-    assert len(hinges) == 660  # IMK/brace registry unchanged; PZ kept in stats registry
+    assert len(hinges) == 660 + 420  # IMK/brace registry unchanged (+ NL-R2-32 minor-axis springs); PZ kept in stats registry
     assert len(stats["panel_zone_registry"]) == stats["panel_zones"]
     sample = next(iter(stats["panel_zone_registry"].values()))
     assert sample["specs"][0]["K_theta"] > 0

@@ -255,10 +255,15 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
         H.append("<p>Model converted from <code>model_opensees.py</code>: %d nodes, %d elements → %d concentrated plastic hinges "
                  "(%d columns, %d beams, %d force-controlled columns without hinge, %d released ends kept pinned). Column P-Δ transforms and "
                  "rigid diaphragms retained from the linear model; hinge springs K<sub>0</sub> = 10·6EI/L with interior stiffness ×11/10; "
-                 "panel zones <code>%s</code>%s.</p>"
+                 "panel zones <code>%s</code>%s. Column minor axis: %s.</p>"
                  % (len(pkg.model.nodes), len(pkg.model.elements), sum(len(r["hinge_tags"]) for r in runs.values()) // max(len(runs), 1),
                     hinge_stats["col"], hinge_stats["beam"], hinge_stats["force_controlled"], hinge_stats["released_ends"],
-                    _pz, (" (%d FR joints)" % _npz) if str(_pz).lower() == "scissors" else ""))
+                    _pz, (" (%d FR joints)" % _npz) if str(_pz).lower() == "scissors" else "",
+                    # NL-R2-32
+                    ("%d independent uniaxial minor-axis springs (AISC 342-22 M<sub>pcey</sub> Eqs. C3-7/C3-8 for W shapes, C3-5/C3-6 "
+                     "with M<sub>pey</sub> for HSS; Table C3.6 a/b/c; included in the hinge count)" % hinge_stats.get("col_minor_hinges", 0))
+                    if str(hinge_stats.get("column_minor_axis", "hinge")).startswith("hinge") else
+                    "ELASTIC (column_flexure.minor_axis_hinge = false)"))
     H.append("<h3>Gravity load present during the push: %s</h3><table><tr><th>Level</th><th>z (in)</th><th>Q<sub>D</sub> (kip)</th>"
              "<th>0.25 Q<sub>L</sub> (kip)</th><th>Q<sub>G</sub> applied (kip)</th><th>column nodes</th><th>footprint (ft²)</th></tr>" % prm["gravity_for_pushover"]["expr"])
     for r in gravity_table:
@@ -352,7 +357,7 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
                 if g["n_yielded"] == 0 and g["theta_pl_max"] < 1e-4:
                     continue
                 H.append("<tr><td>%s</td><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.4f</td><td>%.2f</td><td>%.2f</td><td>%.2f</td><td><b>%.2f</b></td></tr>"
-                         % ("BRB" if g.get("brb") else ("link (shear, in)" if g["kind"] == "link" else g["kind"]), g["section"], g["z_in"], g["n"], g["n_yielded"], g["theta_pl_max"], g["IO"], g["LS"], g["CP"], g.get(perf) or 0.0,
+                         % ("BRB" if g.get("brb") else ("link (shear, in)" if g["kind"] == "link" else g["kind"] + (" (%s axis)" % g["axis"] if g.get("axis") else "")), g["section"], g["z_in"], g["n"], g["n_yielded"], g["theta_pl_max"], g["IO"], g["LS"], g["CP"], g.get(perf) or 0.0,
                             g["DC_IO"], g["DC_LS"], g["DC_CP"], g.get("DC_" + perf) or 0.0))
             H.append("</table>")
             H.append('<figure><img src="%s"><figcaption>Mechanism census at %s — a beam-hinging (strong-column) mechanism shows blue bars at every level and red '

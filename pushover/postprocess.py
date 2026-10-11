@@ -488,7 +488,7 @@ def _census_drifts(run, hinges, i):
             lim = dict(IO=s.IO, LS=s.LS, CP=s.CP)
         dc = {k: (th / v if v > 0 else float("nan")) for k, v in lim.items()}
         yielded = (th > 0.5 * s.theta_y) if h["kind"] != "brace" else (th > (s.dc if pl[j] < 0 else s.dT))
-        key = (h["kind"], h["section"], round(h["z"]))
+        key = (h["kind"], h["section"], round(h["z"]), h.get("axis"))          # NL-R2-32: column minor-axis springs apart
         brb = bool(h.get("brb")) or bool(getattr(s, "Asc", 0.0))
         mon = h.get("form") or ("axial" if h["kind"] == "brace" else "zeroLength")
         if brb:
@@ -498,7 +498,8 @@ def _census_drifts(run, hinges, i):
         g = groups.setdefault(key, dict(kind=h["kind"], section=h["section"], z_in=round(h["z"]), n=0, n_yielded=0,
                                           theta_pl_max=0.0, IO=s.IO, LS=s.LS, CP=s.CP, DC_IO=0.0, DC_LS=0.0, DC_CP=0.0,
                                           monitor=mon, brb=brb,
-                                          units=("in" if h["kind"] in ("brace", "link") else "rad")))
+                                          units=("in" if h["kind"] in ("brace", "link") else "rad"),
+                                          **({"axis": h["axis"]} if h.get("axis") else {})))
         g["n"] += 1; g["n_yielded"] += int(yielded)
         # Group D/C = the largest D/C of its members, each against ITS OWN limits. The members of one
         # (kind, section, level) group can carry different limits (columns: Table C3.6 a/b vary with P_G/P_ye;
@@ -529,7 +530,7 @@ def _census_drifts(run, hinges, i):
             c["link_hinges"] += 1; c["link_yielded"] += int(yielded)
         else:
             c["col_hinges"] += 1; c["col_yielded"] += int(yielded)
-    table = sorted(groups.values(), key=lambda g: (g["kind"], g["z_in"]))
+    table = sorted(groups.values(), key=lambda g: (g["kind"], g["z_in"], g.get("axis") or ""))
     worst = {k: max((g["DC_" + k] for g in table if g["DC_" + k] == g["DC_" + k]), default=None) for k in ("IO", "LS", "CP")}
     story_u = run["rec"]["story_u"][i]
     drifts, prev = [], 0.0

@@ -4,6 +4,10 @@ Every `elasticBeamColumn` column/beam becomes:  node_i --[zeroLength hinge]-- el
 with the strong-axis rotational spring a ModIMKPeakOriented material (params from hinge_models) and all other
 DOF of the zeroLength rigid. The interior element keeps the ORIGINAL geomTransf (so P-Delta stays on for columns)
 and has its hinged-axis inertia scaled by (n+1)/n, the spring K0 = n*6EI/L (Ibarra & Krawinkler, n = 10).
+Columns (NL-R2-32) also get an independent uniaxial minor-axis IMK spring on the other rotational DOF of the same
+zeroLength (hinge_models.column_hinge_minor: Mpcey per AISC 342-22 C3.4a.2.a.1, Table C3.6 parameters), registered
+under key zl + MINOR_KEY_OFF with h["zl"] = the zeroLength; hinge_params column_flexure.minor_axis_hinge = false
+keeps the minor axis elastic (no spring, the pre-NL-R2-32 model).
 Nodes, fixes, masses and rigid diaphragms are replayed exactly as recorded in model_opensees.py.
 
 Optional panel zones (hinge_params panel_zones.mode): default "rigid" (unchanged). "scissors" inserts a
@@ -61,6 +65,8 @@ PT_SEC_BASE = 97_000_000       # physical-theory brace fibre sections / integrat
 PT_TRANSF_BASE = 9_000_000     # physical-theory brace corotational transforms: + ele
 PT_MAT0 = 47_000_000           # fibre materials of physical-theory braces
 LINK_END = 3                   # link shear spring: node HN_BASE + ele*10 + 3, zeroLength ZL_BASE + ele*10 + 3
+MINOR_KEY_OFF = 4              # NL-R2-32: column minor-axis spring registry key = ZL_BASE + ele*10 + 4 + end (5|6);
+                               # a registry key only -- the spring lives in zeroLength h["zl"] = ZL_BASE + ele*10 + end
 
 
 def _dir_vec(p1, p2):
@@ -244,7 +250,7 @@ def hinge_plastic_deformation(tag, h):
         th = d[jc] if (d and len(d) > jc) else 0.0
         M = f[jc] if (f and len(f) > jc) else 0.0
         return th - M / h["K0"], M
-    th, M = zero_length_spring(tag, h["dof"])
+    th, M = zero_length_spring(h.get("zl", tag), h["dof"])          # NL-R2-32: minor-axis key -> its zeroLength
     return th - M / h["K0"], M
 
 
@@ -1259,6 +1265,17 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
                 hinge_i, hinge_j, beam_side, mat, hinges, stats, verbose=verbose,
             )
             continue
+        # NL-R2-32: minor-axis column springs (AISC 342-22 C3.4a.2: Mpcey, Table C3.6), unless the column's flexure is
+        # force-controlled or column_flexure.minor_axis_hinge = false. Columns carry the minor axis in the Iy slot
+        # (-releasey); a minor-axis release at an end means no minor spring there.
+        spec_mn, mn_i, mn_j, mslot = None, False, False, None
+        if kind == "col" and not spec.force_controlled:
+            spec_mn = HM.column_hinge_minor(sec, L, PG.get(e["tag"], 0.0), prm, major=spec)
+            if spec_mn is not None:
+                mslot = "Iy" if slot == "Iz" else "Iz"
+                mflag = "-releasey" if mslot == "Iy" else "-releasez"
+                rely = int(rel[rel.index(mflag) + 1]) if mflag in rel else 0
+                mn_i = rely not in (1, 3); mn_j = rely not in (2, 3)
         geo = RBS.want_rbs_remesh(kind, sec, hinge_i, hinge_j, prm_m)
         if geo is not None:
             try:
@@ -1271,30 +1288,46 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
                     print("[nonlinear_model] RBS 7-seg fallback ele %s (%s): %s" % (e["tag"], sec, ex))
         # interior elastic element between hinge nodes (or original nodes where no hinge)
         ni, nj = e["n1"], e["n2"]
-        if hinge_i:
+        if hinge_i or mn_i:
             ni = HN_BASE + e["tag"] * 10 + 1; ops.node(ni, *p1)
-        if hinge_j:
+        if hinge_j or mn_j:
             nj = HN_BASE + e["tag"] * 10 + 2; ops.node(nj, *p2)
         args = dict(A=e["A"], E=e["E"], G=e["G"], J=e["J"], Iy=e["Iy"], Iz=e["Iz"])
         if hinge_i or hinge_j:
             args[slot] = I * (N_STIFF + 1.0) / N_STIFF
+        if mn_i or mn_j:                                     # NL-R2-32: same (n+1)/n stiffness split for the minor axis
+            args[mslot] = e[mslot] * (N_STIFF + 1.0) / N_STIFF
         ops.element("elasticBeamColumn", e["tag"], ni, nj, args["A"], args["E"], args["G"], args["J"],
                     args["Iy"], args["Iz"], e["transf"], *rel)
         stats.setdefault("elastic_ele_tags", []).append(e["tag"])
         K0 = N_STIFF * 6.0 * e["E"] * I / L
-        for end, on, no, nn in ((1, hinge_i, e["n1"], ni), (2, hinge_j, e["n2"], nj)):
-            if not on:
+        K0m = N_STIFF * 6.0 * e["E"] * e[mslot] / L if mslot else None
+        pcr = prm.get("numerics", {}).get("post_cap_ratio", 0.15)
+        for end, on, onm, no, nn in ((1, hinge_i, mn_i, e["n1"], ni), (2, hinge_j, mn_j, e["n2"], nj)):
+            if not (on or onm):
                 continue
-            mat += 1
-            HM.make_imk_material(mat, spec, K0, post_cap_ratio=prm.get("numerics", {}).get("post_cap_ratio", 0.15))
             other_rot = 4 if dof == 5 else 5
-            mats = {1: 1, 2: 1, 3: 1, other_rot: 2, 6: 2, dof: mat}
+            mats = {1: 1, 2: 1, 3: 1, other_rot: 2, 6: 2, dof: 2}
+            if on:
+                mat += 1
+                HM.make_imk_material(mat, spec, K0, post_cap_ratio=pcr)
+                mats[dof] = mat; mat_maj = mat
+            if onm:
+                # NL-R2-32: independent uniaxial minor-axis spring in the same zeroLength (no biaxial interaction)
+                mat += 1
+                HM.make_imk_material(mat, spec_mn, K0m, post_cap_ratio=pcr)
+                mats[other_rot] = mat
             zl = ZL_BASE + e["tag"] * 10 + end
             # Scissors: FR beam ends attach to beam-side node; columns stay on the joint (column continuity).
             attach = beam_side[no] if (kind == "beam" and no in beam_side) else no
             ops.element("zeroLength", zl, attach, nn, "-mat", *[mats[k] for k in (1, 2, 3, 4, 5, 6)], "-dir", 1, 2, 3, 4, 5, 6)
-            hinges[zl] = dict(ele=e["tag"], end=end, kind=kind, section=sec, dof=dof, K0=K0, mat=mat,
-                              node=no, z=p1[2] if end == 1 else p2[2], spec=spec)
+            if on:
+                hinges[zl] = dict(ele=e["tag"], end=end, kind=kind, section=sec, dof=dof, K0=K0, mat=mat_maj,
+                                  node=no, z=p1[2] if end == 1 else p2[2], spec=spec)
+            if onm:
+                hinges[zl + MINOR_KEY_OFF] = dict(ele=e["tag"], end=end, kind=kind, section=sec, dof=other_rot, K0=K0m, mat=mat,
+                                                  node=no, z=p1[2] if end == 1 else p2[2], spec=spec_mn, axis="minor", zl=zl)
+                stats["col_minor_hinges"] = stats.get("col_minor_hinges", 0) + 1
         stats[kind] += 1
     # Scissors panel-zone springs at FR joints (after member hinges, before diaphragms).
     # Use a single 6-DOF zeroLength (rigid on non-PZ DOFs + spring on active rot) — NOT equalDOF.
@@ -1345,14 +1378,20 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
         ops.rigidDiaphragm(perp, master, *slaves)
     _pt_mass_balance(pkg, ctx, stats)
     _link_mass_balance(pkg, ctx, stats)                          # NL-R2-22
+    # NL-R2-32: how the minor axis of the concentrated-hinge columns is modelled (reports / 16.1.4 text)
+    stats["column_minor_axis"] = ("elastic (column_flexure.minor_axis_hinge = false)" if not HM.minor_axis_hinge_on(prm) else
+                                  "elastic (L2 ConcentratedPlasticity FBC path: major-axis hinges only)" if FBC.want_fbc(prm) else "hinge")
+    stats.setdefault("col_minor_hinges", 0)
     finish_stats(stats, ctx, prm, "imk")
     if verbose:
         print("[nonlinear_model] hinges: %d  (cols %d, beams %d, brace elements %d of which nonlinear %d [BRB %d, physical-theory %d], "
-              "EBF links %d, force-controlled cols %d, released ends %d, panel_zones %s=%d, rbs7=%d, fbc_cp=%d, elastic_eles=%d)"
+              "EBF links %d, force-controlled cols %d, released ends %d, panel_zones %s=%d, rbs7=%d, fbc_cp=%d, elastic_eles=%d, "
+              "column minor-axis springs %d [%s])"
               % (len(hinges), stats["col"], stats["beam"], stats["brace"], stats["brace_nonlinear"], stats.get("brb", 0),
                  stats.get("brace_physical_theory", 0), stats.get("links", 0), stats["force_controlled"], stats["released_ends"],
                  stats["panel_zone_mode"], stats["panel_zones"], stats.get("rbs_remesh_beams", 0),
-                 stats.get("fbc_cp_members", 0), len(stats.get("elastic_ele_tags") or [])))
+                 stats.get("fbc_cp_members", 0), len(stats.get("elastic_ele_tags") or []),
+                 stats["col_minor_hinges"], stats["column_minor_axis"].split(" ")[0]))
         for w in stats.get("model_warnings") or []:
             print("  !! " + w)
     return hinges, stats

@@ -352,6 +352,68 @@ def column_hinge(section: str, L_in: float, PG_kip: float, prm: dict) -> HingeSp
                      force_controlled=False, PG_over_Pye=r, compact=True, flags=tuple(flags), Lambda=lam, c_det=cdet)
 
 
+# NL-R2-32: minor-axis (y-axis) column hinge of the concentrated-plasticity model.
+# AISC 342-22 C3.4a.2.a.1 (PDF p.73, printed 41): "Mpcey, the expected plastic flexural strength of the section about
+# the minor principal axis (y-axis) at PUF, shall be determined using Equations C3-5 and C3-6, except that Mpey shall be
+# substituted for Mpex. Exception: It is permitted to determine Mpcey for wide-flange sections as follows":
+#   (1 - |P|/(4 Pye)) Mpey for |P|/Pye < 0.4 kappa (Eq. C3-7),  3/2 (1 - |P|/Pye) Mpey otherwise (Eq. C3-8).
+# The two lines cross at |P|/Pye = 0.4, so with kappa = 1 the piecewise form is their minimum (as for the major axis,
+# params_schema.MPCE_AISC342). Mpey = Mn of AISC 360-22 F6 (W) / F7 (HSS) for the limit state of yielding with Fye
+# (AISC 342-22 C2.3a.1 via the Mpey definition "in accordance with Section C2.3a.1"): W Fye min(Zy, 1.6 Sy), HSS Fye Zy.
+MPCE_MINOR_W = "min(1 - PG/(4*Pye), 3/2*(1 - PG/Pye))"
+
+
+def minor_axis_hinge_on(prm: dict) -> bool:
+    """column_flexure.minor_axis_hinge (default True). False -> the minor axis of IMK columns stays elastic (the
+    behaviour before NL-R2-32; the NLRHA force-controlled column check then flags minor moments above M_CE,y)."""
+    v = ((prm or {}).get("column_flexure") or {}).get("minor_axis_hinge", True)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "off", "no", "0", "none", "elastic")
+    return bool(v)
+
+
+def column_hinge_minor(section: str, L_in: float, PG_kip: float, prm: dict, major: HingeSpec = None):
+    """NL-R2-32: the minor-axis (y-axis) flexural hinge of a column, or None (switched off, or the column's flexure
+    is force-controlled / has no Table C3.6 row -- then neither axis gets a hinge).
+
+    AISC 342-22 Table C3.6 ("Columns and Braces Subjected to Flexure with Axial Compression or Tension") has one set of
+    rows for column flexure, not one per axis: a, b, c and IO / LS / CP are functions of the section slenderness
+    (h/tw, bf/2tf, L/ry; HSS wall b/t) and PG/Pye only, and C3.4a.2.b applies them to "columns" -- so the minor axis takes
+    the SAME modelling parameters and permissible rotations as the major axis (and the same Lambda, flagged: the Lignos
+    et al. 2019 regression was fitted to strong-axis tests). What changes per axis: M_CE = Mpcey (C3-7 / C3-8 for W
+    shapes -- the Exception the clause permits; C3-5 / C3-6 with Mpey for HSS, i.e. column_flexure.Mpce_axial_reduction)
+    and theta_y by Eq. C3-15 with Iy. `column_flexure.Mpce_axial_reduction_minor` overrides the W-shape reduction."""
+    if not minor_axis_hinge_on(prm):
+        return None
+    maj = major if major is not None else column_hinge(section, L_in, PG_kip, prm)
+    if maj.force_controlled:
+        return None
+    p = SDB.props(section); cp = prm["column_flexure"]
+    Fye = maj.Fye_ksi
+    Pye = p["A"] * Fye
+    env = dict(PG=max(0.0, PG_kip), Pye=Pye, L=L_in, ry=p["ry"], math=math)
+    if p.get("hss"):                                       # F7 yielding; C3-5 / C3-6 with Mpey (no W-shape exception)
+        expr, basis = cp["Mpce_axial_reduction"], "AISC 342-22 Eqs. C3-5/C3-6 with Mpey"
+        Mpey = Fye * p["Zy"]
+    else:                                                  # F6 yielding: Mp = min(Fy Zy, 1.6 Fy Sy) with Fye
+        expr = cp.get("Mpce_axial_reduction_minor") or MPCE_MINOR_W
+        basis = ("column_flexure.Mpce_axial_reduction_minor" if cp.get("Mpce_axial_reduction_minor")
+                 else "AISC 342-22 Eqs. C3-7/C3-8 (wide-flange Exception, kappa = 1)")
+        Mpey = Fye * min(p["Zy"], 1.6 * p["Sy"])
+    red = eval(expr.replace("PG/Pye", "(PG/Pye)"), {}, env)
+    Mpe = Mpey * red
+    ty = _theta_y(Mpey / Fye, Fye, L_in, p["Iy"], red if cp.get("theta_y_uses_Mpce") else 1 - maj.PG_over_Pye)   # Eq. C3-15, I = Iy
+    flags = tuple(f for f in maj.flags) + (
+        "MINOR (y) axis: Mpcey = %.0f k-in (%s, x%.3f), theta_y = %.4f rad (Eq. C3-15, Iy); a/b/c and IO/LS/CP of AISC "
+        "342-22 Table C3.6 as for the major axis (the table is not axis-specific); independent uniaxial spring per axis "
+        "(no biaxial P-Mx-My interaction in the springs)" % (Mpe, basis, red, ty),)
+    if maj.Lambda:
+        flags += ("minor axis uses the column Lambda %.3f of the strong-axis regression (Lignos et al. 2019) -- "
+                  "no weak-axis regression in the parameter file" % maj.Lambda,)
+    from dataclasses import replace
+    return replace(maj, Mpe_kipin=Mpe, theta_y=ty, flags=flags)
+
+
 def modimk_args(h: HingeSpec, K0: float, post_cap_ratio: float = 0.15) -> list:
     """ModIMKPeakOriented argument list (after the tag). Lambda_S/C/A/K = h.Lambda (0 = no cyclic deterioration;
     NOTE the legacy ModIMK treats Lambda = 0 as 'no deterioration' too), exponents c = h.c_det.

@@ -653,8 +653,9 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
     for r in acc_runs:
         for t, v in r["peak_def"].items():
             meta = r["hinges_meta"][t]; s = r["specs"][t]
-            key = (meta["kind"], meta["section"], round(meta["z"]))
-            g = groups.setdefault(key, dict(kind=meta["kind"], section=meta["section"], z_in=round(meta["z"]), n=0, peaks=[], comp=[], tens=[], lims=[]))
+            key = (meta["kind"], meta["section"], round(meta["z"]), meta.get("axis"))     # NL-R2-32: column minor-axis springs apart
+            g = groups.setdefault(key, dict(kind=meta["kind"], section=meta["section"], z_in=round(meta["z"]), n=0, peaks=[], comp=[], tens=[], lims=[],
+                                            **({"axis": meta["axis"]} if meta.get("axis") else {})))
             g["peaks"].append(v)
             g["lims"].append([s.CP, s.b_pl] + [(x if x is not None else nan) for x in (getattr(s, "CP_t", None), getattr(s, "b_t", None))])
             if meta["kind"] == "brace":
@@ -684,8 +685,8 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
             j = int(np.argmax(dcp))
             rows.append(dict(kind=g["kind"], section=g["section"], z_in=g["z_in"], n=peaks.shape[1], Qu_rad=float(means[j]),
                              Qu_rad_max=float(means.max()), CP=float(CP[j]), b=float(b[j]),
-                             DC_CP=float(dcp.max()), DC_valid=float(dcv.max())))
-    rows.sort(key=lambda r: (r["kind"], r["z_in"]))
+                             DC_CP=float(dcp.max()), DC_valid=float(dcv.max()), **({"axis": g["axis"]} if g.get("axis") else {})))
+    rows.sort(key=lambda r: (r["kind"], r["z_in"], r.get("axis") or ""))
     # ---- force-controlled columns (16.4.2.1) with concurrent flexure (NL-18)
     fc = ch16["force_controlled"]
     denom = grav_split["sum_D"] + grav_split["sum_Lexp"]

@@ -150,7 +150,8 @@ def _alg_damping_text(results, ch16):
 
 
 _MODEL_STAT_KEYS = ("plasticity", "member_nseg", "col", "beam", "brace", "brace_nonlinear", "brb", "brace_physical_theory", "links",
-                    "force_controlled", "released_ends", "panel_zone_mode", "panel_zones", "rbs_remesh_beams", "degradation", "lambda_summary")
+                    "force_controlled", "released_ends", "panel_zone_mode", "panel_zones", "rbs_remesh_beams", "degradation", "lambda_summary",
+                    "col_minor_hinges", "column_minor_axis")                     # NL-R2-32
 
 
 def _model_stats(results):
@@ -305,7 +306,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                      % (r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
         elif r["Qu_rad"] > 1e-5:
             H.append("<tr><td>%s hinge</td><td>%s</td><td>%d</td><td>%d</td><td>%.4f rad</td><td>%.4f</td><td>%.4f</td><td>%.2f</td><td>%.2f</td></tr>"
-                     % (r["kind"], r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
+                     % (r["kind"] + (" (%s axis)" % r["axis"] if r.get("axis") else ""), r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
     H.append("</table><h3>Force-controlled — columns: axial (critical) with concurrent flexure (AISC 360-22 H1-1 ≡ AISC 342-22 C3-9/C3-12/C3-13; φ = 0.9, B = 1.0, F<sub>y</sub> from the component parameters)</h3>")
     H.append("<table><tr><th>Section</th><th>elev. (in)</th><th>P<sub>u</sub> / P<sub>ns</sub> (kip)</th><th>P<sub>r</sub> (16.4-1) / T<sub>r</sub> (16.4-2)</th><th>φP<sub>n</sub> (E3) · KL/r</th>"
              "<th>M<sub>u</sub> major · minor (k-in)</th><th>flexure major · minor (class / model)</th><th>M capacity major · minor</th><th>default D/C axial · H1 comp · H1 tens · C3-10 → default D/C</th>"
@@ -358,7 +359,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
              'Flexure is classified per AISC 342-22 C3.4: deformation-controlled for P<sub>G</sub>/P<sub>ye</sub> ≤ 0.6 (analysed moment with the expected strength M<sub>CE</sub>, F<sub>ye</sub> = R<sub>y</sub>F<sub>y</sub>, C3.4a.2b with m = 1, combined with the axial force in compression only; in net tension the deformation-controlled moment is judged by the hinge rotation), '
              'force-controlled above (transformed by the 16.4.2.1 equations, resisted by φM<sub>n</sub>: F2 with C<sub>b</sub> = 1, F3/F6). '
              'Unbraced lengths (E2 L<sub>c</sub> per axis, F2 L<sub>b</sub>): the HR design\'s column bracing where design/calc_package.json gives it (brace points or L<sub>cx</sub>/L<sub>cy</sub>/L<sub>b</sub>, listed in the notes), otherwise K = 1 with the column length about both axes and L<sub>b</sub> = column length. '
-             'A deformation-controlled axis modelled elastic (the minor axis of concentrated-hinge columns) whose moment exceeds M<sub>CE</sub> is flagged: the model cannot represent that yielding (16.3.1). '
+             'Concentrated-hinge (IMK) columns carry an independent uniaxial spring about each axis (NL-R2-32; minor axis: M<sub>pcey</sub> by AISC 342-22 Eqs. C3-7/C3-8 for W shapes, C3-5/C3-6 with M<sub>pey</sub> for HSS, Table C3.6 a/b/c; switch: column_flexure.minor_axis_hinge), so the minor-axis moment in this check is capped by its spring. '
+             'A deformation-controlled axis modelled elastic (the minor axis of concentrated-hinge columns when column_flexure.minor_axis_hinge = false) whose moment exceeds M<sub>CE</sub> is flagged: the model cannot represent that yielding (16.3.1). '
              'Peaks of P, M<sub>major</sub> and M<sub>minor</sub> are taken independently per record (not concurrent) — conservative.%s</p>'
              % ((" Notes: " + "; ".join(acc["fc_notes"])) if acc.get("fc_notes") else ""))
     if nlc.get("run"):
