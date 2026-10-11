@@ -13,6 +13,11 @@ model_gmnia.py -- rebuild a Steltic elastic model as a GMNIA model in openseespy
     mid-node translations (pinned crossing) when the HR design says they are connected there (calc_package:
     "connected at the crossing", Lc <= 0.6 Lwp; NL-R2-28 (DDM)), otherwise they are independent (K = 1 on the
     full diagonal)
+  * columns braced where the HR design braces them (NL-R2-33): calc_package column records (Lcy_in / Lcx_in / Lb_in or
+    brace_points_in, read by nlrha.acceptance.design_column_lengths) -> brace points every floor(L / Lc) of the member;
+    lateral displacement on the braced axis held RELATIVE to the column chord (pinned-pinned elastic strongback, no
+    axial / vertical stiffness) and twist held at the brace points; inelastic build only (the transfer gate compares
+    the HR elastic model). See _col_brace_plan / _brace_column.
   * rigid diaphragms and master nodes exactly as Steltic recorded them
   * bases: as recorded (fixed / pinned)
   * optional rigid_end_offset on primary beams: stiff elasticBeamColumn stubs
@@ -49,6 +54,10 @@ BRB_ELE0 = 70_000_000     # NL-02: BRB corotTruss BRB_ELE0 + member tag
 SPRING_MAT0 = 80_000_000  # BRB / link spring materials
 BRACE_NODE0 = 85_000_000  # NL-R2-27: deck node of a beam lateral-torsional brace (BRACE_NODE0 + running count)
 BRACE_ELE0 = 86_000_000   # NL-R2-27: zeroLength deck brace (BRACE_ELE0 + running count)
+COLBR_NODE0 = 87_000_000  # NL-R2-33: column brace strongback node (COLBR_NODE0 + running count)
+COLBR_ELE0 = 88_000_000   # NL-R2-33: column brace strongback element / zeroLength (COLBR_ELE0 + running count)
+COL_BRACE_MAX_N = 8       # NL-R2-33: at most 8 braced segments per column (closer HR bracing -> spacing L/8, conservative)
+SB_TRANSF = 6             # NL-R2-33: Linear transformation of the column brace strongbacks
 TIED_BRACE_NSUB = 8      # review D2: minimum sub-elements of an X diagonal tied at its crossing
 BRACE_CONTINUOUS_N = 8    # NL-R2-27: L / Lb above this -> continuous bracing (every interior chain node braced)
 K_TRANS = 1.0e9      # kip/in   stiff pin springs
@@ -91,6 +100,8 @@ class GMNIAModel:
         self.gravity_notes = []
         self.beam_bracing = True     # NL-R2-27: brace diaphragm-level beams where the HR design relies on deck / infill bracing
         self.braced = {}             # member tag -> (mode, brace positions in in from n1, Lb_in)
+        self.column_bracing = True   # NL-R2-33: brace GMNIA columns where the HR design braces them
+        self.col_braced = {}         # member tag -> plan dict (weak / strong / twist positions in in from n1, Lc, source)
 
     # ------------------------------------------------------------------ geometry helpers
     def _coord(self, tag):
@@ -162,6 +173,7 @@ class GMNIAModel:
                                            residual=self.residual, elastic=self.elastic, mat_tag0=1000)
         self.nonbuckling, self.special_log, self._spring_mat = set(), [], SPRING_MAT0
         self.braced, self._nbrace, self._brace_slaves = {}, 0, {}
+        self.col_braced, self._ncolbr, self._sb_transf = {}, 0, False
         self._prepare_special()
         if self._grav_geo is False and not self.elastic:
             self.special_log.append("gravity: HR static-model distribution unavailable (%s) -- legacy two-way 45-degree "
@@ -180,6 +192,8 @@ class GMNIAModel:
         if getattr(self, "_lb_conflicts", None):
             self.special_log.append("beam bracing: HR groups with different Lb for the same role/section -> the LARGEST Lb "
                                     "used: %s" % "; ".join("%s %s %s" % (r, sct, v) for (r, sct), v in sorted(self._lb_conflicts.items())[:6]))
+        if self.col_braced:
+            self.special_log.extend(self._col_brace_notes())         # NL-R2-33
         self._tie_x_crossings()                                    # NL-R2-28 (DDM)
         for note in self.special_log:
             self.builder.log.append((0, "special", "note", 0, note))
@@ -418,6 +432,142 @@ class GMNIAModel:
             self._brace_slaves.setdefault(mst, []).append(dn)
         self.braced[m.tag] = (plan[0], tuple(round(x, 1) for x in plan[1]), plan[2])
 
+    # ------------------------------------------------------------------ NL-R2-33 column bracing (girts / flange braces)
+    def _col_brace_plan(self, m, L):
+        """NL-R2-33: where the HR design braces column m -> None (unbraced) or dict(weak, strong, twist, Lcx, Lcy, Lb,
+        source): brace positions (in from n1) for lateral displacement about the weak axis (from Lcy), the strong axis
+        (from Lcx) and twist (from Lb). Lengths: nlrha.acceptance.design_column_lengths -- the same reading the NLRHA
+        column acceptance uses (calc_package members[].inputs with a whole-word column role and this section;
+        brace_points_in elevations cut at this member, or Lcx_in / Lcy_in / Lb_in when the record's length_in is this
+        member's; several records -> per-axis maxima, conservative). Positions: floor(L / Lc + 1e-6) equal segments
+        (spacing never shorter than the design's longest unbraced length, as the NL-R2-27 beam bracing); L / Lc < 2
+        -> that axis unbraced; at most COL_BRACE_MAX_N segments. AISC 360-22 App. 1, 1.3.2c: for members in flexure
+        and axial compression Lb is the length between points braced against BOTH lateral displacement in the minor-axis
+        direction and twist -- the GMNIA braces exactly the points the design relied on, so it does not buckle a column
+        over a length the design (and the building: girts, flange braces) braces (Ex21: W10X45 32 ft, KL/r 191 unbraced
+        vs Lcy = 16 ft in the HR design). Inelastic build only (the elastic transfer gate compares the HR model)."""
+        if not self.column_bracing or self.elastic or m.kind != "col" or self._is_secondary(m):
+            return None
+        cp = self.nm.calc_package or {}
+        if not cp.get("members"):
+            return None
+        from types import SimpleNamespace
+        from nlrha.acceptance import design_column_lengths
+        z1, z2 = self.nm.nodes[m.n1][2], self.nm.nodes[m.n2][2]
+        L0 = math.dist(self.nm.nodes[m.n1], self.nm.nodes[m.n2])
+        dl = design_column_lengths(SimpleNamespace(calc=cp), m.section, z1, z2, L0)
+        if not dl:
+            return None
+        def pts(Lc):
+            try:
+                n = int(math.floor(L / float(Lc) + 1e-6))
+            except (TypeError, ValueError, ZeroDivisionError):
+                return []
+            n = min(n, COL_BRACE_MAX_N)
+            return [k * L / n for k in range(1, n)] if n >= 2 else []
+        plan = dict(weak=pts(dl["Lcy"]), strong=pts(dl["Lcx"]), twist=pts(dl["Lb"]),
+                    Lcx=dl["Lcx"], Lcy=dl["Lcy"], Lb=dl["Lb"], L=L, source=dl["source"])
+        return plan if (plan["weak"] or plan["strong"] or plan["twist"]) else None
+
+    @staticmethod
+    def col_chain_fracs(L, plan, nsub):
+        """NL-R2-33: chain fractions of a braced column -- every brace point is a chain node and each braced segment has
+        max(2, ceil(nsub / nseg)) sub-elements (a force-based Corotational element carries no P-delta inside itself, so
+        a segment needs an interior node to buckle between its brace points)."""
+        bps = sorted({round(x, 6) for x in plan["weak"] + plan["strong"] + plan["twist"]})
+        cuts = [0.0] + bps + [L]
+        per = max(2, -(-nsub // (len(cuts) - 1)))
+        fr = []
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            fr += [(a + (b - a) * q / per) / L for q in range(per)]
+        return fr[1:]
+
+    @staticmethod
+    def segment_seed(f, L, bmag, cuts):
+        """NL-R2-33: out-of-straightness BETWEEN brace points: an alternating half-sine of bmag x Lseg on each braced
+        segment (cuts = brace positions in in, ends included) -- the buckling mode between brace points, which the
+        full-length L/1000 bow (symmetric about a mid brace) never seeds (AISC 360-22 App. 1, 1.2.2a User Note:
+        1/1,000 out-of-straightness between brace points; 1.3.3b: the pattern with the greatest destabilizing effect).
+        Added to the full-length bow, as for the X diagonals tied at the crossing (review D2)."""
+        x = f * L
+        for s, (a, b) in enumerate(zip(cuts[:-1], cuts[1:])):
+            if a - 1e-9 <= x <= b + 1e-9 and b - a > 1e-9:
+                return (-1) ** s * bmag * (b - a) * math.sin(math.pi * (x - a) / (b - a))
+        return 0.0
+
+    def _brace_column(self, m, chain, xs_chain, plan):
+        """NL-R2-33: brace the chain nodes of column m at the HR brace points.
+        Lateral displacement (weak and/or strong axis, global X / Y from the column orientation): held RELATIVE to the
+        column's own chord by a pinned-pinned elastic strongback n1 -> brace nodes -> n2 (Linear transformation, both
+        bending planes released at n1 and n2, EI = 1e4 x the column's larger I -> a near-rigid brace, EA and GJ ~0 so it
+        adds no axial / vertical / torsional path) joined to each brace-point chain node by a zeroLength stiff ONLY in
+        the braced horizontal direction(s). Under pure chord rotation (frame sway) the strongback stays straight and
+        carries nothing, so storey stiffness and strength are unchanged; it resists only the column's bow between its
+        ends -- what girts / flange braces anchored to the wall do. Twist: rotation about the column axis held at the
+        twist brace points (fixed rz; the column's St-Venant torsional share of the building's twist is negligible).
+        Brace strength / stiffness (AISC 360-22 App. 6, 6.2) is not checked here: the brace is the HR design's."""
+        tr = self._transf_for(m)
+        weak_dir, strong_dir = (2, 1) if tr == 2 else (1, 2)
+        L = plan["L"]
+        def near(x, lst):
+            return any(abs(x - xb) <= 1e-3 * L + 1e-6 for xb in lst)
+        tnodes = []          # (chain node, [global translation dirs])
+        for nd, x in zip(chain[1:-1], xs_chain):
+            dirs = ([weak_dir] if near(x, plan["weak"]) else []) + ([strong_dir] if near(x, plan["strong"]) else [])
+            if dirs:
+                tnodes.append((nd, dirs))
+            if near(x, plan["twist"]):
+                ops.fix(nd, 0, 0, 0, 0, 0, 1)
+        if tnodes:
+            if not self._sb_transf:
+                ops.geomTransf("Linear", SB_TRANSF, 1.0, 0.0, 0.0)
+                self._sb_transf = True
+            A, Ix, Iy, J = elastic_props(m.section)
+            Isb = 1.0e4 * max(Ix or 0.0, Iy or 0.0, 1.0)
+            from .sections_fiber import E_KSI, G_KSI
+            prev = chain[0]
+            sb_nodes = []
+            for nd, dirs in tnodes:
+                self._ncolbr += 1
+                sn = COLBR_NODE0 + self._ncolbr
+                ops.node(sn, *ops.nodeCoord(nd))
+                sb_nodes.append(sn)
+                ops.element("zeroLength", COLBR_ELE0 + self._ncolbr, sn, nd, "-mat", *([1] * len(dirs)), "-dir", *dirs)
+            seq = [chain[0]] + sb_nodes + [chain[-1]]
+            for q in range(len(seq) - 1):
+                self._ncolbr += 1
+                rel = []
+                if q == 0:
+                    rel += ["-releasez", 1, "-releasey", 1]
+                if q == len(seq) - 2:
+                    code = 3 if q == 0 else 2
+                    rel = ["-releasez", code, "-releasey", code]
+                ops.element("elasticBeamColumn", COLBR_ELE0 + self._ncolbr, seq[q], seq[q + 1],
+                            1.0e-4, E_KSI, G_KSI, 1.0e-4, Isb, Isb, SB_TRANSF, *rel)
+        self.col_braced[m.tag] = plan
+
+    def _col_brace_notes(self):
+        """NL-R2-33 builder.log / report disclosure: which columns were braced, where, and from which HR record."""
+        groups, bt = {}, self.nm.by_tag()
+        for t, p in self.col_braced.items():
+            m = bt[t]
+            key = (m.section, round(p["L"]), tuple(round(x) for x in p["weak"]), tuple(round(x) for x in p["strong"]),
+                   tuple(round(x) for x in p["twist"]), round(p["Lcx"]), round(p["Lcy"]), round(p["Lb"]), p["source"])
+            groups.setdefault(key, []).append(m)
+        out = []
+        for (sec, L, wk, st, tw, Lcx, Lcy, Lb, src), ms in sorted(groups.items(), key=str):
+            roles = "/".join(sorted({str(m.role) for m in ms}))
+            what = "; ".join(x for x in (
+                ("weak-axis lateral displacement at %s in" % "/".join(map(str, wk))) if wk else "",
+                ("strong-axis lateral displacement at %s in" % "/".join(map(str, st))) if st else "",
+                ("twist at %s in" % "/".join(map(str, tw))) if tw else "") if x)
+            out.append("column bracing (NL-R2-33): %d %s %s columns (L %d in) braced -- %s -- from the HR design Lcx %d / "
+                       "Lcy %d / Lb %d in (%s); brace = elastic strongback on the column chord + zeroLength in the braced "
+                       "direction only (no axial / vertical / sway stiffness), twist fixed at the brace points; segment "
+                       "out-of-straightness Lseg/1000 alternating, plus the L/1000 full-length bow (AISC 360-22 App. 1, "
+                       "1.3.2c / 1.2.2a)" % (len(ms), roles, sec, L, what, Lcx, Lcy, Lb, src))
+        return out
+
     def _offset_frac(self):
         """Return rigid-end offset fraction, or 0 if disabled."""
         ro = self.rigid_end_offset
@@ -624,10 +774,19 @@ class GMNIAModel:
             fr = [x / L for x in plan[1]]
             fb = [0.0] + fr + [1.0]
             seg_L = [(fb[q + 1] - fb[q]) * L for q in range(len(fr) + 1)]
+        cplan = self._col_brace_plan(m, L) if m.kind == "col" else None
+        wcuts = None
+        if cplan:                                                  # NL-R2-33: chain nodes AT the column brace points
+            fr = self.col_chain_fracs(L, cplan, nsub)
+            fb = [0.0] + fr + [1.0]
+            seg_L = [(fb[q + 1] - fb[q]) * L for q in range(len(fr) + 1)]
+            wcuts = [0.0] + list(cplan["weak"]) + [L] if cplan["weak"] else None
         nseg = len(fr) + 1
         chain = [end1]
         for s, f in enumerate(fr, start=1):
             off = self.bow_offset(f, L, bmag, tied=(m.kind == "brace" and m.tag in self.x_ties))
+            if wcuts:                                              # NL-R2-33: bow between the weak-axis brace points
+                off += self.segment_seed(f, L, bmag, wcuts)
             x = p1[0] + (p2[0] - p1[0]) * f + bv[0] * off
             y = p1[1] + (p2[1] - p1[1]) * f + bv[1] * off
             z = p1[2] + (p2[2] - p1[2]) * f + bv[2] * off
@@ -645,6 +804,8 @@ class GMNIAModel:
                                    secTag=secTag, s=s, n1=chain[s], n2=chain[s + 1], L=seg_L[s], dirn=m.dirn, nseg=nseg))
         if plan:
             self._brace_chain(m, self._brace_select(plan, [f * L for f in fr], chain[1:-1], L), plan)
+        if cplan:
+            self._brace_column(m, chain, [f * L for f in fr], cplan)
 
     # ------------------------------------------------------------------ loads
     def _frac(self, m, n):
