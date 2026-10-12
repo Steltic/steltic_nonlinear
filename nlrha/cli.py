@@ -16,6 +16,8 @@ def _load(args):
     pkg = PR.load(args.package); print(PR.summary(pkg))
     from pushover import existing as EX                           # NL-R2-04 (warning only): new-building criteria
     EX.print_warning(EX.existing_structure(getattr(pkg, "root", None)), "the NLRHA (ASCE 7-22 Chapter 16)")
+    from pushover import user_designed as _UD
+    _UD.print_warning(_UD.info(getattr(pkg, "root", None)), "the NLRHA (ASCE 7-22 Chapter 16)")
     prm = HM.load_params(args.params)
     ch16 = json.load(open(os.path.join(os.path.dirname(__file__), "ch16_params.json")))
     b = pkg.basis

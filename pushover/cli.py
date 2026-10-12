@@ -18,6 +18,8 @@ def _run(args):
     print(PR.summary(pkg))
     from . import existing as EX                                  # NL-R2-04 (warning only): new-building criteria
     EX.print_warning(EX.existing_structure(getattr(pkg, "root", None)), "the pushover (ASCE 41-23 NSP)")
+    from pushover import user_designed as _UD
+    _UD.print_warning(_UD.info(getattr(pkg, "root", None)), "the pushover (ASCE 41-23 NSP)")
     if args.system:
         pkg.basis.system = args.system; pkg.basis.sources["system"] = "--system override"
     why = HM.unsupported_system(pkg.basis)                       # NL-R2-13: refuse up front, never model it wrong
