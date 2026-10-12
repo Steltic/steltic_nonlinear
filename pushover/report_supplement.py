@@ -167,8 +167,9 @@ def _strength_loss_html(sle, hinge_stats):
          "<p>Every step in which the base shear fell by %.0f%% of V<sub>max</sub> or more, with the components whose force collapsed "
          "(to below %.0f%% of their own peak) in that same step.%s</p>"
          % (100 * sle["drop_frac"], 100 * sle["loss_frac"],
-            " Fibre beams and columns cannot lose strength in this model; the drops come from the components listed (BRBs / EBF "
-            "links past b are removed by their MinMax wrapper, AISC 342-22 E3.2b(c) and Table C3.3 / C2.4) and from the drift "
+            " Fibre beams and columns cannot lose strength in this model; the drops come from the components listed (BRBs "
+            "past b are removed by their MinMax wrapper, AISC 342-22 E3.2b(c) and Table C3.3; EBF links past the capping deformation a fall "
+            "to their residual strength c V<sub>p</sub>, kept beyond b, Table C2.4) and from the drift "
             "they concentrate in their storey (P-Δ). Drops past V<sub>max</sub> govern α<sub>2</sub> (Figure 7-3), μ<sub>max</sub> "
             "and δ<sub>u</sub> / μ<sub>T</sub>, not δ<sub>t</sub> or the acceptance checks before them." if fibre else ""),
          "<table><tr><th>Step</th><th>Roof u (in)</th><th>V (kip)</th><th>ΔV / V<sub>max</sub></th><th>Cause</th></tr>"]

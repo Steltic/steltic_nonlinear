@@ -132,3 +132,29 @@ def test_removal_at_several_levels_in_one_step_is_flagged():
     f[3][2] = 640.0                                                   # only one level loses its BRB: not flagged
     s = PP.strength_loss_events(_run(V, f, tags=(11, 12, 13)), h)
     assert not s["drops"][0]["multi_level"] and "ONE step" not in s["text"][0]
+
+
+def test_link_drop_attributed_at_the_capping_point_and_at_b():
+    """NL-R2-22 (round 4): an EBF link keeps its residual c Vp (no MinMax) -- its force never collapses, so a link-caused
+    drop is attributed by its plastic deformation crossing the capping point a (strength from Vc to c Vp) or b, as an
+    IMK hinge passing b is; it is not left 'NOT attributed'."""
+    h = {21: dict(ele=284, kind="link", section="W14X74", z=168.0, spec=SimpleNamespace(a_pl=0.30, b_pl=0.34, e_in=2.0))}
+    V = [0, 50, 100, 101, 80, 81, 70]
+    f = [[0.0], [200.0], [300.0], [310.0], [250.0], [250.0], [248.0]]            # Vc 310 -> c Vp 250: never below 5 %
+    pl = [[0.0], [0.0], [0.1], [0.29], [0.31], [0.32], [0.36]]
+    s = PP.strength_loss_events(_run(V, f, pl, tags=(21,)), h)
+    assert s["n_drops"] == 2 and s["n_unattributed"] == 0
+    c0 = s["drops"][0]["causes"][0]; c1 = s["drops"][1]["causes"][0]
+    assert s["drops"][0]["step"] == 4 and c0["ele"] == 284 and "capping point a" in c0["why"] and "c Vp" in c0["why"]
+    assert s["drops"][1]["step"] == 6 and "passed b" in c1["why"] and "residual c Vp kept" in c1["why"]
+    # without the link deformation crossing, the same drop stays unattributed (no force collapse)
+    s = PP.strength_loss_events(_run(V, f, [[0.0]] * 7, tags=(21,)), h)
+    assert s["n_unattributed"] == 2
+
+
+def test_link_disclosure_no_longer_says_minmax():
+    srcs = NM.fibre_strength_loss_sources(dict(links=12))
+    assert len(srcs) == 1 and "MinMax" not in srcs[0] and "c Vp" in srcs[0] and "Table C2.4" in srcs[0]
+    s = PP.strength_loss_events(_run([0, 50, 100, 55], [[0, None], [200, None], [400, None], [0.0, None]]), _hinges())
+    html = RS._strength_loss_html(s, dict(plasticity="fibre"))
+    assert "EBF links past the capping deformation a fall" in html and "links past b are removed" not in html

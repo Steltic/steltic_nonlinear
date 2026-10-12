@@ -370,16 +370,23 @@ LOSS_FRAC = 0.05          # a component whose force falls below 5 % of its own p
 _LOSS_BASIS = {"brb": "BRB deformation reached Delta_y + b -> strength lost (AISC 342-22 Table C3.3 b; E3.2b(c) post-b loss; "
                       "MinMax removal)",
                "brace": "buckling-brace force collapsed (AISC 342-22 Table C3.4 backbone past b)",
-               "link": "link shear deformation reached b -> strength lost (AISC 342-22 Table C2.4; MinMax removal)"}
+               "link": "link shear force collapsed"}
+# NL-R2-22 (round 4): EBF link shear springs keep the residual c Vp (no MinMax), so their force never collapses; a link
+# drop is attributed by its plastic deformation crossing the capping point a (strength falls from Vc to c Vp) or b
+_LINK_CROSS = (("a_pl", "link plastic shear deformation passed the capping point a -> strength falls to the residual c Vp "
+                        "(AISC 342-22 Table C2.4, Figure C1.1)"),
+               ("b_pl", "link plastic shear deformation passed b (end of the valid modelling range, AISC 342-22 Table C2.4; "
+                        "residual c Vp kept)"))
 
 
 def strength_loss_events(run, hinges, drop_frac=DROP_FRAC, loss_frac=LOSS_FRAC):
     """NL-R2-35: what made the capacity curve drop. Pure post-processing of the recorded run.
 
     Component losses: a hinge whose recorded force (rec["hinge_M"]: brace / truss axial force, spring force) was >= 50 %
-    of its own peak at step i-1 and is below `loss_frac` x peak at step i (a MinMax-wrapped BRB / EBF link past b
-    carries exactly zero; a Hysteretic brace past b ~2 %); and a non-brace hinge whose plastic deformation passes its b
-    in step i. Drops: every step whose base shear falls by >= `drop_frac` x Vmax, with the component losses of that step
+    of its own peak at step i-1 and is below `loss_frac` x peak at step i (a MinMax-wrapped BRB past b carries exactly
+    zero; a Hysteretic brace past b ~2 %); a non-brace hinge whose plastic deformation passes its b in step i; and an EBF
+    link shear spring whose plastic deformation passes its capping point a or its b in step i (NL-R2-22 round 4: the
+    link keeps its residual c Vp, so its force never collapses). Drops: every step whose base shear falls by >= `drop_frac` x Vmax, with the component losses of that step
     as the cause -- or, with none, flagged as NOT attributed to a component (drift concentration after an earlier loss,
     P-Delta, or a numerical jump to another equilibrium branch: inspect).
     Returns dict(drops=[...], losses=[...], n_drops, n_unattributed, Vmax, text)."""
@@ -417,8 +424,19 @@ def strength_loss_events(run, hinges, drop_frac=DROP_FRAC, loss_frac=LOSS_FRAC):
     if PL and tags and isinstance(hinges, dict):
         for k, t in enumerate(tags):
             h = hinges.get(t, {})
-            if h.get("kind") in ("brace", "link") or h.get("form") == "fibre_end":
-                continue      # braces / links: caught by their force (MinMax freezes their strain); fibre ends never lose strength
+            if h.get("kind") == "brace" or h.get("form") == "fibre_end":
+                continue      # braces: caught by their force (MinMax freezes a BRB's strain); fibre ends never lose strength
+            if h.get("kind") == "link":
+                for attr, why in _LINK_CROSS:
+                    lim = getattr(h.get("spec"), attr, None)
+                    if not lim or lim <= 0:
+                        continue
+                    for i in range(1, len(PL)):
+                        if k < len(PL[i]) and abs(PL[i - 1][k]) < lim <= abs(PL[i][k]):
+                            if not any(e["tag"] == t for e in by_step.get(i, [])):
+                                _ev(i, k, why)
+                            break
+                continue
             b = getattr(h.get("spec"), "b_pl", None)
             if not b or b <= 0:
                 continue

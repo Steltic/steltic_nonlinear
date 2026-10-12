@@ -1058,14 +1058,15 @@ def _link_mass_balance(pkg, ctx, stats):
 def fibre_strength_loss_sources(stats, n_buckling=None):
     """NL-R2-35: the components of a FIBRE model that do lose strength (the fibre beams/columns never do):
     BRBs -- strength lost beyond b (AISC 342-22 E3.2b(c): Figure C1.1 with the C3 parameters, post-peak beyond b down to a
-    near-zero residual; here MinMax at Delta_y + b, Table C3.3); EBF link shear springs (Table C2.4, loss beyond b);
+    near-zero residual; here MinMax at Delta_y + b, Table C3.3); EBF link shear springs (Table C2.4: strength falls from
+    the capping point a to the residual c Vp, kept beyond b -- NL-R2-22 round 4, no MinMax);
     buckling braces (post-buckling loss on the Table C3.4 backbone, or Steel02 + Fatigue fracture)."""
     nb = (stats.get("brace_nonlinear", 0) - stats.get("brb", 0)) if n_buckling is None else n_buckling
     out = []
     if stats.get("brb"):
         out.append("BRBs (%d) reaching deformation b (AISC 342-22 Table C3.3, E3.2b(c); removed by their MinMax wrapper)" % stats["brb"])
     if stats.get("links"):
-        out.append("EBF link shear springs (%d) reaching b (AISC 342-22 Table C2.4; removed by their MinMax wrapper)" % stats["links"])
+        out.append("EBF link shear springs (%d) past the capping deformation a (AISC 342-22 Table C2.4; strength falls to the residual c Vp, kept beyond b)" % stats["links"])
     if nb > 0:
         out.append("buckling braces (%d) after buckling (AISC 342-22 Table C3.4 backbone)" % nb)
     return out
@@ -1090,7 +1091,7 @@ def finish_stats(stats, ctx, prm, plasticity):
     lam_mode = str((HM.param_group(prm, "cyclic_deterioration")[0]).get("mode", "none")).lower()
     nb = stats.get("brace_nonlinear", 0) - stats.get("brb", 0)
     if plasticity == "fibre":
-        # NL-R2-35: the fibre beams/columns never lose strength, but BRBs / EBF link springs (MinMax at b) and buckling braces
+        # NL-R2-35: the fibre beams/columns never lose strength, but BRBs (MinMax at b), EBF link springs (to c Vp past a) and buckling braces
         # (Table C3.4 backbone) do -- the curve can drop, and each drop is attributed (postprocess.strength_loss_events).
         losers = fibre_strength_loss_sources(stats, nb)
         if losers:
