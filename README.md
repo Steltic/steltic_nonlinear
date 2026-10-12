@@ -1,4 +1,26 @@
-# Steltic_nonlinear (SNL) — the three nonlinear checks of a Steltic steel design, in one repository and one bot
+# Steltic Non Linear (SNL)
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/Steltic/steltic_nonlinear?color=orange)](https://github.com/Steltic/steltic_nonlinear/releases)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
+
+![Steltic Non Linear](docs/img/social_nl.png)
+
+The three nonlinear checks of a Steltic steel design, in one repository and one bot: **pushover** (ASCE 41-23 NSP
+with AISC 342-22 components), **NLRHA** (eleven records per ASCE 7-22 Chapter 16) and the **Direct Design Method**
+(a GMNIA fibre model with imperfections and residual stresses, every combination scaled to collapse) on a Steltic
+design package.
+
+- **Easiest start:** [Steltic Hub](https://github.com/Steltic/steltic_hub) installs this and the design module
+  it needs in one window.
+- **See the output first:** the pushover / NLRHA / DDM viewers at [stelticai.com](https://stelticai.com).
+- **Video:** [Introducing Steltic Non Linear](https://www.youtube.com/watch?v=plRdmhvmozU).
+- **Indian Standards edition:** [steltic_nonlinear_india](https://github.com/Steltic/steltic_nonlinear_india).
+
+> **Prototype. Not for construction.** The repository `pushover/hinge_params.json` is a placeholder (red UNVERIFIED
+> banner until a job copy filled from the standards is passed with `--params`); φ<sub>s</sub> is a literature value;
+> Chapter 16 requires design criteria (16.1.4) and independent review (16.5). Every result must be checked and sealed by a
+> licensed professional engineer.
 
 `Steltic_nonlinear` takes the output package of **Steltic** (the HR Steel App design: `report.html`, `cfg.py`,
 `model_opensees.py`, `design/…`, `viewer_3d.html`) and runs the three nonlinear analyses that the Steltic Grok Bot set
@@ -25,13 +47,6 @@ through Query file manager, fills the job copy of `hinge_params.json`, runs, jud
 (BPON levels for the Risk Category, Chapter 16 RC rules, the transfer gate and φ<sub>s</sub> class), and writes the
 four-analyses narrative.
 
-> **Prototype. Not for construction.** The repository `pushover/hinge_params.json` is a placeholder (red UNVERIFIED
-> banner until a job copy filled from the standards is passed with `--params`); φ<sub>s</sub> is a literature value;
-> Chapter 16 requires design criteria (16.1.4) and independent review (16.5). Every result must be checked and sealed by a
-> licensed professional engineer.
-
-## For videos and demonstrations see [stelticai.com](https://stelticai.com)
-
 ## Product defaults
 
 See [`docs/PRODUCT_DEFAULTS.md`](docs/PRODUCT_DEFAULTS.md) (rules 1–9) and [`docs/FIBRE_MESH_CONVERGENCE.md`](docs/FIBRE_MESH_CONVERGENCE.md).
@@ -42,14 +57,37 @@ See [`docs/PRODUCT_DEFAULTS.md`](docs/PRODUCT_DEFAULTS.md) (rules 1–9) and [`d
 
 ## Install
 
-```bash
-git clone <this repo> Steltic_nonlinear && cd Steltic_nonlinear
-python3.12 -m venv .venv && . .venv/bin/activate        # openseespy: Python 3.10–3.12 only
+Most people should start with [Steltic Hub](https://github.com/Steltic/steltic_hub), which sets this up with
+the design module it needs. To install it on its own (Python 3.10–3.12):
+
+**Windows (PowerShell)**
+
+```powershell
+git clone https://github.com/Steltic/steltic_nonlinear
+cd steltic_nonlinear
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -e .                                        # openseespy, numpy, scipy, matplotlib; ground motions ship in records/
-export STELTIC_ENGINE_DIR=/path/to/steltic/steel_engine # the DDM regenerates the ASCE 7 combinations with Steltic's design_pipeline
-python -m snl inspect examples/Ex22_SMF                 # read the design basis
-python -m snl report  examples/Ex22_SMF                 # rebuild the four-analyses sheet from the shipped outputs (no analysis)
+$env:STELTIC_ENGINE_DIR = "C:\path\to\steltic\steel_engine"   # the DDM regenerates the ASCE 7 combinations
+python -m snl inspect examples/Ex22_SMF
+python -m snl report  examples/Ex22_SMF
 ```
+
+**macOS / Linux**
+
+```bash
+git clone https://github.com/Steltic/steltic_nonlinear
+cd steltic_nonlinear
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+export STELTIC_ENGINE_DIR=/path/to/steltic/steel_engine
+python -m snl inspect examples/Ex22_SMF
+python -m snl report  examples/Ex22_SMF
+```
+
+`STELTIC_ENGINE_DIR` points at the `steel_engine` folder of a `git clone` of
+[steltic](https://github.com/Steltic/steltic).
 
 ## Command line
 
