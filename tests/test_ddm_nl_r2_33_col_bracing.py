@@ -191,3 +191,52 @@ def test_braced_column_buckles_between_brace_points():
     assert 70.0 < pu < 125.0, pu                                   # 2 sub-elements per column: ~10 % above Euler
     assert 300.0 < pb < 420.0, pb
     assert any("column bracing (NL-R2-33)" in n for n in g.special_log)
+
+
+# ---------------------------------------------------------------------------------------------- NL-R2-33 (review)
+def _sway_k(nm, gdir, braced):
+    """Lateral stiffness (kip/in) at the top of column 1 in global direction gdir (top free)."""
+    import openseespy.opensees as ops
+    g = _model(nm, bow=0.0)
+    g.column_bracing = braced
+    g.build().prepare()
+    f = [0.0] * 6; f[gdir - 1] = 1.0
+    _static([(100000, tuple(f))])
+    k = 1.0 / ops.nodeDisp(100000, gdir)
+    ops.wipe()
+    return k, g
+
+
+def test_fixed_base_cantilever_is_not_stiffened_by_the_brace():
+    """Reviewer: a fixed-base W24X76 cantilever braced at mid-height on both axes went 0.0757 -> 0.173 kip/in (weak)
+    and x 2.29 (strong): the chord strongback resisted the cantilever's bending. A direction is braced only where the
+    column is pinned at both ends in that plane; the skip is disclosed."""
+    cp = _cp(section="W24X76", Lcx_in=192.0, Lcy_in=192.0, Lb_in=192.0)
+    nm = lambda: _column(cp, section="W24X76", base=(1, 1, 1, 1, 1, 1), top=None)
+    g0 = _model(nm())
+    p = g0._col_brace_plan(g0.nm.members[0], L_COL)
+    assert p["weak"] == [] and p["strong"] == [] and p["twist"] == [192.0]
+    assert {a for a, _ in p["skipped"]} == {"weak", "strong"} and "fixed against rotation" in p["skipped"][0][1]
+    for gdir in (1, 2):
+        kb, g = _sway_k(nm(), gdir, True)
+        ku, _ = _sway_k(nm(), gdir, False)
+        assert kb == pytest.approx(ku, rel=1e-4), (gdir, kb, ku)        # mesh / corotational only (was x 2.3)
+    notes = " ".join(n for n in g.special_log if "NL-R2-33" in n)
+    assert "weak-axis brace points NOT modelled" in notes and "strong-axis brace points NOT modelled" in notes
+
+
+def test_moment_connected_top_skips_only_that_plane():
+    """Pinned base; at the top an X beam (major axis bends in the X plane): moment-connected -> the X-plane brace is
+    skipped, the Y plane (beam torsion only) stays braced; the same beam pinned at that end -> both braced."""
+    from steltic_ddm.ingest import Member
+    cp = _cp(Lcx_in=192.0, Lcy_in=192.0, Lb_in=192.0)
+    for relz, x_braced in ((0, False), (2, True)):
+        nm = _column(cp, transf=2, top=None)                      # transf 2: weak axis = global Y, strong = global X
+        nm.nodes[100100] = (360.0, 0.0, L_COL); nm.fixes[100100] = (1, 1, 1, 0, 0, 0)
+        b = Member(2, "beam", "W24X76", 100100, 100000, transf=3, relz=relz, dirn="X"); b.role = "beam"
+        nm.members.append(b)
+        g = _model(nm)
+        p = g._col_brace_plan(nm.members[0], L_COL)
+        assert p["weak"] == [192.0]                                # Y plane: free (beam torsion neglected)
+        assert (p["strong"] == [192.0]) == x_braced, relz
+        assert all(a == "strong" and "moment-connected to beam 2" in w for a, w in p["skipped"])

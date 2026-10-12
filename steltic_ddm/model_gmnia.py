@@ -16,8 +16,9 @@ model_gmnia.py -- rebuild a Steltic elastic model as a GMNIA model in openseespy
   * columns braced where the HR design braces them (NL-R2-33): calc_package column records (Lcy_in / Lcx_in / Lb_in or
     brace_points_in, read by nlrha.acceptance.design_column_lengths) -> brace points every floor(L / Lc) of the member;
     lateral displacement on the braced axis held RELATIVE to the column chord (pinned-pinned elastic strongback, no
-    axial / vertical stiffness) and twist held at the brace points; inelastic build only (the transfer gate compares
-    the HR elastic model). See _col_brace_plan / _brace_column.
+    axial / vertical stiffness) and twist held at the brace points -- a lateral direction only where the column is
+    pinned at both ends in that plane (otherwise the strongback would add sway stiffness; skipped and logged);
+    inelastic build only (the transfer gate compares the HR elastic model). See _col_brace_plan / _brace_column.
   * rigid diaphragms and master nodes exactly as Steltic recorded them
   * bases: as recorded (fixed / pinned)
   * optional rigid_end_offset on primary beams: stiff elasticBeamColumn stubs
@@ -103,6 +104,8 @@ class GMNIAModel:
         self.uplift_note = None      # NL-R2-L3: roof-uplift disclosure of the last apply_gravity
         self.column_bracing = True   # NL-R2-33: brace GMNIA columns where the HR design braces them
         self.col_braced = {}         # member tag -> plan dict (weak / strong / twist positions in in from n1, Lc, source)
+        self._col_brace_skips = []   # NL-R2-33 (review): (member, L, [(axis, reason)]) brace directions not applied
+        self._node_mem = None
 
     # ------------------------------------------------------------------ geometry helpers
     def _coord(self, tag):
@@ -175,6 +178,7 @@ class GMNIAModel:
         self.nonbuckling, self.special_log, self._spring_mat = set(), [], SPRING_MAT0
         self.braced, self._nbrace, self._brace_slaves = {}, 0, {}
         self.col_braced, self._ncolbr, self._sb_transf = {}, 0, False
+        self._col_brace_skips, self._node_mem = [], None
         self._prepare_special()
         if self._grav_geo is False and not self.elastic:
             self.special_log.append("gravity: HR static-model distribution unavailable (%s) -- legacy two-way 45-degree "
@@ -193,7 +197,7 @@ class GMNIAModel:
         if getattr(self, "_lb_conflicts", None):
             self.special_log.append("beam bracing: HR groups with different Lb for the same role/section -> the LARGEST Lb "
                                     "used: %s" % "; ".join("%s %s %s" % (r, sct, v) for (r, sct), v in sorted(self._lb_conflicts.items())[:6]))
-        if self.col_braced:
+        if self.col_braced or self._col_brace_skips:
             self.special_log.extend(self._col_brace_notes())         # NL-R2-33
         self._tie_x_crossings()                                    # NL-R2-28 (DDM)
         for note in self.special_log:
@@ -468,7 +472,64 @@ class GMNIAModel:
             return [k * L / n for k in range(1, n)] if n >= 2 else []
         plan = dict(weak=pts(dl["Lcy"]), strong=pts(dl["Lcx"]), twist=pts(dl["Lb"]),
                     Lcx=dl["Lcx"], Lcy=dl["Lcy"], Lb=dl["Lb"], L=L, source=dl["source"])
+        # NL-R2-33 (review): the strongback holds the brace points on the column CHORD, so it is inert only under pure
+        # chord rotation -- a column pinned at both ends in that plane. A column fixed at its base or moment-connected
+        # bends in sway (cantilever / double curvature) and the strongback would add storey stiffness (reviewer: fixed-base
+        # W24X76 cantilever, weak axis 0.0757 -> 0.173 kip/in, strong axis x 2.29). Such a direction is NOT braced (the
+        # column buckles over its full length in that plane -- conservative) and the skip is disclosed in builder.log.
+        tr = self._transf_for(m)
+        dirs = dict(weak=(2 if tr == 2 else 1), strong=(1 if tr == 2 else 2))
+        skipped = []
+        for axis in ("weak", "strong"):
+            if not plan[axis]:
+                continue
+            why = self._col_end_restraint(m, dirs[axis])
+            if why:
+                skipped.append((axis, why)); plan[axis] = []
+        if skipped:
+            self._col_brace_skips.append((m, L, skipped))
+        plan["skipped"] = skipped
         return plan if (plan["weak"] or plan["strong"] or plan["twist"]) else None
+
+    def _col_end_restraint(self, m, gdir):
+        """NL-R2-33 (review): None when column m is free to rotate at BOTH ends in the plane of a lateral displacement in
+        global direction gdir (1 = X -> rotation about Y, DOF 5; 2 = Y -> about X, DOF 4), i.e. pinned-pinned in that
+        plane so sway is a pure chord rotation and the strongback carries nothing; else the reason. An end is restrained
+        by a support fixing that rotation, a diaphragm master, another column (continuity), a beam whose MAJOR axis bends
+        in that plane and is not released at that end (moment connection), a non-pinned brace, or any other member. The
+        torsion of a beam framing along the displacement direction (GJ / L, ~2 % of the column's EI / L for a W24X76
+        on a W10X45) is not counted as restraint."""
+        rot = 5 if gdir == 1 else 4
+        if getattr(self, "_node_mem", None) is None:
+            self._node_mem = {}
+            for o in self.nm.members:
+                self._node_mem.setdefault(o.n1, []).append(o); self._node_mem.setdefault(o.n2, []).append(o)
+        from pushover import sections_db as SDB
+        for n, end in ((m.n1, "bottom"), (m.n2, "top")):
+            fl = self.nm.fixes.get(n)
+            if fl and len(fl) >= rot and fl[rot - 1]:
+                return "%s end fixed against rotation in that plane (support)" % end
+            if n in self.masters:
+                return "%s end is a diaphragm master node" % end
+            for o in self._node_mem.get(n, []):
+                if o is m or o.tag == m.tag:
+                    continue
+                if o.kind == "col":
+                    return "%s end continuous into column %s" % (end, o.tag)
+                if o.kind == "brace":
+                    if self.brace_pins or SDB.is_brb(o.section):
+                        continue
+                    return "%s end: brace %s not pinned" % (end, o.tag)
+                if o.kind == "beam" and o.dirn in ("X", "Y"):
+                    major = 5 if o.dirn == "X" else 4
+                    if rot != major:
+                        continue                                    # beam torsion: neglected
+                    code = 1 if o.n1 == n else 2
+                    if o.relz in (code, 3):
+                        continue                                    # pinned (major released) at this end
+                    return "%s end moment-connected to beam %s" % (end, o.tag)
+                return "%s end: member %s (%s) restrains it" % (end, o.tag, o.kind)
+        return None
 
     @staticmethod
     def col_chain_fracs(L, plan, nsub):
@@ -504,7 +565,9 @@ class GMNIAModel:
         adds no axial / vertical / torsional path) joined to each brace-point chain node by a zeroLength stiff ONLY in
         the braced horizontal direction(s). Under pure chord rotation (frame sway) the strongback stays straight and
         carries nothing, so storey stiffness and strength are unchanged; it resists only the column's bow between its
-        ends -- what girts / flange braces anchored to the wall do. Twist: rotation about the column axis held at the
+        ends -- what girts / flange braces anchored to the wall do. That holds only for a column pinned at both ends in
+        the braced plane: _col_brace_plan drops a direction whose column end is fixed / moment-connected / continuous
+        (_col_end_restraint, NL-R2-33 review). Twist: rotation about the column axis held at the
         twist brace points (fixed rz; the column's St-Venant torsional share of the building's twist is negligible).
         Brace strength / stiffness (AISC 360-22 App. 6, 6.2) is not checked here: the brace is the HR design's."""
         tr = self._transf_for(m)
@@ -567,6 +630,15 @@ class GMNIAModel:
                        "direction only (no axial / vertical / sway stiffness), twist fixed at the brace points; segment "
                        "out-of-straightness Lseg/1000 alternating, plus the L/1000 full-length bow (AISC 360-22 App. 1, "
                        "1.3.2c / 1.2.2a)" % (len(ms), roles, sec, L, what, Lcx, Lcy, Lb, src))
+        sk = {}
+        for m, L, skipped in self._col_brace_skips:                # NL-R2-33 (review)
+            for axis, why in skipped:
+                g = sk.setdefault((m.section, round(L), axis), [0, why]); g[0] += 1
+        for (sec, L, axis), (n, why) in sorted(sk.items(), key=str):
+            out.append("column bracing (NL-R2-33): %d %s columns (L %d in): the HR %s-axis brace points NOT modelled -- the "
+                       "column is not pinned at both ends in that plane (e.g. %s), so the chord strongback would add sway "
+                       "stiffness; the column buckles over its full length in that plane (conservative vs the HR design)"
+                       % (n, sec, L, axis, why))
         return out
 
     def _offset_frac(self):
