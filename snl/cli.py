@@ -15,7 +15,7 @@ each in its own process (openseespy is a process singleton), writes every output
 sheet. Steps run independently: a failure in one is logged in snl_run.json and the others still run.
 """
 from __future__ import annotations
-import argparse, json, os, shutil, subprocess, sys, time, zipfile
+import argparse, json, os, re, shutil, subprocess, sys, time, zipfile
 
 STEPS = ("pushover", "nlrha", "ddm")
 
@@ -49,13 +49,33 @@ def _unpack(src, out):
     return dest
 
 
+_NOT_EVALUATED_RX = re.compile(r"^(?:pushover|NLRHA|nlrha|DDM|steltic_ddm)\s+NOT EVALUATED\s+--\s+(.+)$", re.M)
+
+
+def _not_evaluated(text):
+    """NL-R2-L2 / NL-R2-13 follow-up: the reason an engine refused the package up front ('<engine> NOT EVALUATED --
+    system ... not supported: ...'), or None. A refusal is a valid outcome, not a failed step."""
+    m = _NOT_EVALUATED_RX.search(text or "")
+    return m.group(1).strip() if m else None
+
+
 def _run(cmd, log, env=None, cwd=None):
     t0 = time.time()
     print(">>", " ".join(cmd), flush=True)
     with open(log, "a", encoding="utf-8") as lf:
         lf.write("\n$ " + " ".join(cmd) + "\n"); lf.flush()
+        start = lf.tell()
         p = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, cwd=cwd)
-    return dict(returncode=p.returncode, seconds=round(time.time() - t0), log=log)
+    out = dict(returncode=p.returncode, seconds=round(time.time() - t0), log=log)
+    if p.returncode != 0:
+        try:
+            with open(log, encoding="utf-8", errors="replace") as lf:
+                lf.seek(start); why = _not_evaluated(lf.read())
+        except OSError:
+            why = None
+        if why:
+            out["not_evaluated"] = why
+    return out
 
 
 def cmd_run(a):
@@ -116,11 +136,14 @@ def cmd_run(a):
             cmd = [py, "-m", "steltic_ddm", "run", job, "--workers", str(a.parallel)] + (["--no-block"] if a.no_block else [])
             if a.risk_category: cmd += ["--risk-category", a.risk_category]
         status["steps"][s] = _run(cmd, log, env=env)
-        print("   %s -> rc %s (%s s)" % (s, status["steps"][s]["returncode"], status["steps"][s]["seconds"]), flush=True)
+        _ne = status["steps"][s].get("not_evaluated")
+        print("   %s -> %s (%s s)" % (s, ("NOT EVALUATED: " + _ne) if _ne else "rc %s" % status["steps"][s]["returncode"],
+                                     status["steps"][s]["seconds"]), flush=True)
+    not_evaluated = {k: v["not_evaluated"] for k, v in status["steps"].items() if v.get("not_evaluated")}
     # comparison sheet + summary (whatever ran)
     from . import compare
     try:
-        status["four_analyses"] = compare.build(job)
+        status["four_analyses"] = compare.build(job, not_evaluated=not_evaluated)
         print(">> four analyses:", status["four_analyses"])
     except Exception as ex:                                            # noqa: BLE001
         status["four_analyses_error"] = repr(ex); print("!! four_analyses failed:", ex)
@@ -135,8 +158,11 @@ def cmd_run(a):
             status["design_criteria_error"] = repr(ex); print("!! design criteria failed:", ex)
     status["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     json.dump(status, open(os.path.join(job, "snl_run.json"), "w"), indent=1)
-    bad = [s for s, v in status["steps"].items() if v.get("returncode") not in (0, None)]
-    print(">> done.", ("FAILED steps: " + ", ".join(bad) + " (see snl_run.log)") if bad else "all steps completed.", "Outputs in", job)
+    bad = [s for s, v in status["steps"].items() if v.get("returncode") not in (0, None) and not v.get("not_evaluated")]
+    msg = ("FAILED steps: " + ", ".join(bad) + " (see snl_run.log)") if bad else "no step failed."
+    if not_evaluated:
+        msg += " NOT EVALUATED (system not supported): " + ", ".join(not_evaluated) + "."
+    print(">> done.", msg, "Outputs in", job)
     return 1 if bad else 0
 
 
