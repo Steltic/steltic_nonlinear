@@ -19,6 +19,17 @@ figure{margin:12px 0} figcaption{font-size:12.5px;color:#444} img{max-width:100%
 """
 
 
+
+# NL-R2-16 (round 4, Ch. 16 column check): one sentence of basis for the informative AISC 342 C3-9 (user decision)
+C3_9_BASIS = ("ASCE 7-22 16.4.2 takes only the classification of actions from ASCE 41; 16.4.2.1 checks the force-controlled "
+              "column axial force and 16.4.2.2 judges deformation-controlled flexure by its valid range of modelling, so "
+              "AISC 342-22 C3.4a.2b (C3-9 with m = 1 and M<sub>CE</sub>, C3-10) is not part of the Chapter 16 verdict")
+
+
+def c3_9_setting(v):
+    """'informative' | 'verdict' (ch16_params force_controlled.column_flexure_interaction) as recorded in the verdict."""
+    return (v or {}).get("column_flexure_interaction") or "informative"
+
 def _png(fig):
     b = io.BytesIO(); fig.savefig(b, format="png", dpi=130, bbox_inches="tight"); plt.close(fig)
     return "data:image/png;base64," + base64.b64encode(b.getvalue()).decode("ascii")
@@ -150,7 +161,8 @@ def _alg_damping_text(results, ch16):
 
 
 _MODEL_STAT_KEYS = ("plasticity", "member_nseg", "col", "beam", "brace", "brace_nonlinear", "brb", "brace_physical_theory", "links",
-                    "force_controlled", "released_ends", "panel_zone_mode", "panel_zones", "rbs_remesh_beams", "degradation", "lambda_summary")
+                    "force_controlled", "released_ends", "panel_zone_mode", "panel_zones", "rbs_remesh_beams", "degradation", "lambda_summary",
+                    "col_minor_hinges", "column_minor_axis")                     # NL-R2-32
 
 
 def _model_stats(results):
@@ -166,6 +178,9 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append("<h1>Nonlinear response history (ASCE 7-22 Chapter 16) supplement — %s</h1>" % pkg.name)
     H.append('<div class="sub">Supplement to the Steltic AISC 360/341 package <code>%s</code> and its pushover supplement · generated %s · Non Linear Dynamic Bot prototype · %.0f s</div>' % (pkg.root.name, ts, elapsed_s))
     deg = next((r.get("stats", {}).get("degradation_16_3_1") for r in results if r.get("stats", {}).get("degradation_16_3_1")), None)
+    from pushover import existing as _EX                          # NL-R2-04 (warning only)
+    _exist = _EX.existing_structure(getattr(pkg, "root", None))
+    H.append(_EX.banner_html(_exist, "the NLRHA (ASCE 7-22 Chapter 16)"))
     if not prm.get("verified"):
         H.append('<div class="banner">UNVERIFIED COMPONENT PARAMETERS — the hinge and brace backbones come from steltic_pushover/hinge_params.json (verified=false, ASCE 41 / AISC 342 placeholders). '
                  '%s The Chapter 16 procedure itself (spectrum, period range, scaling, gravity, damping, acceptance rules) was read against the converted ASCE 7-22 text (pdf pp. 248–251).</div>'
@@ -188,11 +203,18 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
         H.append("<tr><td>Mean transient story drift ≤ limit (vertically aligned points)</td><td>max mean %s vs limit %s %s</td><td>16.4.1.2 · 250</td></tr>" % (_pct(v.get("mean_drift_max")), _pct(acc["limits"]["mean_limit"]), _tag(v["mean_drift_ok"])))
     H.append("<tr><td>Deformation-controlled elements (mean vs CP · vs valid range b)</td><td>%s · %s</td><td>16.4.2.2 · 251</td></tr>" % (_tag(v["deformation_ok"], "CP ok", "CP exceeded"), _tag(v["valid_range_ok"], "within b", "beyond b")))
     x2 = v.get("FC_exception_2") or {}
-    H.append("<tr><td>Force-controlled columns: axial + concurrent flexure (H1-1), Eqs. (1.2+0.12S<sub>MS</sub>)D+0.5L+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and (0.9−0.12S<sub>MS</sub>)D+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) ≤ φBR<sub>n</sub>%s</td><td>worst D/C %s %s%s</td><td>16.4.2.1%s · 251</td></tr>"
-             % ((";<br><b>Exception 2</b> for %d column group(s) whose axial force is limited by a yield mechanism: (1.2+0.12S<sub>MS</sub>)D+0.5L+0.2S+E<sub>mc</sub> and (0.9−0.12S<sub>MS</sub>)D+E<sub>mc</sub> ≤ φBR<sub>n</sub> (Eqs. 16.4-3 / 16.4-4)" % x2["n_columns"]) if x2.get("used") else "",
+    c39 = c3_9_setting(v)
+    H.append("<tr><td>Force-controlled columns: " + ("axial force (flexure deformation-controlled: judged by 16.4.2.2); H1-1 with the transformed moments where flexure is force-controlled"
+                                                     if c39 == "informative" else "axial + concurrent flexure (H1-1; deformation-controlled flexure by AISC 342 C3-9/C3-10, column_flexure_interaction = verdict)")
+             + ", Eqs. (1.2+0.12S<sub>MS</sub>)D+0.5L+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and (0.9−0.12S<sub>MS</sub>)D+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) ≤ φBR<sub>n</sub>%s</td><td>worst D/C %s %s%s</td><td>16.4.2.1%s · 251</td></tr>"
+             % ((";<br><b>Exception 2</b> for %d column group(s) whose axial force is limited by a yield mechanism: (1.2+0.12S<sub>MS</sub>)D+0.5L+0.2S+E<sub>mc</sub> and (0.9−0.12S<sub>MS</sub>)D+E<sub>mc</sub> ≤ φBR<sub>n</sub> (Eqs. 16.4-3 / 16.4-4)%s" % (x2["n_columns"], "" if c39 == "informative" else ", the compression combined with the analysed concurrent moments by AISC 342 C3-9 (m = 1, M<sub>CE</sub>)")) if x2.get("used") else "",
                 _num(v.get("worst_FC_DC")), _tag(v["force_controlled_ok"]),
                 ("<br><small>default check without Exception 2: worst D/C %s</small>" % _num(v.get("worst_FC_DC_default"))) if x2.get("used") else "",
                 " Exc. 2" if x2.get("used") else ""))
+    if v.get("worst_C3_9_info") is not None or c39 == "verdict":   # NL-R2-16 (round 4, Ch. 16 column check)
+        H.append("<tr><td>AISC 342-22 C3.4a.2b (C3-9, m = 1, M<sub>CE</sub>) on columns with deformation-controlled flexure — %s</td><td>worst %s%s</td><td>AISC 342 C3.4a.2b</td></tr>"
+                 % ("<b>informative, not part of the ASCE 7 Chapter 16 verdict</b>" if c39 == "informative" else "<b>in the verdict</b> (column_flexure_interaction = verdict)",
+                    _num(v.get("worst_C3_9_info")), (" (%s)" % v["worst_C3_9_info_column"]) if v.get("worst_C3_9_info_column") else ""))
     H.append("<tr><td>Residual drift (> 240 ft only)</td><td>%s</td><td>16.4.1.3 · 250</td></tr>" % ("n/a — h<sub>n</sub> = %.0f ft" % (acc["hn_in"] / 12) if not v["residual_applicable"] else _tag(v["residual_ok"])))
     nlc = acc.get("no_live_case") or {}
     H.append("<tr><td>Gravity without live load, 1.0 D (16.3.2)</td><td>%s</td><td>16.3.2 · 250</td></tr>"
@@ -202,8 +224,11 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     if x2.get("used"):        # NL-R2-16: the use of 16.4.2.1 Exception 2 is stated on the face of the report
         H.append('<div class="note"><b>ASCE 7-22 16.4.2.1 Exception 2 was used</b> (user decision, 7 Oct 2026) for the axial force of these columns, which is limited by the yield '
                  'mechanism of the beams / braces framing into their column lines: %s. For them the verdict is Eqs. (16.4-3) / (16.4-4) with E<sub>mc</sub> (load factor 1.0) in place of '
-                 'Eqs. (16.4-1) / (16.4-2) with 1.3 I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and the H1-1 interaction; the default check is reported beside it in section 5 '
-                 '(worst default D/C %s). All other columns: default check.</div>' % ("; ".join(x2.get("members") or []), _num(v.get("worst_FC_DC_default"))))
+                 'Eqs. (16.4-1) / (16.4-2) with 1.3 I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>)%s. The default check is reported beside it in section 5 '
+                 '(worst default D/C %s). All other columns: default check.</div>' % ("; ".join(x2.get("members") or []),
+                 ("; axial only — AISC 342-22 C3-9 with E<sub>mc</sub> and the concurrent moments is reported as informative" if c39 == "informative" else
+                  "; Exception 2 relaxes the axial demand only: the Eq. (16.4-3) compression is combined with the analysed concurrent moments over M<sub>CE</sub> by AISC 342-22 C3-9 "
+                  "(m = 1, C3.4a.2b), and C3-10 / C3-11 are kept (column_flexure_interaction = verdict)"), _num(v.get("worst_FC_DC_default"))))
     elif x2.get("apply") is False:
         H.append('<div class="note">16.4.2.1 Exception 2 is switched off (ch16_params force_controlled.exception_2.apply = false): every column is checked by Eqs. (16.4-1) / (16.4-2).</div>')
     if v.get("not_evaluated"):
@@ -302,29 +327,42 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                      % (r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
         elif r["Qu_rad"] > 1e-5:
             H.append("<tr><td>%s hinge</td><td>%s</td><td>%d</td><td>%d</td><td>%.4f rad</td><td>%.4f</td><td>%.4f</td><td>%.2f</td><td>%.2f</td></tr>"
-                     % (r["kind"], r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
-    H.append("</table><h3>Force-controlled — columns: axial (critical) with concurrent flexure (AISC 360-22 H1-1 ≡ AISC 342-22 C3-9/C3-12/C3-13; φ = 0.9, B = 1.0, F<sub>y</sub> from the component parameters)</h3>")
+                     % (r["kind"] + (" (%s axis)" % r["axis"] if r.get("axis") else ""), r["section"], r["z_in"], r["n"], r["Qu_rad"], r["CP"], r["b"], r["DC_CP"], r["DC_valid"]))
+    c39 = c3_9_setting(acc.get("verdict"))
+    H.append("</table><h3>Force-controlled — columns: axial (critical); %s (φ = 0.9, B = 1.0, F<sub>y</sub> from the component parameters)</h3>"
+             % ("concurrent flexure only where it is force-controlled (AISC 360-22 H1-1 with the 16.4 demand); deformation-controlled flexure: 16.4.2.2" if c39 == "informative"
+                else "with concurrent flexure (AISC 360-22 H1-1 ≡ AISC 342-22 C3-9/C3-12/C3-13; column_flexure_interaction = verdict)"))
     H.append("<table><tr><th>Section</th><th>elev. (in)</th><th>P<sub>u</sub> / P<sub>ns</sub> (kip)</th><th>P<sub>r</sub> (16.4-1) / T<sub>r</sub> (16.4-2)</th><th>φP<sub>n</sub> (E3) · KL/r</th>"
              "<th>M<sub>u</sub> major · minor (k-in)</th><th>flexure major · minor (class / model)</th><th>M capacity major · minor</th><th>default D/C axial · H1 comp · H1 tens · C3-10 → default D/C</th>"
-             "<th>16.4.2.1 Exception 2: E<sub>mc</sub> comp / tens (kip) · P<sub>r</sub> (16.4-3) / T<sub>r</sub> (16.4-4) · D/C</th><th>verdict D/C · basis · governing</th></tr>")
+             "<th>AISC 342-22 C3.4a.2b (C3-9, m = 1) · C3-10 — %s</th>"
+             "<th>16.4.2.1 Exception 2: E<sub>mc</sub> comp / tens (kip) · P<sub>r</sub> (16.4-3) / T<sub>r</sub> (16.4-4) · D/C</th><th>verdict D/C · basis · governing</th></tr>"
+             % ("informative, not part of the ASCE 7 Chapter 16 verdict" if c39 == "informative" else "in the verdict"))
     for r in acc["force_controlled_columns"]:
         e2 = r.get("exception_2")
         if e2 is None:
             x2c = "not evaluated"
         elif e2.get("qualifies"):
-            x2c = (("%s / %s · %s / %s · <b>%s</b>" + ("" if e2.get("used", True) else " <small>(not used: the default check gives the lower D/C)</small>") + "<br><small>E<sub>mc</sub>: %s (mechanism statics %s / %s, %s; suite max of the analysis %s / %s)%s</small>")
+            x2c = (("%s / %s · %s / %s · <b>%s</b>" + ("" if e2.get("used", True) else (" <small>(not used: %s)</small>" % (
+                        "the default check gives the lower D/C" if e2.get("moments_recorded", True) else "concurrent moments not recorded, C3-9 not evaluated")))
+                    + "<br><small>C3-9 (m = 1) with E<sub>mc</sub> and the concurrent moments %s · %s k-in: %s" + (" (informative)" if c39 == "informative" else "") + "; axial 16.4-3 %s · 16.4-4 %s · C3-10 %s</small>"
+                    + "<br><small>E<sub>mc</sub>: %s (mechanism statics %s / %s, %s; suite max of the analysis %s / %s)%s</small>")
                    % (_num(e2.get("Emc_c"), "%.0f"), _num(e2.get("Emc_t"), "%.0f"), _num(e2.get("Pr_16_4_3"), "%.0f"), _num(e2.get("Tr_16_4_4"), "%.0f"), _num(e2.get("DC")),
+                      _num(e2.get("Mu_maj_C3_9"), "%.0f"), _num(e2.get("Mu_min_C3_9"), "%.0f"), _num(e2.get("DC_C3_9")), _num(e2.get("DC_16_4_3")), _num(e2.get("DC_16_4_4")), _num(e2.get("DC_C3_10")),
                       e2.get("Emc_basis", ""), _num(e2.get("Emc_mech_c"), "%.0f"), _num(e2.get("Emc_mech_t"), "%.0f"), e2.get("governing_c") or "", _num(e2.get("analysed_max_c"), "%.0f"),
                       _num(e2.get("analysed_max_t"), "%.0f"), ("; 0.2S = %.0f kip" % (0.2 * e2["S_kip"])) if e2.get("S_kip") else ""))
         else:
             x2c = "<small>not applicable: %s</small>" % (e2.get("reason") or "")
-        H.append("<tr><td>%s</td><td>%.0f</td><td>%s / %s</td><td>%s / %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s · %s · %s → %s</td><td>%s</td><td>%s %s<br><small>%s</small><br><small>%s</small></td></tr>"
+        dfm = "deformation" in (r.get("flexure_major"), r.get("flexure_minor"))
+        inf_c = ("%s · %s" % (_num(r.get("DC_C3_9_info")), _num(r.get("DC_C3_10_info")))) if dfm else "— <small>(flexure force-controlled: H1-1 in the verdict)</small>"
+        ax_only = dfm and c39 == "informative"
+        H.append("<tr><td>%s</td><td>%.0f</td><td>%s / %s</td><td>%s / %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s</td><td>%s · %s · %s · %s → %s</td><td>%s</td><td>%s</td><td>%s %s<br><small>%s</small><br><small>%s</small></td></tr>"
                  % (r["section"], r["z_in"], _num(r.get("Qu"), "%.0f"), _num(r.get("Qns"), "%.0f"), _num(r.get("demand"), "%.0f"), _num(r.get("demand_tension"), "%.0f"),
                     _num(r.get("phiBRn"), "%.0f"), _num(r.get("KLr"), "%.0f"), _num(r.get("Mu_maj"), "%.0f"), _num(r.get("Mu_min"), "%.0f"),
                     "%s / %s" % (r.get("flexure_major", "—"), (r.get("modelled") or {}).get("major", "?")), "%s / %s" % (r.get("flexure_minor", "—"), (r.get("modelled") or {}).get("minor", "?")),
                     ("M<sub>CE</sub> %s" if r.get("flexure_major") == "deformation" else "φM<sub>n</sub> %s") % _num(r.get("MCEx") if r.get("flexure_major") == "deformation" else r.get("phiMnx"), "%.0f"),
                     ("M<sub>CE</sub> %s" if r.get("flexure_minor") == "deformation" else "φM<sub>n</sub> %s") % _num(r.get("MCEy") if r.get("flexure_minor") == "deformation" else r.get("phiMny"), "%.0f"),
-                    _num(r.get("DC_axial")), _num(r.get("DC_H1_comp")), _num(r.get("DC_H1_tens")), _num(r.get("DC_C3_10")), _num(r.get("DC_default", r.get("DC"))), x2c,
+                    _num(r.get("DC_axial")), ("—" if ax_only else _num(r.get("DC_H1_comp"))), _num(r.get("DC_H1_tens")), ("—" if ax_only else _num(r.get("DC_C3_10"))),
+                    _num(r.get("DC_default", r.get("DC"))), inf_c, x2c,
                     _num(r.get("DC")), _tag(r["DC"] <= 1.0, "ok", "NG"), r.get("fc_basis", "16.4.2.1 Eqs. (16.4-1)/(16.4-2)"),
                     r.get("governing", "") + "".join("<br><span class='ng'>%s</span>" % f for f in (r.get("flags") or []))))
     H.append("</table>")
@@ -347,15 +385,24 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                  'hardening: beam M<sub>c</sub> = (M<sub>c</sub>/M<sub>y</sub>)M<sub>pe</sub> over the clear length between hinges; braces h·P<sub>ye</sub> in tension and P<sub>cre</sub> or 0.3 P<sub>cre</sub> in '
                  'compression = AISC 341-22 F2.3 analyses (a) and (b); BRBs ωQ<sub>CE</sub> / βωQ<sub>CE</sub>), sway in X, in Y and in both together (AISC 341-22 D1.4a, F2.3), and never less '
                  'than the suite maximum the analysis delivered. Load factor 1.0 on E<sub>mc</sub>; φ = 0.9 and B = 1.0 as for 16.4-1; R<sub>n</sub> = P<sub>n</sub> (AISC 360 E3) / F<sub>y</sub>A<sub>g</sub> (D2); '
-                 'D and 0.5L from the model\'s gravity state as in the default check; S = roof snow tributary to the column line (%s). Applied moments are neglected in this axial check as '
-                 'AISC 341-22 D1.4a(b) permits; the column\'s flexural hinging is accepted as a deformation-controlled action (16.4.2.2, table above). AISC 342 C3-10 is kept. '
+                 'D and 0.5L from the model\'s gravity state as in the default check; S = roof snow tributary to the column line (%s). %s '
                  'Columns that do not meet (1) and (2) keep the default check (reason in the table).%s</p>'
-                 % (x2.get("snow_basis") or "S = 0", (" " + x2["note"]) if x2.get("note") else ""))
+                 % (x2.get("snow_basis") or "S = 0",
+                    ("The Exception-2 verdict is axial (16.4-3 / 16.4-4); AISC 342-22 C3-9 with E<sub>mc</sub> and the analysed concurrent moments (per record the largest concurrent moment pair in "
+                     "compression and the most utilised concurrent instant; 16.4 suite statistic) over M<sub>CE</sub>, m = 1, and C3-10 are reported as informative." if c39 == "informative" else
+                     "Exception 2 relaxes the axial demand only: the Eq. (16.4-3) compression is combined with the analysed concurrent moments (per record the largest concurrent moment pair "
+                     "in compression and the most utilised concurrent instant; 16.4 suite statistic over the records) over M<sub>CE</sub> by AISC 342-22 C3-9 with m<sub>x</sub> = m<sub>y</sub> = 1 "
+                     "(column_flexure_interaction = verdict); C3-10 and C3-11 are kept; in net tension (16.4-4) the moment is judged by the hinge rotation (16.4.2.2)."),
+                    (" " + x2["note"]) if x2.get("note") else ""))
     H.append('<p class="note">Q<sub>ns</sub> is the gravity state of the nonlinear model itself (16.3.2 loads), split into D and 0.5L by the level totals. '
-             'Flexure is classified per AISC 342-22 C3.4: deformation-controlled for P<sub>G</sub>/P<sub>ye</sub> ≤ 0.6 (analysed moment with the expected strength M<sub>CE</sub>, F<sub>ye</sub> = R<sub>y</sub>F<sub>y</sub>, C3.4a.2b with m = 1, combined with the axial force in compression only; in net tension the deformation-controlled moment is judged by the hinge rotation), '
-             'force-controlled above (transformed by the 16.4.2.1 equations, resisted by φM<sub>n</sub>: F2 with C<sub>b</sub> = 1, F3/F6). '
+             'Flexure is classified per AISC 342-22 C3.4 (ASCE 41-23 7.5): deformation-controlled for P<sub>G</sub>/P<sub>ye</sub> ≤ 0.6 — the column\'s 16.4.2.1 check is then its axial force, and its moments are a deformation-controlled action judged by the hinge rotation against the valid range (16.4.2.2); '
+             'force-controlled above (moments transformed by the 16.4.2.1 equations, resisted by φM<sub>n</sub>: F2 with C<sub>b</sub> = 1, F3/F6, H1-1 interaction). '
+             'AISC 342-22 C3.4a.2b (C3-9 with the analysed moment over the expected strength M<sub>CE</sub>, F<sub>ye</sub> = R<sub>y</sub>F<sub>y</sub>, m = 1, compression only; C3-10): ' + (
+                 '<b>informative</b> — %s. Active setting: ch16_params force_controlled.column_flexure_interaction = "informative" ("verdict" puts C3-9 / C3-10 in the verdict). ' % C3_9_BASIS
+                 if c39 == "informative" else '<b>in the verdict</b> — active setting ch16_params force_controlled.column_flexure_interaction = "verdict" (default "informative": %s). ' % C3_9_BASIS) +
              'Unbraced lengths (E2 L<sub>c</sub> per axis, F2 L<sub>b</sub>): the HR design\'s column bracing where design/calc_package.json gives it (brace points or L<sub>cx</sub>/L<sub>cy</sub>/L<sub>b</sub>, listed in the notes), otherwise K = 1 with the column length about both axes and L<sub>b</sub> = column length. '
-             'A deformation-controlled axis modelled elastic (the minor axis of concentrated-hinge columns) whose moment exceeds M<sub>CE</sub> is flagged: the model cannot represent that yielding (16.3.1). '
+             'Concentrated-hinge (IMK) columns carry an independent uniaxial spring about each axis (NL-R2-32; minor axis: M<sub>pcey</sub> by AISC 342-22 Eqs. C3-7/C3-8 for W shapes, C3-5/C3-6 with M<sub>pey</sub> for HSS, Table C3.6 a/b/c; switch: column_flexure.minor_axis_hinge), so the minor-axis moment in this check is capped by its spring. '
+             'A deformation-controlled axis modelled elastic (the minor axis of concentrated-hinge columns when column_flexure.minor_axis_hinge = false) whose moment exceeds M<sub>CE</sub> is flagged: the model cannot represent that yielding (16.3.1). '
              'Peaks of P, M<sub>major</sub> and M<sub>minor</sub> are taken independently per record (not concurrent) — conservative.%s</p>'
              % ((" Notes: " + "; ".join(acc["fc_notes"])) if acc.get("fc_notes") else ""))
     if nlc.get("run"):
@@ -414,6 +461,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                         "label": r.get("label"), "record": r.get("record"), "reason": r.get("reason"), "retry": r.get("retry"),
                         "drift_points": r.get("drift_points"), "peak_drift_at": r.get("peak_drift_at"), "algorithmic_damping": r.get("algorithmic_damping"),
                         "window": r.get("window"), "budget": r.get("budget")} for r in results])
+    if _exist:                                                       # NL-R2-04: only for a declared existing structure
+        pk["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "the NLRHA (ASCE 7-22 Chapter 16)"))
     with open(os.path.join(outdir, "nlrha_package.json"), "w", encoding="utf-8") as f:
         json.dump(pk, f, indent=1, default=str)
     return os.path.join(outdir, "nlrha_report.html")

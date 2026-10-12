@@ -54,7 +54,7 @@ def describe(rc) -> str:
 
 
 def risk_category(pkg, override=None) -> str:
-    """Same resolution as the NLRHA (--risk-category, else cfg.py text, else Ie)."""
+    """Same resolution as the NLRHA (--risk-category, else the executed cfg risk_category, else Ie)."""
     if override:
         return normalise_rc(override)
     try:
@@ -87,7 +87,7 @@ def augment(acc: dict, run: dict, hinges: dict) -> dict:
         tags = run["hinge_tags"]
     except (KeyError, IndexError, TypeError):
         return augment_groups(acc)
-    by_key = {(g["kind"], g["section"], g["z_in"]): g for g in acc.get("groups") or []}
+    by_key = {(g["kind"], g["section"], g["z_in"], g.get("axis")): g for g in acc.get("groups") or []}     # NL-R2-32: axis
     for g in by_key.values():
         g.update(DC=None, LtdS=None, DC_DC=0.0, DC_LtdS=0.0)
     for j, t in enumerate(tags):
@@ -99,7 +99,7 @@ def augment(acc: dict, run: dict, hinges: dict) -> dict:
         else:
             IO, LS, CP = s.IO, s.LS, s.CP
             a = getattr(s, "a_pl", None)
-        g = by_key.get((h["kind"], h["section"], round(h["z"])))
+        g = by_key.get((h["kind"], h["section"], round(h["z"]), h.get("axis")))
         if g is None:
             continue
         dcl, lsl = dc_limit(IO, LS, a), ltds_limit(LS, CP)

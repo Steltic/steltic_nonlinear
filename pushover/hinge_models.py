@@ -352,6 +352,68 @@ def column_hinge(section: str, L_in: float, PG_kip: float, prm: dict) -> HingeSp
                      force_controlled=False, PG_over_Pye=r, compact=True, flags=tuple(flags), Lambda=lam, c_det=cdet)
 
 
+# NL-R2-32: minor-axis (y-axis) column hinge of the concentrated-plasticity model.
+# AISC 342-22 C3.4a.2.a.1 (PDF p.73, printed 41): "Mpcey, the expected plastic flexural strength of the section about
+# the minor principal axis (y-axis) at PUF, shall be determined using Equations C3-5 and C3-6, except that Mpey shall be
+# substituted for Mpex. Exception: It is permitted to determine Mpcey for wide-flange sections as follows":
+#   (1 - |P|/(4 Pye)) Mpey for |P|/Pye < 0.4 kappa (Eq. C3-7),  3/2 (1 - |P|/Pye) Mpey otherwise (Eq. C3-8).
+# The two lines cross at |P|/Pye = 0.4, so with kappa = 1 the piecewise form is their minimum (as for the major axis,
+# params_schema.MPCE_AISC342). Mpey = Mn of AISC 360-22 F6 (W) / F7 (HSS) for the limit state of yielding with Fye
+# (AISC 342-22 C2.3a.1 via the Mpey definition "in accordance with Section C2.3a.1"): W Fye min(Zy, 1.6 Sy), HSS Fye Zy.
+MPCE_MINOR_W = "min(1 - PG/(4*Pye), 3/2*(1 - PG/Pye))"
+
+
+def minor_axis_hinge_on(prm: dict) -> bool:
+    """column_flexure.minor_axis_hinge (default True). False -> the minor axis of IMK columns stays elastic (the
+    behaviour before NL-R2-32; the NLRHA force-controlled column check then flags minor moments above M_CE,y)."""
+    v = ((prm or {}).get("column_flexure") or {}).get("minor_axis_hinge", True)
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "off", "no", "0", "none", "elastic")
+    return bool(v)
+
+
+def column_hinge_minor(section: str, L_in: float, PG_kip: float, prm: dict, major: HingeSpec = None):
+    """NL-R2-32: the minor-axis (y-axis) flexural hinge of a column, or None (switched off, or the column's flexure
+    is force-controlled / has no Table C3.6 row -- then neither axis gets a hinge).
+
+    AISC 342-22 Table C3.6 ("Columns and Braces Subjected to Flexure with Axial Compression or Tension") has one set of
+    rows for column flexure, not one per axis: a, b, c and IO / LS / CP are functions of the section slenderness
+    (h/tw, bf/2tf, L/ry; HSS wall b/t) and PG/Pye only, and C3.4a.2.b applies them to "columns" -- so the minor axis takes
+    the SAME modelling parameters and permissible rotations as the major axis (and the same Lambda, flagged: the Lignos
+    et al. 2019 regression was fitted to strong-axis tests). What changes per axis: M_CE = Mpcey (C3-7 / C3-8 for W
+    shapes -- the Exception the clause permits; C3-5 / C3-6 with Mpey for HSS, i.e. column_flexure.Mpce_axial_reduction)
+    and theta_y by Eq. C3-15 with Iy. `column_flexure.Mpce_axial_reduction_minor` overrides the W-shape reduction."""
+    if not minor_axis_hinge_on(prm):
+        return None
+    maj = major if major is not None else column_hinge(section, L_in, PG_kip, prm)
+    if maj.force_controlled:
+        return None
+    p = SDB.props(section); cp = prm["column_flexure"]
+    Fye = maj.Fye_ksi
+    Pye = p["A"] * Fye
+    env = dict(PG=max(0.0, PG_kip), Pye=Pye, L=L_in, ry=p["ry"], math=math)
+    if p.get("hss"):                                       # F7 yielding; C3-5 / C3-6 with Mpey (no W-shape exception)
+        expr, basis = cp["Mpce_axial_reduction"], "AISC 342-22 Eqs. C3-5/C3-6 with Mpey"
+        Mpey = Fye * p["Zy"]
+    else:                                                  # F6 yielding: Mp = min(Fy Zy, 1.6 Fy Sy) with Fye
+        expr = cp.get("Mpce_axial_reduction_minor") or MPCE_MINOR_W
+        basis = ("column_flexure.Mpce_axial_reduction_minor" if cp.get("Mpce_axial_reduction_minor")
+                 else "AISC 342-22 Eqs. C3-7/C3-8 (wide-flange Exception, kappa = 1)")
+        Mpey = Fye * min(p["Zy"], 1.6 * p["Sy"])
+    red = eval(expr.replace("PG/Pye", "(PG/Pye)"), {}, env)
+    Mpe = Mpey * red
+    ty = _theta_y(Mpey / Fye, Fye, L_in, p["Iy"], red if cp.get("theta_y_uses_Mpce") else 1 - maj.PG_over_Pye)   # Eq. C3-15, I = Iy
+    flags = tuple(f for f in maj.flags) + (
+        "MINOR (y) axis: Mpcey = %.0f k-in (%s, x%.3f), theta_y = %.4f rad (Eq. C3-15, Iy); a/b/c and IO/LS/CP of AISC "
+        "342-22 Table C3.6 as for the major axis (the table is not axis-specific); independent uniaxial spring per axis "
+        "(no biaxial P-Mx-My interaction in the springs)" % (Mpe, basis, red, ty),)
+    if maj.Lambda:
+        flags += ("minor axis uses the column Lambda %.3f of the strong-axis regression (Lignos et al. 2019) -- "
+                  "no weak-axis regression in the parameter file" % maj.Lambda,)
+    from dataclasses import replace
+    return replace(maj, Mpe_kipin=Mpe, theta_y=ty, flags=flags)
+
+
 def modimk_args(h: HingeSpec, K0: float, post_cap_ratio: float = 0.15) -> list:
     """ModIMKPeakOriented argument list (after the tag). Lambda_S/C/A/K = h.Lambda (0 = no cyclic deterioration;
     NOTE the legacy ModIMK treats Lambda = 0 as 'no deterioration' too), exponents c = h.c_det.
@@ -937,7 +999,8 @@ def link_specs(section: str, e_in: float, prm: dict):
     Classification (C2.1): rho = e/(M_CE/V_CE): <= 1.6 shear, >= 2.6 flexure, else shear-flexure.
     Shear spring: Ks = G*As/e (As = d*tw, Commentary Eq. C-E2-2) so the series flexure + spring stiffness equals Eq.
     C-E2-1. Backbone (Figure C1.1): B (Vp, Delta_y = Vp/Ks), C = B + a*e with slope alpha_h*Ke (C2.4a.2.b: alpha_h = 6%
-    of the elastic slope permitted), capped at Vc_over_Vy_max*Vp; descent to c*Vp; strength lost beyond b*e.
+    of the elastic slope permitted), capped at Vc_over_Vy_max*Vp; descent to c*Vp; the residual strength c*Vp is kept
+    beyond b*e (NL-R2-22 round 4, user decision; b remains the end of the valid modelling range in the acceptance).
     Flexural end springs: Table C2.2 row 1 (a = 9 theta_y, b = 11 theta_y, c = 0.6, IO 0.25a, LS a, CP b) with
     theta_y = Mp e/(6EI), scaled by f_flex; for a shear-controlled link the flexural acceptance tends to 0, i.e. flexural
     yielding of a shear link is not a permitted deformation (limit 1e-5 rad), while the modelling a/b are kept unscaled
@@ -1001,8 +1064,21 @@ def link_specs(section: str, e_in: float, prm: dict):
 
 def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
     """Force-deformation (kip, in) material of the link shear spring: Hysteretic (full, non-pinched loops; shear links
-    show stable hysteresis until web fracture) with the Figure C1.1 envelope B-C-D, wrapped in MinMax at Delta_y + b*e
-    (loss of strength beyond b). Optional cyclic damage via ebf_link.shear.damage1 / damage2 (Hysteretic damfc1/2)."""
+    show stable hysteresis until web fracture) on the AISC 342-22 Figure C1.1 envelope (Type 1, ASCE 41-23 7.5) with the
+    Table C2.4 modelling parameters: B (V_CE = Vp at Delta_y), C (Vc at Delta_y + a e), D = residual strength c Vp
+    (Table C2.4 'Residual Strength Ratio' c, shear-controlled row: 0.8) reached post_cap_frac_of_a * a e after C.
+
+    NL-R2-22 (round 4) -- the residual strength is KEPT beyond Delta_y + b e (user decision). The envelope used to be
+    wrapped in MinMax at Delta_y + b e, i.e. the Figure C1.1 drop at point E to zero strength: in the Ex8 NLRHA the
+    five storey-1 links of one frame line passed b together (Loma Prieta Gilroy #3, t = 5.75 s), carried V = 0 for
+    the rest of the record, and that zero-strength rule alone made a storey mechanism (drift ran away, record NC).
+    OpenSees Hysteretic holds the stress of its third point for any strain beyond it (the descent C -> D has a
+    negative slope), so the spring carries c Vp at every deformation past D, in both directions and on every
+    reloading cycle; no deformation cap is applied (none is needed: the envelope is bounded and never reaches zero
+    stiffness-and-strength). Exceeding b is still reported: the deformation acceptance (pushover postprocess, NLRHA
+    16.4.2.2 'valid range b' and the per-record 16.4.1.1 screen) compares the peak plastic deformation with b e and
+    CP e exactly as before -- only the force the model carries past b changed.
+    Optional cyclic damage via ebf_link.shear.damage1 / damage2 (Hysteretic damfc1/2)."""
     import openseespy.opensees as ops
     g, _ = param_group(prm, "ebf_link")
     sh = g.get("shear") or {}
@@ -1010,13 +1086,31 @@ def make_link_shear_material(tag: int, s: LinkShearSpec, prm: dict) -> str:
     e2 = dy + s.a_pl
     drop = max(float(sh.get("post_cap_frac_of_a", 0.1)) * s.a_pl, 1e-4)
     e3 = e2 + drop
+    c = min(s.c_res, s.Vc_over_Vy)                  # a residual above the capping strength would make the last branch harden
     d1, d2 = float(sh.get("damage1", 0.0) or 0.0), float(sh.get("damage2", 0.0) or 0.0)
-    inner = tag + INNER_MAT_OFFSET
-    ops.uniaxialMaterial("Hysteretic", inner, Vy, dy, s.Vc_over_Vy * Vy, e2, s.c_res * Vy, e3,
-                         -Vy, -dy, -s.Vc_over_Vy * Vy, -e2, -s.c_res * Vy, -e3, 1.0, 1.0, d1, d2, 0.0)
-    eu = dy + s.b_pl
-    ops.uniaxialMaterial("MinMax", tag, inner, "-min", -eu, "-max", eu)
-    return "Hysteretic+MinMax"
+    ops.uniaxialMaterial("Hysteretic", tag, Vy, dy, s.Vc_over_Vy * Vy, e2, c * Vy, e3,
+                         -Vy, -dy, -s.Vc_over_Vy * Vy, -e2, -c * Vy, -e3, 1.0, 1.0, d1, d2, 0.0)
+    return "Hysteretic"
+
+
+def link_shear_envelope(s: LinkShearSpec, prm: dict, d: float) -> float:
+    """Monotonic envelope force (kip) of make_link_shear_material at deformation d (in, signed): the closed form the
+    unit tests compare the OpenSees material with. Beyond D (and beyond b) the force stays at c Vp."""
+    g, _ = param_group(prm, "ebf_link")
+    sh = g.get("shear") or {}
+    Vy, dy = s.Vp_kip, s.theta_y
+    e2 = dy + s.a_pl; e3 = e2 + max(float(sh.get("post_cap_frac_of_a", 0.1)) * s.a_pl, 1e-4)
+    Vc, Vr = s.Vc_over_Vy * Vy, min(s.c_res, s.Vc_over_Vy) * Vy
+    x = abs(d)
+    if x <= dy:
+        f = Vy * x / dy
+    elif x <= e2:
+        f = Vy + (Vc - Vy) * (x - dy) / (e2 - dy)
+    elif x <= e3:
+        f = Vc + (Vr - Vc) * (x - e2) / (e3 - e2)
+    else:
+        f = Vr
+    return math.copysign(f, d) if d else 0.0
 
 
 # NL-R2-13: lateral systems this module has no element model for. A package declaring one is REFUSED (NOT EVALUATED)
@@ -1214,6 +1308,8 @@ def brace_axial_force(tag: int, h: dict) -> float:
     (h['force_ele'] set), the basic axial force of its first fibre segment (the registered tag is a zero-stiffness
     monitor truss that only measures the end-to-end deformation)."""
     import openseespy.opensees as ops
+    if h.get("fractured"):                      # NL-R2-20 (round 4): fractured through, fibre chain removed (nlrha.brace_fracture)
+        return 0.0
     if h.get("force_ele"):
         f = ops.eleResponse(h["force_ele"], "basicForce")
         return f[0] if f else 0.0

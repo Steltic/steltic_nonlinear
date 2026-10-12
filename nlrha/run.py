@@ -22,6 +22,7 @@ from pushover import hinge_models as HM
 from . import model as MD
 from . import drift as DR
 from . import ground_motions as GM
+from . import brace_fracture as BF
 
 G_IN = 386.4
 
@@ -92,6 +93,23 @@ def transient_step(h):
     return ok
 
 
+def transient_analysis(tol, integrator="hht", system="UmfPack"):
+    """The NLRHA transient analysis objects (wiped and re-created): Transformation constraints, RCM, UmfPack,
+    NormDispIncr tol / 30 iterations, Newton, HHT alpha = 0.9 (or Newmark average acceleration). Used at the start of a
+    record and, NL-R2-20 (round 4), to rebuild the analysis on a domain that lost a fractured brace's elements and nodes
+    (OpenSees' UmfPack SOE cannot shrink on a domainChange; the transient integrator re-reads displacement / velocity /
+    acceleration from the committed nodes -- tests/test_brace_fracture.py checks the continuation against an unshrunk
+    BandGeneral run)."""
+    ops.wipeAnalysis()
+    ops.constraints("Transformation"); ops.numberer("RCM"); ops.system(system)
+    ops.test("NormDispIncr", tol, 30, 0); ops.algorithm("Newton")
+    if integrator == "newmark":
+        ops.integrator("Newmark", 0.5, 0.25)
+    else:
+        ops.integrator("HHT", 0.9)
+    ops.analysis("Transient")
+
+
 def _column_info(pkg, hinges, stats, PG=None, prm=None):
     """Per column element: the element tags at its i and j ends (sub-divided members: first and last segment), the
     local force indices of the major / minor moments, how each flexural axis is MODELLED (hinge / elastic / fibre) and
@@ -115,6 +133,8 @@ def _column_info(pkg, hinges, stats, PG=None, prm=None):
         slot = NM.strong_I_slot(pkg, e, "col")
         maj = (5, 11) if slot == "Iz" else (4, 10); mnr = (4, 10) if slot == "Iz" else (5, 11)
         ends = {h["end"] for h in hinges.values() if h.get("ele") == c and h.get("kind") == "col"}
+        maj_ends = {h["end"] for h in hinges.values() if h.get("ele") == c and h.get("kind") == "col" and h.get("axis") != "minor"}
+        min_ends = {h["end"] for h in hinges.values() if h.get("ele") == c and h.get("kind") == "col" and h.get("axis") == "minor"}
         fc_col = False
         sec = pkg.schedule.get(c, {}).get("section")
         if sec and prm is not None:
@@ -124,7 +144,9 @@ def _column_info(pkg, hinges, stats, PG=None, prm=None):
             except Exception:                                       # noqa: BLE001
                 fc_col = False
         cls = "force" if fc_col else "deformation"
-        modelled = dict(major=("fibre" if fibre else ("hinge" if ends else "elastic")), minor=("fibre" if fibre else "elastic"))
+        # NL-R2-32: IMK columns carry a minor-axis spring too unless column_flexure.minor_axis_hinge = false
+        modelled = dict(major=("fibre" if fibre else ("hinge" if maj_ends else "elastic")),
+                        minor=("fibre" if fibre else ("hinge" if min_ends else "elastic")))
         try:                                                        # proxy strengths, only to pick the concurrent instants
             from pushover import sections_db as SDB
             pp = SDB.props(sec); Fye = float(((prm or {}).get("material") or {}).get("Fy_ksi", 50.0)) * float(((prm or {}).get("material") or {}).get("Ry_expected", 1.1))
@@ -147,32 +169,120 @@ def _column_forces(ci):
     return P, max(ti[1], tj[1]), max(ti[2], tj[2]), (ti, tj)
 
 
-def link_state_note(hinges):
-    """NL-R2-22: '' or '; EBF links at the last converged state: ...' -- how many link shear springs (AISC 342-22 Table
-    C2.4 backbone) are at or past the capping deformation a (strength loss begins) or past b (strength lost), with the
-    largest plastic shear rotation gamma_p = (|d| - Delta_y) / e. Read at the last committed state."""
+def link_state_note(hinges, peak=None):
+    """NL-R2-22: '' or '; EBF links over the record: ...' -- how many link shear springs (AISC 342-22 Table C2.4
+    backbone) reached the capping deformation a (strength loss to c Vp begins) or went past b (end of the valid
+    modelling range), with the largest plastic shear rotation gamma_p = plastic transverse displacement / e.
+
+    NL-R2-34: `peak` = {hinge tag: peak |plastic deformation| over the record} (run_record's peak_def, tracked at every
+    committed step) -- a link's deformation can come back below a or b after it passed them, so the state at the last
+    converged step under-reports. Without `peak` the last committed state is read (plastic = |d| - |V|/K0, the
+    quantity peak_def tracks; |d| - Delta_y when the hinge has no K0)."""
     rows = []
     for t, h in hinges.items():
         if h.get("kind") != "link":
             continue
-        d, V = NM.zero_length_spring(t, 3)
         s = h["spec"]
-        g, a, b = (abs(d) - s.theta_y) / s.e_in, s.a_pl / s.e_in, s.b_pl / s.e_in
-        # past b: once the MinMax wrapper (make_link_shear_material) has failed the link carries zero shear for good, but
-        # its deformation can come back below Delta_y + b e (Ex8 Gilroy: 5 links with V = 0 at d = 5.7-6.1 in < 6.21 in
-        # while the storey drift ran to 5.7 %), so a failed link is recognised by V = 0 beyond a (on the Table C2.4
-        # envelope the force beyond a is >= c Vp > 0)
-        lost = g >= b or (g >= 0.98 * a and abs(V) <= 1e-6 * max(abs(s.Vp_kip), 1.0))
-        rows.append((g, a, b, h["ele"], lost))
+        if peak is not None and t in peak:
+            g = abs(peak[t]) / s.e_in
+        else:
+            d, V = NM.zero_length_spring(t, 3)
+            g = ((abs(d) - abs(V) / h["K0"]) if h.get("K0") else (abs(d) - s.theta_y)) / s.e_in
+        rows.append((g, s.a_pl / s.e_in, s.b_pl / s.e_in, h["ele"]))
     if not rows:
         return ""
-    n_a = sum(1 for g, a, b, _, lost in rows if g >= 0.98 * a or lost)
-    n_b = sum(1 for g, a, b, _, lost in rows if lost)
-    g, a, b, ele, _ = max(rows)
+    n_a = sum(1 for g, a, b, _ in rows if g >= 0.98 * a)
+    n_b = sum(1 for g, a, b, _ in rows if g >= b)
+    g, a, b, ele = max(rows)
     if not n_a:
         return ""
-    return ("; EBF links at the last converged state: %d of %d at or past the capping rotation a (strength loss, AISC 342-22 Table C2.4), "
-            "%d past b (shear strength lost); max gamma_p %.3f rad (link %s; a %.3f, b %.3f rad)" % (n_a, len(rows), n_b, g, ele, a, b))
+    return ("; EBF links %s: %d of %d reached the capping rotation a (strength loss to the residual c Vp, AISC 342-22 Table C2.4), "
+            "%d past b (beyond the valid modelling range; residual strength c Vp kept); max gamma_p %.3f rad (link %s; a %.3f, b %.3f rad)"
+            % ("over the record (peak)" if peak is not None else "at the last converged state", n_a, len(rows), n_b, g, ele, a, b))
+
+
+def hinge_deformations(hz, hinges, K0):
+    """NL-R2-34: plastic deformation of every registered hinge (in `hz` order) at the current committed state -- the
+    quantity of the deformation acceptance (brace: total axial deformation; fibre end: plastic rotation; IMK / link
+    spring: d - F/K0)."""
+    out = []
+    for tg in hz:
+        h = hinges[tg]
+        if h["kind"] == "brace":
+            d = ops.eleResponse(tg, "deformation"); v = d[0] if d else 0.0
+        elif h.get("form") == "fibre_end":            # fibre beam/column end region (pushover NL-01)
+            v = NM.fibre_end_rotation(h)
+        elif h.get("form") == "fbc_cp":
+            # ConcentratedPlasticity end IP: Uniaxial M-theta_p (comp 0). Subtract My/Ke elastic.
+            ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
+            d = ops.eleResponse(h["ele"], "section", ip, "deformation")
+            f = ops.eleResponse(h["ele"], "section", ip, "force")
+            if d and len(d) > jc:
+                fj = f[jc] if (f and len(f) > jc) else 0.0
+                v = d[jc] - fj / K0[tg]
+            else:
+                v = 0.0
+        else:
+            th, M = NM.zero_length_spring(h.get("zl", tg), h["dof"])  # spring force = node-2 force (sign fix); NL-R2-32 minor key -> its zeroLength
+            v = th - M / K0[tg]
+        out.append(v)
+    return out
+
+
+def update_peaks(peak_def, signed_def, hz, vals):
+    """NL-R2-34: fold one committed state's hinge deformations (`vals`, in `hz` order) into the record envelopes:
+    peak_def[t] = max |v|, signed_def[t] = (max v, min v)."""
+    for tg, v in zip(hz, vals):
+        if abs(v) > peak_def[tg]:
+            peak_def[tg] = abs(v)
+        p, n = signed_def[tg]
+        if v > p or v < n:
+            signed_def[tg] = (max(p, v), min(n, v))
+
+
+def update_col_env(col_env, peak_colN, colinfo, forces=None):
+    """NL-R2-34 (columns): fold one committed state's column forces into the record's force-controlled column envelope
+    (16.4.2.1): col_env[c] Pc (max compression), Pt (min, most tensile), Mmaj / Mmin (max |M| over both ends), the
+    concurrent (P, |Mmaj|, |Mmin|) instants conc_c / conc_t (most utilised in compression / tension, by the proxy
+    strengths A Fye, Zx Fye, Zy Fye) and conc_m (NL-R2-16 round 4: the largest concurrent moment pair while in
+    compression), and peak_colN[c] = max compression. Called at EVERY committed step (it was sampled only at the
+    viewer frames, every rec_every * dt_max: on Ex22 record 1 the frame sampling missed up to 10 % of Pc / Mmin and up
+    to 38.6 kip of tension). `forces(ci)` -> _column_forces(ci) by default (tests pass a stub)."""
+    forces = forces or _column_forces
+    for c, ci in colinfo.items():
+        f = forces(ci)
+        if f is None:
+            continue
+        ev = col_env[c]
+        if f[0] > ev["Pc"]:
+            ev["Pc"] = f[0]
+        if f[0] < ev["Pt"]:
+            ev["Pt"] = f[0]
+        if f[1] > ev["Mmaj"]:
+            ev["Mmaj"] = f[1]
+        if f[2] > ev["Mmin"]:
+            ev["Mmin"] = f[2]
+        px = ci.get("proxy")
+        if px:                                                      # concurrent (P, Mmaj, Mmin) at the most utilised instant / end
+            for trip in f[3]:
+                mm = trip[1] / px[1] + trip[2] / px[2]
+                uc = max(trip[0], 0.0) / px[0] + mm; ut = max(-trip[0], 0.0) / px[0] + mm
+                if uc > ev["_uc"]:
+                    ev["_uc"] = uc; ev["conc_c"] = trip
+                if trip[0] < 0 and ut > ev["_ut"]:
+                    ev["_ut"] = ut; ev["conc_t"] = trip
+                # NL-R2-16 (round 4): the largest concurrent moment pair while in compression -- the moments of
+                # the 16.4.2.1 Exception 2 check (C3-9 with E_mc, AISC 342-22 C3.4a.2b)
+                if trip[0] > 0 and mm > ev["_um"]:
+                    ev["_um"] = mm; ev["conc_m"] = trip
+        if f[0] > peak_colN[c]:
+            peak_colN[c] = f[0]
+
+
+def new_col_env(cols):
+    """Empty record envelope for update_col_env."""
+    return ({c: dict(Pc=-1e30, Pt=1e30, Mmaj=0.0, Mmin=0.0, conc_c=None, conc_t=None, conc_m=None, _uc=-1.0, _ut=-1.0, _um=-1.0) for c in cols},
+            {c: 0.0 for c in cols})
 
 
 def _truss_axial(tag):
@@ -395,8 +505,6 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     ops.timeSeries("Path", 12, "-dt", dt_rec, "-values", *(ay * G_IN * sf).tolist())
     ops.pattern("UniformExcitation", 11, 1, "-accel", 11)
     ops.pattern("UniformExcitation", 12, 2, "-accel", 12)
-    ops.wipeAnalysis()
-    ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
     # NL-R2-21 (R5): displacement-increment tolerance 1e-5 in (on 10k+ DOF braced models Newton stalls at a round-off floor of
     # 1e-6..1e-5 in) and NO fallback algorithms by default: ModifiedNewton -initial never converged, and KrylovNewton /
     # NewtonLineSearch "converged" on the displacement test while out of equilibrium, committing states that blew up a few
@@ -406,15 +514,16 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     num = (prm.get("numerics") or {}) if isinstance(prm, dict) else {}
     tol = float(num.get("nlrha_disp_tol", 1e-5))
     ladder = (("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",)) if num.get("nlrha_fallback") == "legacy" else ()
-    ops.test("NormDispIncr", tol, 30, 0); ops.algorithm("Newton")
-    if integrator == "newmark":
-        ops.integrator("Newmark", 0.5, 0.25)                        # average acceleration, no numerical damping
+    transient_analysis(tol, integrator)
+    if integrator == "newmark":                                     # average acceleration, no numerical damping
         alg_damp = dict(integrator="Newmark average acceleration", alpha=None, xi_T1=0.0, xi_02T1=0.0)
-    else:
-        ops.integrator("HHT", 0.9)                                  # alpha = 0.9: second-order accurate, damps the spurious high modes of stiff hinge springs
+    else:                                                           # alpha = 0.9: second-order accurate, damps the spurious high modes of stiff hinge springs
         alg_damp = dict(integrator="HHT", alpha=0.9, xi_T1=hht_algorithmic_damping(0.9, dt_max, T1),
                         xi_02T1=hht_algorithmic_damping(0.9, dt_max, 0.2 * T1))
-    ops.analysis("Transient")
+
+    def _rebuild_analysis():
+        # NL-R2-20 (round 4): the same analysis on a domain that lost a fractured brace's elements and nodes
+        transient_analysis(tol, integrator)
     dt = dt_max                                                   # Path series interpolates the record; dt_max ~ T_lower/15
     dt_cur = dt_max; n_ok_since_cut = 0; consec_fail = 0; crawl = 0; n_fallback = 0; dt_floor = dt_max / 32.0; dt_min_used = dt_max
     next_rec = rec_every * dt_max; next_hist = 5 * dt_max                 # time-based recording (the step is adaptive)
@@ -430,8 +539,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     cols = list(colinfo)
     peak_drift = np.zeros((len(lv), 2)); peak_at = [[None, None] for _ in lv]; peak_roof = np.zeros(2)
     peak_def = {t: 0.0 for t in hz}; signed_def = {t: (0.0, 0.0) for t in hz}       # (max positive, max negative)
-    peak_colN = {c: 0.0 for c in cols}
-    col_env = {c: dict(Pc=-1e30, Pt=1e30, Mmaj=0.0, Mmin=0.0, conc_c=None, conc_t=None, _uc=-1.0, _ut=-1.0) for c in cols}
+    col_env, peak_colN = new_col_env(cols)
     hist_t, hist_roof = [], []
     brace_hist = []
     frames_t, frames_story, frames_brace, frames_ag = [], [], [], []       # viewer frames (every rec_every steps)
@@ -443,6 +551,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     frames_hinge = []
     masters = [m for k, z, m, s in lv]
     braces = [t for t in hz if hinges[t]["kind"] == "brace"]
+    frac = BF.FractureMonitor(hinges, _rebuild_analysis)                             # NL-R2-20 (round 4): fractured-through braces leave the model
     n_rec = len(ax)
     n_nominal = max(1, int(math.ceil(t_end / dt_max)))
     step_budget = int(step_budget_factor * n_nominal) if step_budget_factor else 0
@@ -489,12 +598,24 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             if dt_cur < dt_max and n_ok_since_cut >= 8:                  # grow back towards the nominal step
                 dt_cur = min(dt_max, dt_cur * 2); n_ok_since_cut = 0
         step += 1
+        if frac.braces:
+            for ev in frac.check(t + toff):
+                if verbose:
+                    print("[nlrha]   t=%.3f s: brace %d (%s, z %.0f in) fractured through at segment %d/%d section %d%s -- removed from the model"
+                          % (ev["t"], ev["brace"], ev["section"], ev["z"], ev["segment"], ev["n_segments"], ev["ip"],
+                             "" if ev["n_units"] == 1 else " (X half %d of %d)" % (ev["unit"] + 1, ev["n_units"])), flush=True)
         for b in ebf_br:                                            # NL-R2-22: EBF brace axial envelope (every step)
             nb = _truss_axial(b); ev = ebf_env[b]
             if nb > ev["Pt"]:
                 ev["Pt"] = nb
             if -nb > ev["Pc"]:
                 ev["Pc"] = -nb
+        # NL-R2-34: hinge deformation peaks at EVERY committed step (they were sampled only at the viewer frames, every
+        # rec_every * dt_max of analysis time, so a peak between frames -- e.g. an EBF link passing b and coming back --
+        # was missed and the acceptance read a smaller, later deformation)
+        hvals = hinge_deformations(hz, hinges, K0)
+        update_peaks(peak_def, signed_def, hz, hvals)
+        update_col_env(col_env, peak_colN, colinfo)                # NL-R2-34 (columns): force-controlled column envelope, every step
         # 16.4.1.2 drift at vertically aligned points, both directions (NL-12)
         disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
         dnow, at = DR.story_drifts(pts, disp)
@@ -512,51 +633,13 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             frames_story.append([[round(ops.nodeDisp(m, 1), 3), round(ops.nodeDisp(m, 2), 3), round(ops.nodeDisp(m, 6), 6)] for m in masters])
             frames_brace.append([round(ops.eleResponse(b, "deformation")[0], 4) for b in braces])
             ir = min(int(t / dt_rec), n_rec - 1); frames_ag.append([round(float(ax[ir] * sf), 4), round(float(ay[ir] * sf), 4)])
-            hinge_row = []
-            for tg in hz:
-                h = hinges[tg]
-                if h["kind"] == "brace":
-                    d = ops.eleResponse(tg, "deformation"); v = d[0] if d else 0.0
-                elif h.get("form") == "fibre_end":            # fibre beam/column end region (pushover NL-01)
-                    v = NM.fibre_end_rotation(h)
-                elif h.get("form") == "fbc_cp":
-                    # ConcentratedPlasticity end IP: Uniaxial M–θ_p (comp 0). Subtract My/Ke elastic.
-                    ip = h.get("sec_ip", 1); jc = h.get("sec_comp", 0)
-                    d = ops.eleResponse(h["ele"], "section", ip, "deformation")
-                    f = ops.eleResponse(h["ele"], "section", ip, "force")
-                    if d and len(d) > jc:
-                        fj = f[jc] if (f and len(f) > jc) else 0.0
-                        v = d[jc] - fj / K0[tg]
-                    else:
-                        v = 0.0
-                else:
-                    th, M = NM.zero_length_spring(tg, h["dof"])      # spring force = node-2 force (sign fix)
-                    v = th - M / K0[tg]
-                peak_def[tg] = max(peak_def[tg], abs(v))
-                p, n = signed_def[tg]; signed_def[tg] = (max(p, v), min(n, v))
-                hinge_row.append(round(v, 6))
-            frames_hinge.append(hinge_row)
-            for c in cols:
-                f = _column_forces(colinfo[c])
-                if f is None:
-                    continue
-                ev = col_env[c]
-                ev["Pc"] = max(ev["Pc"], f[0]); ev["Pt"] = min(ev["Pt"], f[0]); ev["Mmaj"] = max(ev["Mmaj"], f[1]); ev["Mmin"] = max(ev["Mmin"], f[2])
-                px = colinfo[c].get("proxy")
-                if px:                                              # concurrent (P, Mmaj, Mmin) at the most utilised instant / end
-                    for trip in f[3]:
-                        mm = trip[1] / px[1] + trip[2] / px[2]
-                        uc = max(trip[0], 0.0) / px[0] + mm; ut = max(-trip[0], 0.0) / px[0] + mm
-                        if uc > ev["_uc"]:
-                            ev["_uc"] = uc; ev["conc_c"] = trip
-                        if trip[0] < 0 and ut > ev["_ut"]:
-                            ev["_ut"] = ut; ev["conc_t"] = trip
-                peak_colN[c] = max(peak_colN[c], f[0])
+            frames_hinge.append([round(v, 6) for v in hvals])
             if sample_brace and sample_brace in hinges:
                 d = ops.eleResponse(sample_brace, "deformation")
                 brace_hist.append((d[0] if d else 0.0, HM.brace_axial_force(sample_brace, hinges[sample_brace])))   # NL-10: physical-theory braces
     if status == "nonconvergence":                                  # NL-R2-22: say when the EBF links have lost strength
-        reason += link_state_note(hinges)
+        reason += link_state_note(hinges, peak_def)
+    reason += frac.summary()                                        # NL-R2-20 (round 4): '' unless a brace fractured through
     # residual drift (structure at rest after free vibration) -- only meaningful when the record completed
     if status == "completed":
         disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
@@ -564,7 +647,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     else:
         resid = np.full(len(lv), np.nan)
     col_env = {c: dict(Pc=(v["Pc"] if v["Pc"] > -1e29 else None), Pt=(v["Pt"] if v["Pt"] < 1e29 else None), Mmaj=v["Mmaj"], Mmin=v["Mmin"],
-                       conc_c=v["conc_c"], conc_t=v["conc_t"]) for c, v in col_env.items()}
+                       conc_c=v["conc_c"], conc_t=v["conc_t"], conc_m=v["conc_m"]) for c, v in col_env.items()}
     out = dict(record=rec["id"], label="%s %s (%s)" % (rec.get("earthquake") or rec["id"], rec.get("station") or "", rec.get("year") or "?"), sf=sf, x_comp=rec["x_comp"],
                converged=(status == "completed"), status=status, reason=reason, steps=step, fails=fails, fallback_steps=n_fallback, analyze_calls=calls,
                budget=dict(wall_s=wall_budget_s, basis=budget_basis, step_calls=step_budget, n_nodes=n_nodes),
@@ -578,13 +661,16 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                frames=dict(t=frames_t, story=frames_story, brace_tags=braces, brace=frames_brace, ag=frames_ag,
                            hinge_tags=list(hz), hinge=frames_hinge, masters=masters),
                hinges_meta={t: dict(kind=hinges[t]["kind"], section=hinges[t]["section"], z=hinges[t]["z"], ele=hinges[t]["ele"], end=hinges[t]["end"],
-                                    rbs_offset_in=hinges[t].get("rbs_offset_in")) for t in hz},     # NL-R2-16: hinge offset for the Emc beam shear
+                                    rbs_offset_in=hinges[t].get("rbs_offset_in"), **({"axis": hinges[t]["axis"]} if hinges[t].get("axis") else {}))
+                            for t in hz},     # NL-R2-16: hinge offset for the Emc beam shear; NL-R2-32: column minor-axis springs
                specs={t: hinges[t]["spec"] for t in hz}, heights=H, stats=stats)
+    if frac.events:                                                 # NL-R2-20 (round 4)
+        out["brace_fractures"] = frac.events
     if verbose:
         print("[nlrha] %-40s sf=%.2f  %s  steps=%d fails=%d fallback=%d  max drift X %.2f%% Y %.2f%%  roof %.1f/%.1f in  (%.0f s)%s"
               % (out["label"][:40], sf, {"completed": "ok ", "nonconvergence": "NC ", "incomplete": "INC"}[status], step, fails, n_fallback,
                  100 * peak_drift[:, 0].max(), 100 * peak_drift[:, 1].max(), peak_roof[0], peak_roof[1], out["seconds"],
-                 "" if status == "completed" else "  -- " + reason))
+                 "" if (status == "completed" and not frac.events) else "  -- " + reason))
     return out
 
 

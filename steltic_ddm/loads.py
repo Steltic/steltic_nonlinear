@@ -130,6 +130,29 @@ def hr_member_location(geo, nm, member):
     return None
 
 
+def roof_uplift_pressures(cfg, model, uplift):
+    """NL-R2-L3 (disclosure): the MWFRS roof pressure (psf, negative = upward) the HR engine adds to each roof bay of
+    a "(roof uplift)" case -- p = qh (G Cp - GCpi), ASCE 7-22 Eq. 27.3-1 with the roof Cp of Fig. 27.3-1 at the bay
+    centre's distance from the windward edge -- computed with the HR functions (static_model._wind_qh / _roof_cp) the
+    same way static_model._case_pieces does. -> (qh_psf, {(k, i, j): p_psf})."""
+    import static_model as SM
+    qh, h = SM._wind_qh(cfg)
+    dirn, sgn = uplift
+    w = cfg.get("wind") or {}
+    GCpi, G = float(w.get("GCpi", 0.18)), float(w.get("G", 0.85))
+    pts = [c for t, c in model["coord"].items() if t < SM._SUB0]
+    q = 0 if dirn == "X" else 1
+    lo, hi = min(c[q] for c in pts), max(c[q] for c in pts)
+    out = {}
+    for (k, i, j), b in model["bays"].items():
+        if not b["roof"]:
+            continue
+        cen = (b["x0"] + 0.5 * b["dx"]) if dirn == "X" else (b["y0"] + 0.5 * b["dy"])
+        dist = ((cen - lo) if sgn > 0 else (hi - cen)) / 12.0
+        out[(k, i, j)] = qh * (G * SM._roof_cp(cfg, dist, h, (hi - lo) / 12.0) - GCpi)
+    return qh, out
+
+
 def beam_udl(cfg, nm, pres, member, seg_index, nseg, fD, fL, fLr):
     """kip/in on sub-element seg_index (0..nseg-1) of a grid beam -- LEGACY two-way 45-degree tributary, used only
     when hr_gravity_geometry is unavailable (NL-R2-03: it ignores one-way decks / infill and overloads such beams)."""

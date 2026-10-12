@@ -180,6 +180,8 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     parts.append('<h1>%s — system capacity by advanced analysis</h1>' % _h(name))
     parts.append('<div class="meta"><span>%s</span><span>steltic_ddm 0.1</span><span>kip · in · ksi</span><span>openseespy GMNIA</span>'
                  '<span>cfg.py %s · model_opensees.py %s · calc_package.json %s</span></div>' % (now, prov["cfg.py"], prov["model_opensees.py"], prov["design/calc_package.json"]))
+    from pushover import existing as _EX                          # NL-R2-04 (warning only)
+    parts.append(_EX.banner_html(_EX.existing_structure(cfg=cfg), "the DDM (design by GMNIA)", _EX.DDM_CRITERIA))
     statuses = sorted({r["phi"]["status"] for r in runs})
     parts.append('<div class="flag"><b>System resistance factors — status: %s.</b> %s φ<sub>s</sub> is a literature value — it has no '
                  'specification clause.</div>' % (", ".join(statuses), phi_s_status_text(runs)))
@@ -248,13 +250,16 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
     parts.append('<li><b>Elements:</b> %s, 3-D Corotational transformation, %d Gauss–Lobatto points; %d / %d / %d sub-elements per column / beam / brace.</li>'
                  % ("dispBeamColumn" if o.get("fast") else "forceBeamColumn", o.get("nip", 5), *o.get("nsub", (2, 2, 4))))
     parts.append('<li><b>Sections:</b> fibre W-shapes from d, t<sub>w</sub>, b<sub>f</sub>, t<sub>f</sub> (fillets ignored: A and I 1–3 %% low, conservative); rectangular HSS with A500 design thickness 0.93 t; %s.</li>'
-                 % _h(", ".join("%s (%d fibres)" % (l, n) for _, l, _, n, _ in o.get("section_log", [])[:12])))
+                 % _h(", ".join("%s (%d fibres)" % (l, n) for _, l, _, n, _ in [x for x in o.get("section_log", []) if x[1] != "special"][:12])))
     parts.append('<li><b>Material:</b> Steel01, F<sub>y</sub> = %.0f ksi (nominal), E = 29 000 ksi, kinematic hardening b = %.3f.</li>' % (o.get("Fy", 50.0), o.get("hardening", 0.002)))
     parts.append('<li><b>Residual stresses:</b> %s (W: Galambos–Ketter linear pattern, σ<sub>rc</sub> = 0.3 F<sub>y</sub> at flange tips, self-equilibrating; HSS: provisional membrane pattern).</li>' % _h(o.get("residual")))
     parts.append('<li><b>Imperfections:</b> whole-building out-of-plumb ψ = 1/%d in the direction of the lateral load (gravity cases: %s); member out-of-straightness L/%d half-sine, weak axis for columns, out-of-plane for braces.</li>'
                  % (round(1 / o.get("psi", 1 / 500)), o.get("gravity_dirs", "+X and +Y"), round(1 / o.get("bow", 1 / 1000))))
     parts.append('<li><b>Joints:</b> as designed — Steltic beam releases become true pins (duplicate node + zeroLength, released rotation carries no stiffness); brace ends pinned in bending, torsion retained; braces do not share a node at the X-crossing (K = 1 on the full diagonal, conservative).</li>')
     parts.append('<li><b>Diaphragms / bases:</b> rigid diaphragms and base fixities exactly as recorded in model_opensees.py.</li>')
+    notes = [x[4] for x in o.get("section_log", []) if len(x) > 4 and x[1] == "special"]
+    if notes:                                                  # NL-R2-33: bracing / special-member notes of builder.log
+        parts.append('<li><b>Bracing and special members (builder.log):</b><ul>%s</ul></li>' % "".join("<li>%s</li>" % _h(n) for n in notes))
     parts.append('<li><b>Loading and solution:</b> each factored ASCE 7-22 combination (regenerated with Steltic\'s <code>design_pipeline.combos</code>) applied proportionally and scaled by λ; gravity distributed exactly as the member design (Steltic <code>static_model</code>: floor system, one-way deck span and infill load path, roof bays, cladding — NL-R2-03), lateral forces and accidental torsion at the diaphragm masters; adaptive displacement control (Newton → KrylovNewton → line search, step halving); when the displacement control is exhausted on the rising branch a load-controlled step decides whether equilibrium exists at a higher λ (a bifurcation the control DOF does not see, e.g. a beam twisting) — the sweep continues in load control — or not (a limit point / unstable bifurcation: the sweep ends there and says which, NL-R2-27); a sweep stopped by the solver or the time/step budget while λ was still rising gives a LOWER BOUND, which can pass but is never a FAIL (NOT EVALUATED); λ<sub>u</sub> = the FIRST limit point of the λ–Δ curve (a drop of more than 15 % or an 8-step post-peak budget ends the run — post-buckling redistribution beyond that is not credited), or the onset of a plastic plateau (tangent stiffness below 2 % of elastic — strain-hardening creep beyond a mechanism is not credited).</li></ul>')
 
     # 4 capacity table
@@ -329,7 +334,8 @@ def build(out_dir, nm, cfg, gate, runs, sensitivity, options, member_table, note
         parts.append('<tr><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td><code>%s</code></td></tr>' % (
             _h(r["combo"][0]), res["steps"], str(res["fails"]) if res.get("fails") is not None else "—", ("%.3f" % res["lam_at_1p25d"]) if res.get("lam_at_1p25d") else "not reached",
             _h(("[end: %s] %s; " % (res["termination"]["kind"], res["termination"].get("detail", "")) if res.get("termination") else "")   # NL-R2-27
-               + ("; ".join(res.get("log", [])[-3:]) or "clean"))))
+               + ("[%s] " % res["roof_uplift"] if res.get("roof_uplift") else "")                   # NL-R2-L3
+               + ("; ".join(l for l in res.get("log", [])[-3:] if l != res.get("roof_uplift")) or "clean"))))
     parts.append('</table></div>')
     parts.append('<h2>9 · Caveats</h2><ul>'
                  '<li>Beam lateral-torsional buckling and local buckling are not represented by fibre beam elements: beams are taken as braced by the composite deck (Steltic L<sub>b</sub> convention) and compact (design of record).</li>'

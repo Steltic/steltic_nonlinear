@@ -10,7 +10,9 @@ Here the framed floor plate is rebuilt from the package's own geometry, the same
   * grid nodes = diaphragm slaves lying on a column line of that level (an x and a y shared with a column node), so
     mid-span nodes (chevron apexes, link ends) never become bay corners;
   * a bay = a grid node, its nearest grid neighbours in +x and +y, and the diagonal corner -- all present;
-  * a bay is ROOF if no bay of the level above covers its centroid (top level: every bay), else FLOOR;
+  * a bay is ROOF on the top level, on a level listed in cfg roof_levels, or when no bay of ANY higher level covers
+    its centroid (NL-R2-06: the HR engine's rule, static_model._finish_model -- split levels: Ex13's office L2 at 14 ft
+    is covered by the office L3, not by the workshop mezzanine, the next level up), else FLOOR;
   * live load per bay: floor -> cfg L_by_level[k] or L_floor; roof -> cfg Lr (default 20 psf);
   * each bay's area, live load and dead load are lumped in equal shares to the bay corners that sit on a COLUMN
     (a quarter each when all four do), so the spatial distribution 16.3.3 asks for follows the floor plate and the
@@ -28,7 +30,6 @@ engineer can see its share. A level without detectable bays (skewed or non-ortho
 hull of its slaves, loaded on its column nodes only, and says so in the table (`method`).
 """
 from __future__ import annotations
-import ast, re
 
 _R = 1
 
@@ -37,42 +38,41 @@ def _k(x):
     return round(float(x), _R)
 
 
-# --------------------------------------------------------------------------- cfg.py (read, never imported)
+# --------------------------------------------------------------------------- cfg.py (executed values, NL-R2-06)
 def cfg_loads(pkg):
-    """Live-load inputs from the package's cfg.py (regex + literal_eval; the file imports the engine and is never
-    executed here). Keys: L_floor, Lr, L_by_level {k: psf}, source notes. Missing keys -> None."""
+    """Live-load inputs from the package's EXECUTED cfg (pushover.cfg_values; NL-R2-06 remainder -- the text is never
+    regexed, so a docstring / comment can no longer supply a load). Keys: L_floor, Lr, L_by_level {k: psf}, snow,
+    snow_by_level, source notes. Missing keys -> None / {}; L_floor then falls back to the package basis as before."""
+    from pushover import cfg_values as CV
     out = dict(L_floor=None, Lr=None, L_by_level={}, sources={})
     path = getattr(pkg, "root", None)
-    src = ""
-    try:
-        src = (path / "cfg.py").read_text(encoding="utf-8", errors="replace") if path is not None else ""
-    except Exception:
-        src = ""
-    num = r"([0-9]+(?:\.[0-9]+)?)"
+    cfg, why = CV.executed_cfg(path) if path is not None else (None, "no package root")
     for key in ("L_floor", "Lr"):
-        mo = re.search(r"(?<![A-Za-z0-9_])['\"]?" + key + r"['\"]?\s*[:=]\s*" + num, src)
-        if mo:
-            out[key] = float(mo.group(1)); out["sources"][key] = "cfg.py"
-    mo = re.search(r"(?<![A-Za-z0-9_])['\"]?L_by_level['\"]?\s*[:=]\s*(\{[^{}]*\})", src)
-    if mo:
-        try:
-            out["L_by_level"] = {int(k): float(v) for k, v in ast.literal_eval(mo.group(1)).items()}
-            out["sources"]["L_by_level"] = "cfg.py"
-        except Exception:
-            pass
+        v = CV.number(CV.get(cfg, key))
+        if v is not None:
+            out[key] = v; out["sources"][key] = "cfg.py"
+    lbl = CV.num_map(CV.get(cfg, "L_by_level"))
+    if lbl:
+        out["L_by_level"] = lbl; out["sources"]["L_by_level"] = "cfg.py"
     # NL-R2-16: roof snow S (psf) for Eq. (16.4-3) of 16.4.2.1 Exception 2 (cfg `snow`, per level `snow_by_level`)
-    mo = re.search(r"(?<![A-Za-z0-9_])['\"]?snow['\"]?\s*[:=]\s*" + num, src)
-    out["snow"] = float(mo.group(1)) if mo else None
-    if mo:
+    out["snow"] = CV.number(CV.get(cfg, "snow"))
+    if out["snow"] is not None:
         out["sources"]["snow"] = "cfg.py"
-    out["snow_by_level"] = {}
-    mo = re.search(r"(?<![A-Za-z0-9_])['\"]?snow_by_level['\"]?\s*[:=]\s*(\{[^{}]*\})", src)
-    if mo:
-        try:
-            out["snow_by_level"] = {int(k): float(v) for k, v in ast.literal_eval(mo.group(1)).items()}
-            out["sources"]["snow_by_level"] = "cfg.py"
-        except Exception:
-            pass
+    out["snow_by_level"] = CV.num_map(CV.get(cfg, "snow_by_level"))
+    # NL-R2-06 (gravity roof levels): the levels the HR design declares as roofs (cfg `roof_levels`), the same flag the
+    # HR engine's static model uses (static_model._finish_model: roof bay when k is the top level, k in roof_levels, or
+    # the bay is framed at no level above)
+    rl = CV.get(cfg, "roof_levels")
+    try:
+        out["roof_levels"] = sorted({int(x) for x in rl}) if isinstance(rl, (list, tuple, set)) else []
+    except (TypeError, ValueError):
+        out["roof_levels"] = []
+    if out["roof_levels"]:
+        out["sources"]["roof_levels"] = "cfg.py"
+    if out["snow_by_level"]:
+        out["sources"]["snow_by_level"] = "cfg.py"
+    if cfg is None:
+        out["sources"]["cfg"] = why
     if out["L_floor"] is None and getattr(pkg.basis, "L_floor_psf", None) is not None:
         out["L_floor"] = float(pkg.basis.L_floor_psf); out["sources"]["L_floor"] = pkg.basis.sources.get("L_floor_psf", "package basis")
     return out
@@ -161,18 +161,23 @@ def tributary(pkg, live_psf=None, roof_live_psf=None):
                 Lr_basis=("argument" if roof_live_psf is not None else cl["sources"].get("Lr", "default 20 psf (no cfg Lr)")))
     LB = level_bays(pkg)
     nodes = pkg.model.nodes
+    rl = set(cl.get("roof_levels") or [])
     out = []
     for i, lb in enumerate(LB):
         k = lb["k"]; top = (i == len(LB) - 1)
         Lf = cl["L_by_level"].get(k, Lf_default) if live_psf is None else live_psf
-        above = LB[i + 1]["bays"] if not top else []
+        # NL-R2-06 (gravity roof levels): coverage by the union of ALL higher levels (a split-level building's next
+        # level up can be the other wing: Ex13 office L2 at k=1 vs workshop mezzanine k=2 -- every office bay of k=1..3
+        # read as roof, 20 psf Lr instead of 65 psf and snow on it), and the cfg's declared roof levels
+        above = [b for lb2 in LB[i + 1:] for b in lb2["bays"]] if not top else []
+        roof_level = top or (k in rl)
         node_area, node_L0, node_Lr, node_roof = {}, {}, {}, {}
         colset = set(lb["column_nodes"])
         floor_in2 = roof_in2 = 0.0
         if lb["bays"]:
             method = "bays"
             for b in lb["bays"]:
-                roof = top or not _covered(b, above)
+                roof = roof_level or not _covered(b, above)
                 a_ft2 = b["area_in2"] / 144.0
                 if roof:
                     roof_in2 += b["area_in2"]
@@ -192,7 +197,7 @@ def tributary(pkg, live_psf=None, roof_live_psf=None):
             pts = [(nodes[n][0], nodes[n][1]) for n in lb["slaves"]]
             a_in2 = _hull_area(pts)
             tgt = lb["column_nodes"] or lb["slaves"]
-            if top or not LB[i + 1]["slaves"]:
+            if roof_level or not any(lb2["slaves"] for lb2 in LB[i + 1:]):
                 roof_in2 = a_in2
             else:
                 floor_in2 = a_in2

@@ -91,6 +91,13 @@ in the job copy. The schema (`"schema": "ASCE41-23/AISC342-22"`, see the file's 
 - **Columns.** Expressions in `h/tw`, `L/ry`, `PG/Pye` (line 2 may also use `bf`, `tf`), caps `a_max`/`b_max`,
   `Mpce_axial_reduction` = AISC 342-22 Eqs. C3-5/C3-6 `min(1 - PG/(2*Pye), 9/8*(1 - PG/Pye))`. A file that still
   carries the superseded `1.18*(1-PG/Pye)` (Commentary Eq. C-C3-5) is corrected by the engine and flagged.
+  **Minor axis (NL-R2-32).** IMK columns get an independent uniaxial minor-axis (y) spring at every hinged end, in the
+  same `zeroLength` as the major spring (no biaxial interaction in the springs): M<sub>pcey</sub> by AISC 342-22
+  C3.4a.2.a.1 Eqs. C3-7/C3-8 (wide-flange Exception, κ = 1; override `Mpce_axial_reduction_minor`) or Eqs. C3-5/C3-6
+  with M<sub>pey</sub> for rectangular HSS, M<sub>pey</sub> = F<sub>ye</sub> min(Z<sub>y</sub>, 1.6 S<sub>y</sub>) (W) /
+  F<sub>ye</sub> Z<sub>y</sub> (HSS), θ<sub>y</sub> by Eq. C3-15 with I<sub>y</sub>; a, b, c and IO/LS/CP of Table C3.6
+  (the table is not axis-specific) and the same deformation acceptance. `"minor_axis_hinge": false` keeps the minor
+  axis elastic (the earlier model). Not on the L2 ConcentratedPlasticity path; fibre models yield about both axes.
 - **Braces.** `brace_axial` `"mode": "table_C3_4"` = Table C3.4 buckling braces: `compression` / `tension` with
   `n_expr` in `lam_ratio` (λ/λ<sub>hd</sub>) and `slend` ((L<sub>c</sub>/r)/√(E/F<sub>ye</sub>)), `f`, `IO`, `LS`, `CP`
   (printed), `tension_only` (note [d]). The old stocky/slender ASCE 41-17 form is still read but always reported

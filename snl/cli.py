@@ -67,6 +67,13 @@ def cmd_run(a):
     steps = [s for s in STEPS if (not a.only or s in a.only) and s not in (a.skip or [])]
     status = dict(job=job, started=time.strftime("%Y-%m-%dT%H:%M:%S"), steps={})
     log = os.path.join(job, "snl_run.log")
+    if a.steltic_engine:
+        os.environ.setdefault("STELTIC_ENGINE_DIR", os.path.abspath(a.steltic_engine))
+    from pushover import existing as EX                           # NL-R2-04 (warning only): new-building criteria
+    _exist = EX.existing_structure(job)
+    EX.print_warning(_exist, "every SNL analysis (pushover, NLRHA, DDM)")
+    if _exist:
+        status["existing_structure"] = dict(_exist, statement=EX.warning_text(_exist, "every SNL analysis (pushover, NLRHA, DDM)"))
     # The component parameters: the file `snl collect` read out of the standards for THIS project when
     # it exists, else what --params names, else the repository placeholder (and the UNVERIFIED banner
     # that goes with it). Collect first is the point: the analyses then run on cited values and the

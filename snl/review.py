@@ -78,6 +78,28 @@ def _r(v, n=4):
     return v
 
 
+
+_CFG_SEISMIC = ("SDS", "SD1", "S1", "R", "Cd", "Om0", "Ie", "system", "site_class", "risk_category", "drift_limit", "drift_relief_16_1_2")
+
+
+def cfg_seismic(job):
+    """The cfg.py design values shown to the reviewer -- from the EXECUTED cfg (NL-R2-06 remainder; pushover.cfg_values:
+    cfg['seis'] first, then the top level), not regexed out of the text (which returned raw source fragments such as
+    '"II", sdc="D", site_class="C",'). {} when cfg.py cannot be executed."""
+    from pushover import cfg_values as CV
+    cfg, _why = CV.executed_cfg(job)
+    out = {}
+    if cfg is None:
+        return out
+    for k in _CFG_SEISMIC:
+        v = CV.get(cfg, k) if k in ("system", "site_class", "risk_category", "drift_limit", "drift_relief_16_1_2") else CV.seis_value(cfg, k)
+        if v is None and k == "system":
+            v = CV.seis_value(cfg, k)
+        if v is not None:
+            out[k] = v
+    return out
+
+
 def gather(job: str) -> dict:
     """Everything the reviewer may cite, bounded (a few tens of kB), every number from a file in the job folder."""
     job = os.path.abspath(job)
@@ -161,10 +183,8 @@ def gather(job: str) -> dict:
         ev["design"]["base_shear"] = {"V_kip": st.get("V_kip"), "W_kip": st.get("W_kip"), "Cs": st.get("Cs"), "wind_X_kip": st.get("wind_X"), "wind_Y_kip": st.get("wind_Y")}
     except Exception:                                            # noqa: BLE001
         pass
-    cfg = os.path.join(job, "cfg.py")
-    if os.path.exists(cfg):
-        txt = open(cfg, encoding="utf-8", errors="replace").read()
-        ev["design"]["cfg_seismic"] = {k: v for k, v in re.findall(r"^\s*(SDS|SD1|S1|R|Cd|Om0|Ie|system|site_class|risk_category|drift_limit|drift_relief_16_1_2)\s*=\s*([^\n#]+)", txt, re.M)}
+    if os.path.exists(os.path.join(job, "cfg.py")):
+        ev["design"]["cfg_seismic"] = cfg_seismic(job)
     # the 16.1.4 draft and the four-analyses readings
     ev["design_criteria_draft"] = _text_of_html(os.path.join(job, "design_criteria_16_1_4.html"), 5000)
     fa = _text_of_html(os.path.join(job, "four_analyses.html"), 12000)
@@ -500,8 +520,15 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
         lines.append("- Unacceptable responses %s of %s (allowed %s) — %s %s" % (v.get("n_unacceptable"), v.get("n_records"), v.get("unacceptable_allowed"), "OK" if v.get("unacceptable_ok") else "NOT OK", cite["16.4.1.1"]))
         lines.append("- Deformation-controlled actions: worst CP D/C %s — %s; valid range %s" % (_f(sn.get("worst_DC_CP")), "OK" if v.get("deformation_ok") else "NOT OK", "OK" if v.get("valid_range_ok") else "NOT OK"))
         lines.append("- Force-controlled columns: worst D/C %s — %s %s%s" % (_f(sn.get("worst_DC_force_controlled")), "OK" if v.get("force_controlled_ok") else "NOT OK", cite["16.4.2.1"],
-                     ("; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4) used for %s (default check D/C %s)" % ("; ".join((v.get("FC_exception_2") or {}).get("members") or []), _f(v.get("worst_FC_DC_default"))))
+                     ("; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4%s) used for %s (default check D/C %s)" % (
+                         "" if (v.get("column_flexure_interaction") or "informative") == "informative" else " with the concurrent moments by AISC 342 C3-9, m = 1",
+                         "; ".join((v.get("FC_exception_2") or {}).get("members") or []), _f(v.get("worst_FC_DC_default"))))
                      if (v.get("FC_exception_2") or {}).get("used") else ""))       # NL-R2-16
+        if v.get("worst_C3_9_info") is not None:                   # NL-R2-16 (round 4, Ch. 16 column check)
+            lines.append("- AISC 342-22 C3.4a.2b (C3-9, m = 1) on columns with deformation-controlled flexure: worst %s%s — %s" % (
+                _f(v.get("worst_C3_9_info")), (" (%s)" % v["worst_C3_9_info_column"]) if v.get("worst_C3_9_info_column") else "",
+                "informative, not part of the ASCE 7 Chapter 16 verdict (16.4.2 classifies actions only; 16.4.2.2 judges deformation-controlled flexure by its valid range)"
+                if (v.get("column_flexure_interaction") or "informative") == "informative" else "in the verdict (column_flexure_interaction = verdict)"))
         lines.append("- Residual drift: %s" % ("not applicable at this height" if not v.get("residual_applicable") else ("OK" if v.get("residual_ok") else "NOT OK")))
     else:
         lines.append("Not in the run.")

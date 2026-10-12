@@ -384,9 +384,14 @@ def build(job, out_name="four_analyses.html", title=None):
         Q.append(row("Deformation-controlled components", "—", (" / ".join(f"CP D/C {lv_txt(d, 'BSE-2N', 'CP')}" for d in po["directions"].values()) if po else "—"),
                      f"mean CP D/C {worst_def['DC_CP']:.2f} · valid-range {worst_def['DC_valid']:.2f}" if worst_def else "—", "—", "Both nonlinear seismic methods use the same hinge and brace backbones; NLRHA checks the mean of the record peaks per group (16.4.2.2)."))
         Q.append(row("Force-controlled columns", (f"D/C ≤ {max(x['DC'] for x in st['members'] if 'col' in x['id']):.2f}" if any('col' in x['id'] for x in st['members']) else "—"), "P<sub>G</sub>/P<sub>ye</sub> screened (> 0.6 → force-controlled)",
-                     f"D/C {worst_fc['DC']:.2f} ({worst_fc['section']})" if worst_fc else "—", (f"λ<sub>u</sub> {summary['ddm']['lambda_u']:.2f} ({html.escape(summary['ddm']['governing'])})" if dd else "—"), "Chapter 16 16.4.2.1 (both equations, γ = 1.3) on the mean column axial force with concurrent flexure (H1-1)"
-                     + ((f"; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4, E<sub>mc</sub>, factor 1.0) for {x2['n_columns']} column group(s) whose axial force is limited by the yield mechanism (default check D/C {nl['verdict'].get('worst_FC_DC_default') or 0:.2f})")
+                     f"D/C {worst_fc['DC']:.2f} ({worst_fc['section']})" if worst_fc else "—", (f"λ<sub>u</sub> {summary['ddm']['lambda_u']:.2f} ({html.escape(summary['ddm']['governing'])})" if dd else "—"), ("Chapter 16 16.4.2.1 (both equations, γ = 1.3) on the mean column axial force; concurrent flexure (H1-1) only where it is force-controlled (P<sub>G</sub>/P<sub>ye</sub> > 0.6) — deformation-controlled flexure is judged by 16.4.2.2"
+                      if (c39 := (nl.get('verdict') or {}).get('column_flexure_interaction') or 'informative') == 'informative' else
+                      "Chapter 16 16.4.2.1 (both equations, γ = 1.3) on the mean column axial force with concurrent flexure (H1-1; AISC 342 C3-9 in the verdict, column_flexure_interaction = verdict)")
+                     + ((f"; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4, E<sub>mc</sub>, factor 1.0{'' if c39 == 'informative' else ', with the concurrent moments by AISC 342 C3-9, m = 1'}) for {x2['n_columns']} column group(s) whose axial force is limited by the yield mechanism (default check D/C {nl['verdict'].get('worst_FC_DC_default') or 0:.2f})")
                         if (x2 := (nl.get('verdict') or {}).get('FC_exception_2') or {}).get('used') else "")      # NL-R2-16
+                     + ((f"; AISC 342-22 C3.4a.2b (C3-9) — informative, not part of the ASCE 7 Chapter 16 verdict (16.4.2 classifies only; 16.4.2.2 judges deformation-controlled flexure by its valid range): worst {nl['verdict']['worst_C3_9_info']:.2f}"
+                         + (f" ({nl['verdict'].get('worst_C3_9_info_column')})" if nl['verdict'].get('worst_C3_9_info_column') else ""))
+                        if (c39 == 'informative' and (nl.get('verdict') or {}).get('worst_C3_9_info') is not None) else "")      # NL-R2-16 (round 4)
                      + "; the DDM asks the gravity-system question directly."))
     Q.append(row("Component parameters", "AISC 360/341 cited per member", ("verified · " + html.escape(str(prm.get("source", ""))[:90])) if po and po.get("params_verified") else ("UNVERIFIED placeholders" if po else "—"),
                  ("same file" if nl else "—"), (f"φ<sub>s</sub> {gov['phi'].get('status', '')}" if dd and checked else "—"), "Parameters live with the job outputs (pushover/hinge_params_used.json); the bots query the standards through Query file manager."))
@@ -454,6 +459,12 @@ def build(job, out_name="four_analyses.html", title=None):
         provs = sorted({r["phi"].get("status", "") for r in dd["runs"] if r["phi"].get("phi_s") is not None})
         disc.append("DDM φ<sub>s</sub> classes used: " + ", ".join(f"{r['phi']['cls']} = {fmt(r['phi']['phi_s'])} ({r['phi'].get('status', '')})" for r in {r['phi']['cls']: r for r in dd['runs'] if r['phi'].get('phi_s') is not None}.values()) + ".")
 
+    from pushover import existing as _EX                          # NL-R2-04 (warning only)
+    _exist = _EX.existing_structure(job)
+    exist_banner = _EX.banner_html(_exist, "every nonlinear check on this sheet (pushover, NLRHA, DDM)")
+    if _exist:
+        summary["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "every nonlinear check on this sheet (pushover, NLRHA, DDM)"))
+        disc.insert(0, "EXISTING STRUCTURE declared by the package: assessed with NEW-building criteria, not an ASCE 41 evaluation (banner at the top).")
     css = open(os.path.join(_HERE, "four_analyses.css"), encoding="utf-8").read()
     title = title or f"{name} Four Analyses"
     sys_ = basis.get("system") or (st["capacity_design"].get("system") if isinstance(st["capacity_design"], dict) else "") or ""
@@ -478,6 +489,7 @@ def build(job, out_name="four_analyses.html", title=None):
     <div>Date</div><div>{date} · not for construction</div>
   </div>
 </header>
+{exist_banner}
 
 <section class="sheet">
   <div class="sheet-head"><h2>Four verdicts on the same steel</h2><span class="no">SHEET 1</span></div>

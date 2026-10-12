@@ -26,7 +26,8 @@ REPORT = "<p>R / Cd / Ω0 / Ie 8 / 5.5 / 3.0 / 1.0</p><p>Seismic weight W = 1542
 
 
 def _basis(tmp_path, cfg_text, calc=None, report=REPORT):
-    (tmp_path / "cfg.py").write_text(cfg_text)
+    # NL-R2-06 (remainder): cfg values come from the EXECUTED cfg -- the fixture imports the engine like every HR cfg.py
+    (tmp_path / "cfg.py").write_text(("import engine3d as eng\n" if "import engine3d" not in cfg_text else "") + cfg_text)
     (tmp_path / "report.html").write_text(report)
     return PR.read_basis(tmp_path, calc or {})
 

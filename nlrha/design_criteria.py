@@ -49,21 +49,25 @@ def gather(job, params_path=None, risk_category=None):
     prm = HM.load_params(prm_path) if prm_path else HM.load_params(None)
     cfg_text = open(os.path.join(job, "cfg.py"), encoding="utf-8", errors="replace").read() if os.path.exists(os.path.join(job, "cfg.py")) else ""
     rc = _rc(pkg, pkg.calc, cfg_text, risk_category)
-    relief = None
-    m = re.search(r"drift_relief_16_1_2['\"]?\]?\s*=\s*(\{.*?\})\s*$", cfg_text, flags=re.M | re.S)
-    if m:
-        try:
-            relief = json.loads(m.group(1).replace("'", '"'))
-        except Exception:
-            relief = {"present": True}
+    # NL-R2-06 (remainder): drift relief, drift_limit, rho, T_L and the analyses from the EXECUTED cfg, never the text
+    from pushover import cfg_values as CV
+    from .cli import cfg_TL
+    cfg = CV.executed_cfg(job)[0]
+    relief = CV.get(cfg, "drift_relief_16_1_2")
+    if relief is not None and not isinstance(relief, dict):
+        relief = {"present": True}
+    analyses = CV.get(cfg, "analyses") or []
+    from pushover import existing as EX                           # NL-R2-04 (warning only)
+    existing = EX.existing_structure(cfg=cfg)
     return dict(job=job, pkg=pkg, name=pkg.name, ch16=ch16, prm=prm, prm_path=prm_path, rc=rc, cfg_text=cfg_text, relief=relief,
+                existing=existing,
                 calc=pkg.calc or {}, hazard=_json(os.path.join(job, "nlrha", "site_hazard.json")),
                 gm=(_json(os.path.join(job, "nlrha", "gm_scaling.json")) or {}).get("gm"),
                 nl=_json(os.path.join(job, "nlrha", "nlrha_package.json")), po=_json(os.path.join(job, "pushover", "pushover_package.json")),
                 dor=_json(os.path.join(job, "design", "design_of_record.json")),
                 retrieval=next((open(p, encoding="utf-8", errors="replace").read() for p in (os.path.join(job, "retrieval_log.md"), os.path.join(job, "nlrha", "retrieval_log.md"), os.path.join(job, "pushover", "retrieval_log.md")) if os.path.exists(p)), None),
-                drift_limit=(float(re.search(r"drift_limit\s*=\s*([0-9.]+)", cfg_text).group(1)) if re.search(r"drift_limit\s*=\s*([0-9.]+)", cfg_text) else None),
-                rho=(float(re.search(r"\brho\s*=\s*([0-9.]+)", cfg_text).group(1)) if re.search(r"\brho\s*=\s*([0-9.]+)", cfg_text) else None))
+                drift_limit=CV.number(CV.get(cfg, "drift_limit")), rho=CV.number(CV.get(cfg, "rho")), TL=cfg_TL(pkg),
+                mrsa=any(str(a).upper() in ("RS", "MRSA", "RSA") for a in (analyses if isinstance(analyses, (list, tuple)) else [analyses])))
 
 
 def _readable(v, limit=400):
@@ -144,6 +148,24 @@ def _hinge_row(group, u, kind):
     return txt[:300] + " -- " + _run_text(u, kind)
 
 
+def _minor_axis_text(cf, u):
+    """NL-R2-32: how the minor axis of concentrated-hinge columns is modelled -- the run's census when on file, else what
+    the parameter file would build (column_flexure.minor_axis_hinge, default true)."""
+    from pushover import hinge_models as HM
+    st = u.get("nls") or u.get("pos") or {}
+    if st.get("plasticity") == "fibre":
+        return "; minor axis: fibre sections yield about both axes"
+    on = str(st["column_minor_axis"]).startswith("hinge") if st.get("column_minor_axis") else HM.minor_axis_hinge_on(dict(column_flexure=cf))
+    if not on:
+        return ("; minor axis of IMK columns ELASTIC (column_flexure.minor_axis_hinge = false): minor moments above M_CE,y are "
+                "flagged in the 16.4.2.1 column check (yielding not represented, 16.3.1)")
+    n = st.get("col_minor_hinges")
+    return ("; minor axis of IMK columns: an independent uniaxial spring per axis at each hinged end%s -- M_CE = Mpcey (AISC 342-22 "
+            "Eqs. C3-7/C3-8 for W shapes, C3-5/C3-6 with Mpey for HSS), theta_y by Eq. C3-15 with Iy, a/b/c and IO/LS/CP of Table C3.6 "
+            "(not axis-specific); no biaxial interaction in the springs; minor-axis rotations get the same deformation acceptance; "
+            "switch off with column_flexure.minor_axis_hinge = false" % ((" (%s springs as built)" % n) if n is not None else ""))
+
+
 def _lambda_text(ls):
     if not ls:
         return ""
@@ -216,6 +238,9 @@ def content(g, project=None, engineer=None, reviewer=None):
         hn_ft = g["po"]["gravity"][-1]["z_in"] / 12.0
     S = []
     s = Section("1. Purpose, project and scope"); S.append(s)
+    if g.get("existing"):                                          # NL-R2-04 (warning only): first thing in the document
+        from pushover import existing as EX
+        s.n(EX.warning_text(g["existing"], "this design-criteria document and the analyses it describes"))
     s.p("This document states the design criteria for the nonlinear response history analysis of %s under ASCE/SEI 7-22 Chapter 16, as Section 16.1.4 requires before the analysis is performed. It records the seismic hazard and ground motions, the analytical model, the acceptance criteria, the linear analysis the design rests on, and the scope of the independent design review of Section 16.5. It is a DRAFT generated from the design package by the Nonlinear module for the engineer of record to complete and the reviewer to accept; bracketed items and the open-items list mark what the engineer must supply."
         % pkg.name)
     s.t([["Item", "Value", "Source"],
@@ -243,7 +268,7 @@ def content(g, project=None, engineer=None, reviewer=None):
     hz = g["hazard"]
     s.t([["Parameter", "Value", "Source"],
          ["S_DS / S_D1 (g)", "%s / %s" % (b.SDS, b.SD1), "cfg.py"], ["S_MS / S_M1 (g) = 1.5 x design", "%.3f / %.3f" % (1.5 * (b.SDS or 0), 1.5 * (b.SD1 or 0)), "16.2.1.1 -> 11.4.6"],
-         ["S_1 (g) · T_L (s)", "%s · %s" % (b.S1, (re.search(r"TL\s*=\s*([0-9.]+)", g["cfg_text"]).group(1) if re.search(r"TL\s*=\s*([0-9.]+)", g["cfg_text"]) else "8.0")), "cfg.py"],
+         ["S_1 (g) · T_L (s)", "%s · %s" % (b.S1, g["TL"]), "cfg.py"],
          ["Site class", (hz["site"]["site_class"] if hz else (b.site_class or "[site class from the geotechnical report]")), "site_hazard.json" if hz else "input"],
          ["Seismic Design Category", str(hz["design"].get("sdc")) if hz else "[per 11.6]", "USGS service" if hz else "input"]])
     if hz:
@@ -313,7 +338,8 @@ def content(g, project=None, engineer=None, reviewer=None):
           "component parameters material.Fy_ksi / Ry_expected (AISC 342 A5.2)"],
          ["Beam hinges", _hinge_row(bf, u, "beam") if u["n_beam"] else "no beams in the package schedule", "AISC 342 Table C5.5 / C2.2"],
          ["Adjustments to beam hinges", adj, "AISC 342 C5.4a.1.a.1"],
-         ["Column hinges", _hinge_row(cf, u, "col") if u["n_col"] else "no columns in the package schedule", "AISC 342 Table C3.6"],
+         ["Column hinges", (_hinge_row(cf, u, "col") + _minor_axis_text(cf, u)) if u["n_col"] else "no columns in the package schedule",
+          "AISC 342 Table C3.6; C3.4a.2 (Mpcey)"],
          ["Braces", brace_txt, "AISC 342 Table C3.4 / Commentary C3"],
          *([["Buckling-restrained braces", "%d BRBs in the package; AISC 342 Table C3.3 backbone, core strength (F_ysc, omega, beta, R_y) from the parameter file or the HR package%s"
              % (u["n_brb"], ("; NLRHA built %s BRB elements" % u["nls"]["brb"]) if (u["nls"] or {}).get("brb") is not None else "; NLRHA not run"), "AISC 342 Table C3.3 / AISC 341 F4.2a"]] if u["n_brb"] else []),
@@ -331,6 +357,10 @@ def content(g, project=None, engineer=None, reviewer=None):
 
     s = Section("6. Acceptance criteria (16.4)"); S.append(s)
     x2c = ch16["force_controlled"].get("exception_2") or {}
+    c39 = str(ch16["force_controlled"].get("column_flexure_interaction", "informative")).lower()      # NL-R2-16 (round 4)
+    C39_BASIS = ("ASCE 7-22 16.4.2 takes only the classification of actions from ASCE 41; 16.4.2.1 checks the force-controlled column "
+                 "axial force and 16.4.2.2 judges deformation-controlled flexure by its valid range of modelling, so AISC 342-22 "
+                 "C3.4a.2b (C3-9 with m = 1 and M_CE, C3-10) is not part of the Chapter 16 verdict")
     tab = ch16["transient_drift"]["table_12_12_1_all_other"].get(rc, 0.02)
     mean_lim = ch16["transient_drift"]["factor_on_table_12_12_1"] * tab
     tall = None
@@ -361,14 +391,14 @@ def content(g, project=None, engineer=None, reviewer=None):
         % ("braced-frame and gravity columns" if (u["n_brace"] or u["n_brb"]) else "gravity columns",
            "beam-column panel-zone shear where rigid joints are assumed (ordinary), " if (u["n_moment_beam"] and pz_mode == "rigid") else ""), "Force-controlled --")
     if x2c.get("apply", True):
-        s.b("16.4.2.1 Exception 2 is used for the axial force of moment-frame and braced-frame columns whose flexure is deformation-controlled and whose column line receives seismic force only from modelled yielding components (beam hinges, braces): such an axial force is limited by the yield mechanism and is checked by Eqs. (16.4-3) / (16.4-4) with the capacity-limited effect E_mc (load factor 1.0) instead of Eqs. (16.4-1) / (16.4-2). The analysis report lists the columns it was applied to and reports the default check beside it. Gravity columns and columns with force-controlled flexure keep the default check.", "Exception 2 --")
+        s.b("16.4.2.1 Exception 2 is used for the axial force of moment-frame and braced-frame columns whose flexure is deformation-controlled and whose column line receives seismic force only from modelled yielding components (beam hinges, braces): such an axial force is limited by the yield mechanism and is checked by Eqs. (16.4-3) / (16.4-4) with the capacity-limited effect E_mc (load factor 1.0) instead of Eqs. (16.4-1) / (16.4-2)" + (" (axial; AISC 342-22 C3-9 with E_mc and the concurrent moments reported as informative)" if c39 == "informative" else "; the compression is combined with the analysed concurrent moments by AISC 342-22 C3-9 (m = 1, M_CE; C3.4a.2b) -- column_flexure_interaction = verdict") + ". The analysis report lists the columns it was applied to and reports the default check beside it. Gravity columns and columns with force-controlled flexure keep the default check.", "Exception 2 --")
     s.b("[The engineer of record designates any further critical / ordinary / noncritical actions and the B factor where expected strength is used.]", "To complete --")
 
     s = Section("7. The linear analysis the design rests on (16.1.2)"); S.append(s)
     bdir = getattr(b, "by_dir", None) or {}                          # NL-R2-17: mixed systems (12.2.2)
     rel = g["relief"]
     s.t([["Item", "Value", "Source"],
-         ["Design procedure", "ASCE 7-22 Chapter 12 %s; AISC 360/341 LRFD member and connection design (HR Steel package)" % ("ELF + MRSA" if "RS" in g["cfg_text"] else "ELF"), "cfg.py analyses"],
+         ["Design procedure", "ASCE 7-22 Chapter 12 %s; AISC 360/341 LRFD member and connection design (HR Steel package)" % ("ELF + MRSA" if g["mrsa"] else "ELF"), "cfg.py analyses"],
          ["R / C_d / Omega_0 / I_e", ("%s / %s / %s / %s" % (b.R, b.Cd, b.Om0, b.Ie)) if not bdir else
           " · ".join("%s (%s): %s / %s / %s / %s" % (d, x.get("system"), x.get("R"), x.get("Cd"), x.get("Om0"), b.Ie) for d, x in sorted(bdir.items())),
           "cfg.py" if not bdir else "per direction (12.2.2): " + b.sources.get("by_dir", "")],
@@ -405,12 +435,19 @@ def content(g, project=None, engineer=None, reviewer=None):
               if not prm_ok else "Component backbones were verified against %s." % ((prm.get("source") or "")[:160])),
              ("Ground motions are ranked against the site disaggregation; the tectonic regime and any pulse content rest on the library's metadata -- confirm against the project hazard report." if (gm and gm.get("deagg")) else "Ground-motion selection uses spectral-shape fit to the code spectrum; 16.2.2 consistency with the site's controlling M, R and tectonic regime needs the project hazard (run `nlrha hazard`)."),
              "Accidental torsion is not applied by the analysis; 16.3.4 requires it where a Type 1 horizontal irregularity exists -- the engineer of record confirms there is none. Gravity follows the framed floor plate (floors at L0, roofs at Lr, quarter-bay tributaries); the 1.0 D analysis without live load is required unless the 16.3.2 exception (sum 0.5L <= 25% sum D and L0 < 100 psf over >= 75% of the area) applies -- the verdict is withheld (INCOMPLETE) if it is required and was not run. " + nlc_txt,
-             "The force-controlled column check (16.4.2.1, both equations) combines axial force with concurrent flexure (AISC 360 H1-1 = AISC 342 C3-9; a deformation-controlled moment, m = 1 and M_CE, only with compression per AISC 342-22 C3.4a.2b) using AISC 360 E3 / F2-F6 with the F_y of the component parameters, the HR design's per-axis unbraced lengths where design/calc_package.json gives them (otherwise K = 1, L_b = column length), C_b = 1; connections, splices and base plates are checked from the linear package, not from the nonlinear demands."
-             + (" Where 16.4.2.1 Exception 2 applies (column axial force limited by the yield mechanism), the column is accepted when it meets either the default equations or Eqs. (16.4-3) / (16.4-4) (an exception relaxes the requirement; the lower D/C governs and the report states which), with E_mc from the mechanism statics of the column line (model capacities, never below the analysed suite maximum), applied moments neglected as AISC 341-22 D1.4a(b) permits; the engineer of record and the reviewer must accept this interpretation (user decision 7 Oct 2026, review item NL-R2-16)." if x2c.get("apply", True) else ""),
+             ("The force-controlled column check (16.4.2.1, both equations) is the column AXIAL force where its flexure is deformation-controlled (P_G/P_ye <= 0.6; the moments are a deformation-controlled action judged by 16.4.2.2) and axial force with the transformed concurrent flexure (AISC 360 H1-1) where its flexure is force-controlled. AISC 342-22 C3.4a.2b (C3-9, m = 1, M_CE, compression; C3-10) is reported as INFORMATIVE: " + C39_BASIS + " (ch16_params force_controlled.column_flexure_interaction = informative; user decision, NL-R2-16 round 4)."
+              if c39 == "informative" else
+              "The force-controlled column check (16.4.2.1, both equations) combines axial force with concurrent flexure (AISC 360 H1-1; a deformation-controlled moment by AISC 342-22 C3.4a.2b C3-9, m = 1 and M_CE, only with compression, and C3-10) -- ch16_params force_controlled.column_flexure_interaction = verdict (default informative: " + C39_BASIS + ").")
+             + " Strengths: AISC 360 E3 / F2-F6 with the F_y of the component parameters, the HR design's per-axis unbraced lengths where design/calc_package.json gives them (otherwise K = 1, L_b = column length), C_b = 1; connections, splices and base plates are checked from the linear package, not from the nonlinear demands."
+             + (" Where 16.4.2.1 Exception 2 applies (column axial force limited by the yield mechanism), the column is accepted when it meets either the default equations or Eqs. (16.4-3) / (16.4-4) (an exception relaxes the requirement; the lower D/C governs and the report states which), with E_mc from the mechanism statics of the column line (model capacities, never below the analysed suite maximum)" + ("; axial only, C3-9 with E_mc informative" if c39 == "informative" else "; Exception 2 relaxes the axial demand only: the Eq. (16.4-3) compression is combined with the analysed concurrent moments over M_CE by AISC 342-22 C3-9 with m = 1 (C3.4a.2b), C3-10 and C3-11 kept") + "; the engineer of record and the reviewer must accept this interpretation (user decision 7 Oct 2026, review item NL-R2-16)." if x2c.get("apply", True) else ""),
              "Foundations, soil-structure interaction and vertical ground motion (16.1.3) are not modelled.",
              "[Site class and V_s30 from the geotechnical report; project-specific performance objectives beyond the code minimum, if any.]"]
     if rel:
         items.append("The design carries the 16.1.2 drift relief; issue only after the Chapter 16 analysis of the relieved design passes 16.4.")
+    if g.get("existing"):                                          # NL-R2-04
+        items.insert(0, "EXISTING STRUCTURE declared by the package: the criteria above are NEW-building criteria (BPON, MCER / BSE-2N, one "
+                        "material grade, no knowledge factor). An ASCE 41-23 evaluation of the existing building (BPOE, Section 2.4.1 / "
+                        "Table 2-3, at BSE-1E / BSE-2E) is outside this document and must be scoped separately.")
     for it in items:
         if it:
             s.b(it)
@@ -426,6 +463,9 @@ def content(g, project=None, engineer=None, reviewer=None):
              ["Force-controlled columns", "%s (worst D/C %s)" % ("ok" if v["force_controlled_ok"] else "NG", v.get("worst_FC_DC"))
               + ((" -- 16.4.2.1 Exception 2 used for: %s; default check without it: worst D/C %s" % ("; ".join((v.get("FC_exception_2") or {}).get("members") or []), v.get("worst_FC_DC_default")))
                  if (v.get("FC_exception_2") or {}).get("used") else (" -- 16.4.2.1 Exception 2 not used" if v.get("FC_exception_2") is not None else ""))],
+             # NL-R2-16 (round 4, Ch. 16 column check)
+             ["AISC 342-22 C3.4a.2b (C3-9) -- %s" % ("informative, not part of the ASCE 7 Chapter 16 verdict" if (v.get("column_flexure_interaction") or "informative") == "informative" else "in the verdict"),
+              "worst %s%s" % (v.get("worst_C3_9_info"), (" (%s)" % v["worst_C3_9_info_column"]) if v.get("worst_C3_9_info_column") else "")],
              ["Overall", v.get("status") or ("ACCEPTABLE" if v["overall"] else "NOT ACCEPTABLE")]])
         s.n("Generated %s by the Nonlinear module; the report nlrha/nlrha_report.html carries the per-record and per-group tables." % g["nl"].get("generated"))
 
@@ -457,12 +497,15 @@ def content(g, project=None, engineer=None, reviewer=None):
 
 # --------------------------------------------------------------------------- outputs
 def write(job, out=None, project=None, engineer=None, reviewer=None, params_path=None, risk_category=None):
+    from pushover import existing as EX                           # NL-R2-04 (warning only)
     g = gather(job, params_path, risk_category)
     S = content(g, project, engineer, reviewer)
     out = out or g["job"]
     os.makedirs(out, exist_ok=True)
     title = "Design criteria for nonlinear response history analysis (ASCE 7-22 §16.1.4)"
     sub = "%s · Risk Category %s · DRAFT generated %s by Steltic_nonlinear for the engineer of record and the §16.5 reviewer" % (g["name"], g["rc"].replace("_", "/"), datetime.date.today().isoformat())
+    if g.get("existing"):                                          # NL-R2-04: in the subtitle of both the docx and the html
+        sub += " · EXISTING STRUCTURE: assessed with NEW-building criteria, NOT an ASCE 41 evaluation (see section 1)"
     d = DW.Doc(title=title, subtitle=sub, footer="%s -- design criteria §16.1.4 (draft)" % g["name"])
     for s in S:
         d.heading(s.title, s.level)
@@ -481,6 +524,7 @@ def write(job, out=None, project=None, engineer=None, reviewer=None, params_path
     # html twin for the hub
     from . import report as RP
     parts = ["<style>%s</style><title>%s -- design criteria 16.1.4</title>" % (RP.CSS, H.escape(g["name"])), "<h1>%s</h1><div class='sub'>%s</div>" % (H.escape(title), H.escape(sub)),
+             EX.banner_html(g.get("existing"), "this design-criteria document and the analyses it describes"),
              "<div class='note'><b>Draft.</b> Generated from the package files; bracketed items are for the engineer of record. Not for construction; the design must be sealed by a licensed professional engineer after the 16.5 review.</div>"]
     for s in S:
         parts.append("<h%d>%s</h%d>" % (min(3, s.level + 1), H.escape(s.title), min(3, s.level + 1)))

@@ -79,6 +79,8 @@
     "force_controlled_above_P_over_Pye": 0.6,
     "Mpce_axial_reduction": "min(1 - PG/(2*Pye), 9/8*(1 - PG/Pye))",
     "theta_y_uses_Mpce": true,
+    "minor_axis_hinge": true,
+    "minor_axis_note": "NL-R2-32: IMK (concentrated-plasticity) columns get an independent uniaxial minor-axis (y) spring at every hinged end: Mpcey by AISC 342-22 C3.4a.2.a.1 Eqs. C3-7/C3-8 (wide-flange Exception, kappa = 1; override with Mpce_axial_reduction_minor) or Eqs. C3-5/C3-6 with Mpey for rectangular HSS, Mpey = Fye min(Zy, 1.6 Sy) (W, AISC 360-22 F6) / Fye Zy (HSS, F7), theta_y by Eq. C3-15 with Iy, a/b/c and IO/LS/CP of Table C3.6 (the table is not axis-specific). false = minor axis elastic (the behaviour before NL-R2-32). Fibre models yield about both axes regardless.",
     "non_highly_ductile_reduction": 0.5,
     "source": "",
     "unverified": [

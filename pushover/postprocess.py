@@ -364,6 +364,126 @@ def p695_factors(run, basis, nsp_bse1):
                 Vmax_over_W=Vmax / W)
 
 
+# --------------------------------------------------------------------------- NL-R2-35: strength-loss events
+DROP_FRAC = 0.05          # a single-step base-shear drop of at least 5 % of Vmax is reported and attributed
+LOSS_FRAC = 0.05          # a component whose force falls below 5 % of its own peak in one step has lost its strength
+_LOSS_BASIS = {"brb": "BRB deformation reached Delta_y + b -> strength lost (AISC 342-22 Table C3.3 b; E3.2b(c) post-b loss; "
+                      "MinMax removal)",
+               "brace": "buckling-brace force collapsed (AISC 342-22 Table C3.4 backbone past b)",
+               "link": "link shear force collapsed"}
+# NL-R2-22 (round 4): EBF link shear springs keep the residual c Vp (no MinMax), so their force never collapses; a link
+# drop is attributed by its plastic deformation crossing the capping point a (strength falls from Vc to c Vp) or b
+_LINK_CROSS = (("a_pl", "link plastic shear deformation passed the capping point a -> strength falls to the residual c Vp "
+                        "(AISC 342-22 Table C2.4, Figure C1.1)"),
+               ("b_pl", "link plastic shear deformation passed b (end of the valid modelling range, AISC 342-22 Table C2.4; "
+                        "residual c Vp kept)"))
+
+
+def strength_loss_events(run, hinges, drop_frac=DROP_FRAC, loss_frac=LOSS_FRAC):
+    """NL-R2-35: what made the capacity curve drop. Pure post-processing of the recorded run.
+
+    Component losses: a hinge whose recorded force (rec["hinge_M"]: brace / truss axial force, spring force) was >= 50 %
+    of its own peak at step i-1 and is below `loss_frac` x peak at step i (a MinMax-wrapped BRB past b carries exactly
+    zero; a Hysteretic brace past b ~2 %); a non-brace hinge whose plastic deformation passes its b in step i; and an EBF
+    link shear spring whose plastic deformation passes its capping point a or its b in step i (NL-R2-22 round 4: the
+    link keeps its residual c Vp, so its force never collapses). Drops: every step whose base shear falls by >= `drop_frac` x Vmax, with the component losses of that step
+    as the cause -- or, with none, flagged as NOT attributed to a component (drift concentration after an earlier loss,
+    P-Delta, or a numerical jump to another equilibrium branch: inspect).
+    Returns dict(drops=[...], losses=[...], n_drops, n_unattributed, Vmax, text)."""
+    rec = run["rec"]
+    u, V = list(rec["u"]), list(rec["V"])
+    tags = list(run.get("hinge_tags") or [])
+    HMr = rec.get("hinge_M") or []
+    PL = rec.get("hinge_pl") or []
+    Vmax = max(V) if V else 0.0
+    losses, by_step = [], {}
+
+    def _ev(i, k, why, f0=None, f1=None):
+        h = hinges.get(tags[k], {}) if isinstance(hinges, dict) else {}
+        spec = h.get("spec")
+        b = getattr(spec, "b_t", None) if h.get("kind") == "brace" else getattr(spec, "b_pl", None)
+        d = PL[i][k] if i < len(PL) and k < len(PL[i]) else None
+        e = dict(step=i, u_in=u[i], tag=tags[k], ele=h.get("ele", tags[k]), kind=h.get("kind"), section=h.get("section"),
+                 z_in=h.get("z"), brb=bool(h.get("brb")), why=why, force_before=f0, force_after=f1,
+                 deformation=d, b=b)
+        losses.append(e); by_step.setdefault(i, []).append(e)
+
+    if HMr and tags:
+        peak = [0.0] * len(tags)
+        for i in range(1, min(len(HMr), len(V))):
+            prev, cur = HMr[i - 1], HMr[i]
+            for k in range(len(tags)):
+                f0 = prev[k] if k < len(prev) else None
+                f1 = cur[k] if k < len(cur) else None
+                if f0 is None or f1 is None:
+                    continue
+                peak[k] = max(peak[k], abs(f0))
+                if peak[k] > 1e-6 and abs(f0) >= 0.5 * peak[k] and abs(f1) < loss_frac * peak[k]:
+                    h = hinges.get(tags[k], {}) if isinstance(hinges, dict) else {}
+                    _ev(i, k, _LOSS_BASIS.get("brb" if h.get("brb") else h.get("kind"), "force fell below %.0f%% of its peak" % (100 * loss_frac)), f0, f1)
+    if PL and tags and isinstance(hinges, dict):
+        for k, t in enumerate(tags):
+            h = hinges.get(t, {})
+            if h.get("kind") == "brace" or h.get("form") == "fibre_end":
+                continue      # braces: caught by their force (MinMax freezes a BRB's strain); fibre ends never lose strength
+            if h.get("kind") == "link":
+                for attr, why in _LINK_CROSS:
+                    lim = getattr(h.get("spec"), attr, None)
+                    if not lim or lim <= 0:
+                        continue
+                    for i in range(1, len(PL)):
+                        if k < len(PL[i]) and abs(PL[i - 1][k]) < lim <= abs(PL[i][k]):
+                            if not any(e["tag"] == t for e in by_step.get(i, [])):
+                                _ev(i, k, why)
+                            break
+                continue
+            b = getattr(h.get("spec"), "b_pl", None)
+            if not b or b <= 0:
+                continue
+            for i in range(1, len(PL)):
+                if k < len(PL[i]) and abs(PL[i - 1][k]) < b <= abs(PL[i][k]):
+                    if not any(e["tag"] == t for e in by_step.get(i, [])):
+                        _ev(i, k, "plastic deformation passed b (%s)" % ("rotation" if h.get("kind") in ("beam", "col") else "deformation"))
+                    break
+    drops = []
+    for i in range(1, len(V)):
+        dV = V[i] - V[i - 1]
+        if Vmax > 0 and -dV >= drop_frac * Vmax:
+            causes = by_step.get(i, [])
+            levels = sorted({round(float(c["z_in"]), 1) for c in causes if isinstance(c.get("z_in"), (int, float))})
+            drops.append(dict(step=i, u_from=u[i - 1], u_to=u[i], V_from=V[i - 1], V_to=V[i], dV=dV, frac_Vmax=-dV / Vmax,
+                              after_peak=i - 1 >= int(np.argmax(V)), causes=causes, attributed=bool(causes),
+                              n_levels=len(levels), multi_level=len(levels) > 1))
+    n_un = sum(1 for d in drops if not d["attributed"])
+    return dict(drops=drops, losses=losses, n_drops=len(drops), n_unattributed=n_un, Vmax=Vmax,
+                drop_frac=drop_frac, loss_frac=loss_frac, text=strength_loss_text(drops))
+
+
+MULTI_LEVEL_NOTE = ("components at %d levels lost their strength in ONE step: a displacement-controlled push cannot follow "
+                    "this snap-through, and how many components pass b within one step can depend on the step size -- read "
+                    "the strength just after the drop (the storey without them), not the exact sequence that follows")
+
+
+def _cause_txt(e):
+    lab = ("BRB" if e.get("brb") else (e.get("kind") or "component"))
+    z = (" (top z = %.0f in)" % e["z_in"]) if isinstance(e.get("z_in"), (int, float)) else ""
+    return "%s %s %s%s" % (lab, e.get("ele"), e.get("section") or "", z)
+
+
+def strength_loss_text(drops):
+    """One line per drop (log / report)."""
+    out = []
+    for d in drops:
+        cause = ("; ".join(_cause_txt(e) for e in d["causes"][:6]) + (" (+%d more)" % (len(d["causes"]) - 6) if len(d["causes"]) > 6 else "")
+                 + " -- " + d["causes"][0]["why"]) if d["causes"] else \
+            ("NOT attributed to a component losing strength in this step (drift concentration after an earlier loss, "
+             "P-Delta, or a numerical jump to another equilibrium branch -- inspect)")
+        out.append("step %d u %.2f -> %.2f in: V %.0f -> %.0f kip (%.0f%% of Vmax): %s%s"
+                   % (d["step"], d["u_from"], d["u_to"], d["V_from"], d["V_to"], 100 * d["frac_Vmax"], cause,
+                      (" [" + MULTI_LEVEL_NOTE % d["n_levels"] + "]") if d.get("multi_level") else ""))
+    return out
+
+
 # --------------------------------------------------------------------------- component acceptance
 def step_at(run, disp):
     """First recorded step whose roof displacement equals or exceeds `disp` (ASCE 41-23 7.4.3.3.1), or None
@@ -386,7 +506,7 @@ def _census_drifts(run, hinges, i):
             lim = dict(IO=s.IO, LS=s.LS, CP=s.CP)
         dc = {k: (th / v if v > 0 else float("nan")) for k, v in lim.items()}
         yielded = (th > 0.5 * s.theta_y) if h["kind"] != "brace" else (th > (s.dc if pl[j] < 0 else s.dT))
-        key = (h["kind"], h["section"], round(h["z"]))
+        key = (h["kind"], h["section"], round(h["z"]), h.get("axis"))          # NL-R2-32: column minor-axis springs apart
         brb = bool(h.get("brb")) or bool(getattr(s, "Asc", 0.0))
         mon = h.get("form") or ("axial" if h["kind"] == "brace" else "zeroLength")
         if brb:
@@ -396,7 +516,8 @@ def _census_drifts(run, hinges, i):
         g = groups.setdefault(key, dict(kind=h["kind"], section=h["section"], z_in=round(h["z"]), n=0, n_yielded=0,
                                           theta_pl_max=0.0, IO=s.IO, LS=s.LS, CP=s.CP, DC_IO=0.0, DC_LS=0.0, DC_CP=0.0,
                                           monitor=mon, brb=brb,
-                                          units=("in" if h["kind"] in ("brace", "link") else "rad")))
+                                          units=("in" if h["kind"] in ("brace", "link") else "rad"),
+                                          **({"axis": h["axis"]} if h.get("axis") else {})))
         g["n"] += 1; g["n_yielded"] += int(yielded)
         # Group D/C = the largest D/C of its members, each against ITS OWN limits. The members of one
         # (kind, section, level) group can carry different limits (columns: Table C3.6 a/b vary with P_G/P_ye;
@@ -427,7 +548,7 @@ def _census_drifts(run, hinges, i):
             c["link_hinges"] += 1; c["link_yielded"] += int(yielded)
         else:
             c["col_hinges"] += 1; c["col_yielded"] += int(yielded)
-    table = sorted(groups.values(), key=lambda g: (g["kind"], g["z_in"]))
+    table = sorted(groups.values(), key=lambda g: (g["kind"], g["z_in"], g.get("axis") or ""))
     worst = {k: max((g["DC_" + k] for g in table if g["DC_" + k] == g["DC_" + k]), default=None) for k in ("IO", "LS", "CP")}
     story_u = run["rec"]["story_u"][i]
     drifts, prev = [], 0.0

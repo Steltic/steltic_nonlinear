@@ -4,6 +4,10 @@ Every `elasticBeamColumn` column/beam becomes:  node_i --[zeroLength hinge]-- el
 with the strong-axis rotational spring a ModIMKPeakOriented material (params from hinge_models) and all other
 DOF of the zeroLength rigid. The interior element keeps the ORIGINAL geomTransf (so P-Delta stays on for columns)
 and has its hinged-axis inertia scaled by (n+1)/n, the spring K0 = n*6EI/L (Ibarra & Krawinkler, n = 10).
+Columns (NL-R2-32) also get an independent uniaxial minor-axis IMK spring on the other rotational DOF of the same
+zeroLength (hinge_models.column_hinge_minor: Mpcey per AISC 342-22 C3.4a.2.a.1, Table C3.6 parameters), registered
+under key zl + MINOR_KEY_OFF with h["zl"] = the zeroLength; hinge_params column_flexure.minor_axis_hinge = false
+keeps the minor axis elastic (no spring, the pre-NL-R2-32 model).
 Nodes, fixes, masses and rigid diaphragms are replayed exactly as recorded in model_opensees.py.
 
 Optional panel zones (hinge_params panel_zones.mode): default "rigid" (unchanged). "scissors" inserts a
@@ -61,6 +65,8 @@ PT_SEC_BASE = 97_000_000       # physical-theory brace fibre sections / integrat
 PT_TRANSF_BASE = 9_000_000     # physical-theory brace corotational transforms: + ele
 PT_MAT0 = 47_000_000           # fibre materials of physical-theory braces
 LINK_END = 3                   # link shear spring: node HN_BASE + ele*10 + 3, zeroLength ZL_BASE + ele*10 + 3
+MINOR_KEY_OFF = 4              # NL-R2-32: column minor-axis spring registry key = ZL_BASE + ele*10 + 4 + end (5|6);
+                               # a registry key only -- the spring lives in zeroLength h["zl"] = ZL_BASE + ele*10 + end
 
 
 def _dir_vec(p1, p2):
@@ -244,7 +250,7 @@ def hinge_plastic_deformation(tag, h):
         th = d[jc] if (d and len(d) > jc) else 0.0
         M = f[jc] if (f and len(f) > jc) else 0.0
         return th - M / h["K0"], M
-    th, M = zero_length_spring(tag, h["dof"])
+    th, M = zero_length_spring(h.get("zl", tag), h["dof"])          # NL-R2-32: minor-axis key -> its zeroLength
     return th - M / h["K0"], M
 
 
@@ -865,10 +871,23 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
     cr = g["cross"].get(tag)
     ptp = (prm.get("brace_axial") or {}).get("physical_theory") or {}
     c = dict(n=0, e=0, z=0, s=0, A=A_in2, pin_factor=float(ptp.get("pin_stiffness_factor", 1000.0)))
+    units = []                                                    # NL-R2-20 (round 4): what a through-fracture removes
+
+    def unit(gA, pA, gB, pB, eA, eB, sign, pinA, pinB):
+        z0 = c["z"]
+        sg, ch = _pt_unit(tag, c, gA, pA, gB, pB, eA, eB, sign, w, fp["camber"], nseg, st, tr, tr_rigid, etype, mL,
+                          pinA, pinB, ax, yv)
+        # the chain's own nodes (an unpinned chain end is the X-crossing node, shared with the other half): removed
+        # with the segments and the pin springs; the gusset end zones (rigid stubs on the frame) stay
+        own = ch[(0 if pinA else 1):(len(ch) if pinB else len(ch) - 1)]
+        units.append(dict(segs=list(sg), pins=[PT_ZL_BASE + tag * 100 + k for k in range(z0 + 1, c["z"] + 1)],
+                          nodes=list(own), ends=(gA, gB)))
+        return sg, ch
+
+    cross = None
     if cr is None:
         Lcl = min(Lc, L); ez = 0.5 * (L - Lcl)
-        segs, chain = _pt_unit(tag, c, e["n1"], p1, e["n2"], p2, ez, ez, 1.0, w, fp["camber"], nseg, st, tr,
-                               tr_rigid, etype, mL, True, True, ax, yv)
+        segs, chain = unit(e["n1"], p1, e["n2"], p2, ez, ez, 1.0, True, True)
         geom = "single: clear length %.0f in of %.0f in (%s), end zones %.0f in" % (Lcl, L, lc_src, ez)
     else:
         # X connected at the crossing: this diagonal's own crossing node, translations tied to the partner's
@@ -879,12 +898,12 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
         pn = ctx["pt_cross_nodes"].get(cr["partner"])
         if pn is not None:
             ops.equalDOF(pn, xn, 1, 2, 3)
+        # NL-R2-20 (round 4): what a fracture of both halves leaves at the crossing (nlrha.brace_fracture.remove_unit)
+        cross = dict(node=xn, partner=cr["partner"], constrained=pn is not None, frame=(e["n1"], e["n2"]))
         s = cr["s"]; L1 = s * L; L2 = (1 - s) * L
         e1 = max(0.0, L1 - min(Lc, L1)); e2 = max(0.0, L2 - min(Lc, L2))
-        segs1, ch1 = _pt_unit(tag, c, e["n1"], p1, xn, X, e1, 0.0, 1.0, w, fp["camber"], nseg, st, tr,
-                              tr_rigid, etype, mL, True, False, ax, yv)
-        segs2, ch2 = _pt_unit(tag, c, xn, X, e["n2"], p2, 0.0, e2, -1.0, w, fp["camber"], nseg, st, tr,
-                              tr_rigid, etype, mL, False, True, ax, yv)
+        segs1, ch1 = unit(e["n1"], p1, xn, X, e1, 0.0, 1.0, True, False)
+        segs2, ch2 = unit(xn, X, e["n2"], p2, 0.0, e2, -1.0, False, True)
         segs, chain = segs1 + segs2, ch1 + ch2[1:]
         geom = "X crossing at s=%.2f with brace %d: halves %.0f / %.0f in, clear %.0f / %.0f in (%s)" % (
             s, cr["partner"], L1, L2, L1 - e1, L2 - e2, lc_src)
@@ -893,7 +912,8 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
     ops.uniaxialMaterial("Elastic", mat, 1.0e-6)
     ops.element("corotTruss", tag, e["n1"], e["n2"], 1.0, mat)  # deformation monitor (no stiffness)
     hinges[tag] = _brace_hinge(e, sec, p1, p2, spec, mat, E_KSI_AL(spec), form="physical_theory", force_ele=segs[0],
-                               segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"], geometry=geom, Lc=Lc)
+                               segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"], geometry=geom, Lc=Lc,
+                               pt_units=units, nip=max(3, fp["nip"]), **({"pt_cross": cross} if cross else {}))
     stats["brace_physical_theory"] = stats.get("brace_physical_theory", 0) + 1
     stats.setdefault("pt_ele_tags", []).extend(segs)
     stats.setdefault("pt_geometry", []).append(geom + "; pin springs %s kip/in" % "/".join("%.3g" % k for k in c.get("pin_k", [])))
@@ -906,7 +926,8 @@ def build_link_imk(pkg, e, sec, prm, mat, hinges, stats, ctx, beam_side=None):
     """NL-03 EBF link, concentrated-plasticity form:
         n1 -[zeroLength: shear spring on global Z (link shear), rigid elsewhere]- s -[IMK flexural spring]- ni
            == elastic interior (I x (n+1)/n) == nj -[IMK flexural spring]- n2
-    Shear spring: hinge_models.link_specs / make_link_shear_material (Table C2.4 backbone, Vp = 0.6 Fye Alw), registered
+    Shear spring: hinge_models.link_specs / make_link_shear_material (Table C2.4 backbone, Vp = 0.6 Fye Alw; residual
+    c Vp kept beyond b, NL-R2-22 round 4), registered
     as kind 'link' (deformation = transverse displacement; limits = gamma x e). Flexural springs: Table C2.2 values,
     registered as kind 'beam' with section '<sec> link'."""
     m = pkg.model
@@ -1037,6 +1058,23 @@ def _link_mass_balance(pkg, ctx, stats):
     _note(stats, "EBF links: own mass %.4f kip-s2/in (%.1f kip) placed on the link nodes and taken off the floor masses" % (moved, moved * G_IN))
 
 
+def fibre_strength_loss_sources(stats, n_buckling=None):
+    """NL-R2-35: the components of a FIBRE model that do lose strength (the fibre beams/columns never do):
+    BRBs -- strength lost beyond b (AISC 342-22 E3.2b(c): Figure C1.1 with the C3 parameters, post-peak beyond b down to a
+    near-zero residual; here MinMax at Delta_y + b, Table C3.3); EBF link shear springs (Table C2.4: strength falls from
+    the capping point a to the residual c Vp, kept beyond b -- NL-R2-22 round 4, no MinMax);
+    buckling braces (post-buckling loss on the Table C3.4 backbone, or Steel02 + Fatigue fracture)."""
+    nb = (stats.get("brace_nonlinear", 0) - stats.get("brb", 0)) if n_buckling is None else n_buckling
+    out = []
+    if stats.get("brb"):
+        out.append("BRBs (%d) reaching deformation b (AISC 342-22 Table C3.3, E3.2b(c); removed by their MinMax wrapper)" % stats["brb"])
+    if stats.get("links"):
+        out.append("EBF link shear springs (%d) past the capping deformation a (AISC 342-22 Table C2.4; strength falls to the residual c Vp, kept beyond b)" % stats["links"])
+    if nb > 0:
+        out.append("buckling braces (%d) after buckling (AISC 342-22 Table C3.4 backbone)" % nb)
+    return out
+
+
 def finish_stats(stats, ctx, prm, plasticity):
     """Census + degradation disclosure common to both builders (NL-02 / NL-03 / NL-10)."""
     links = ctx.get("links") or {}
@@ -1054,16 +1092,30 @@ def finish_stats(stats, ctx, prm, plasticity):
                      "16.4.2.1 against phi Pn (AISC 360-22 E3, design buckling length) / phi Fy Ag" % stats["brace_ebf_elastic"])
     deg = dict(plasticity=plasticity)
     lam_mode = str((HM.param_group(prm, "cyclic_deterioration")[0]).get("mode", "none")).lower()
+    nb = stats.get("brace_nonlinear", 0) - stats.get("brb", 0)
     if plasticity == "fibre":
-        deg["members"] = ("NONE: fibre forceBeamColumn sections are Steel01 with 1% hardening -- no local buckling, no in-cycle or "
-                          "cyclic strength degradation, no fracture; the capacity curve has no member-level strength loss, so Vmax, "
-                          "Omega and mu_T are upper/lower bounds respectively")
-        _note(stats, "FIBRE NSP: member strength degradation is NOT modelled (no local buckling / fracture in the fibres); "
-                     "use --plasticity imk for the AISC 342 backbones with post-capping strength loss")
+        # NL-R2-35: the fibre beams/columns never lose strength, but BRBs (MinMax at b), EBF link springs (to c Vp past a) and buckling braces
+        # (Table C3.4 backbone) do -- the curve can drop, and each drop is attributed (postprocess.strength_loss_events).
+        losers = fibre_strength_loss_sources(stats, nb)
+        if losers:
+            deg["members"] = ("beams / columns: NONE -- fibre forceBeamColumn sections are Steel01 with 1%% hardening (no local "
+                              "buckling, no in-cycle or cyclic strength degradation, no fracture). The capacity curve CAN still lose "
+                              "strength, through %s and P-Delta; every single-step drop is attributed in the report (strength-loss "
+                              "events). Without beam/column degradation, Vmax and Omega are upper bounds and delta_u / mu_T may be "
+                              "overestimated" % "; ".join(losers))
+            _note(stats, "FIBRE NSP: beam/column strength degradation is NOT modelled (no local buckling / fracture in the fibres); "
+                         "the capacity curve still loses strength through %s -- each drop is attributed in the report (strength-loss "
+                         "events); use --plasticity imk for the AISC 342 beam/column backbones with post-capping strength loss"
+                  % "; ".join(losers))
+        else:
+            deg["members"] = ("NONE: fibre forceBeamColumn sections are Steel01 with 1% hardening -- no local buckling, no in-cycle or "
+                              "cyclic strength degradation, no fracture; the capacity curve has no member-level strength loss, so Vmax, "
+                              "Omega and mu_T are upper/lower bounds respectively")
+            _note(stats, "FIBRE NSP: member strength degradation is NOT modelled (no local buckling / fracture in the fibres); "
+                         "use --plasticity imk for the AISC 342 backbones with post-capping strength loss")
     else:
         deg["members"] = ("IMK hinges: in-cycle post-capping strength loss to c*My per the AISC 342 backbone; cyclic (energy-based) "
                           "deterioration %s" % ("ON (cyclic_deterioration.mode=%s)" % lam_mode if lam_mode not in ("none", "off") else "OFF"))
-    nb = stats.get("brace_nonlinear", 0) - stats.get("brb", 0)
     if nb > 0:
         deg["braces"] = ("physical-theory fibre braces with Steel02 + Fatigue: buckling, cyclic degradation and low-cycle-fatigue "
                          "fracture (%d braces)" % stats.get("brace_physical_theory", 0)) if stats.get("brace_physical_theory") else \
@@ -1072,7 +1124,8 @@ def finish_stats(stats, ctx, prm, plasticity):
         deg["brb"] = ("BRB (%d): no cyclic degradation modelled -- AISC 342-22 Commentary E3: BRBs 'are expected to withstand significant "
                       "inelastic deformations without strength or stiffness degradation'; strength is lost beyond b (Table C3.3)" % stats["brb"])
     if stats.get("links"):
-        deg["links"] = ("EBF link shear springs (%d): Table C2.4 backbone with post-capping loss to c*Vp and loss beyond b; cyclic damage "
+        deg["links"] = ("EBF link shear springs (%d): Table C2.4 backbone with post-capping loss to the residual c*Vp, KEPT beyond b "
+                        "(b = end of the valid modelling range in the acceptance, not a loss of strength in the model); cyclic damage "
                         "per ebf_link.shear.damage1/2" % stats["links"])
     stats["degradation"] = deg
     return stats
@@ -1218,6 +1271,17 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
                 hinge_i, hinge_j, beam_side, mat, hinges, stats, verbose=verbose,
             )
             continue
+        # NL-R2-32: minor-axis column springs (AISC 342-22 C3.4a.2: Mpcey, Table C3.6), unless the column's flexure is
+        # force-controlled or column_flexure.minor_axis_hinge = false. Columns carry the minor axis in the Iy slot
+        # (-releasey); a minor-axis release at an end means no minor spring there.
+        spec_mn, mn_i, mn_j, mslot = None, False, False, None
+        if kind == "col" and not spec.force_controlled:
+            spec_mn = HM.column_hinge_minor(sec, L, PG.get(e["tag"], 0.0), prm, major=spec)
+            if spec_mn is not None:
+                mslot = "Iy" if slot == "Iz" else "Iz"
+                mflag = "-releasey" if mslot == "Iy" else "-releasez"
+                rely = int(rel[rel.index(mflag) + 1]) if mflag in rel else 0
+                mn_i = rely not in (1, 3); mn_j = rely not in (2, 3)
         geo = RBS.want_rbs_remesh(kind, sec, hinge_i, hinge_j, prm_m)
         if geo is not None:
             try:
@@ -1230,30 +1294,46 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
                     print("[nonlinear_model] RBS 7-seg fallback ele %s (%s): %s" % (e["tag"], sec, ex))
         # interior elastic element between hinge nodes (or original nodes where no hinge)
         ni, nj = e["n1"], e["n2"]
-        if hinge_i:
+        if hinge_i or mn_i:
             ni = HN_BASE + e["tag"] * 10 + 1; ops.node(ni, *p1)
-        if hinge_j:
+        if hinge_j or mn_j:
             nj = HN_BASE + e["tag"] * 10 + 2; ops.node(nj, *p2)
         args = dict(A=e["A"], E=e["E"], G=e["G"], J=e["J"], Iy=e["Iy"], Iz=e["Iz"])
         if hinge_i or hinge_j:
             args[slot] = I * (N_STIFF + 1.0) / N_STIFF
+        if mn_i or mn_j:                                     # NL-R2-32: same (n+1)/n stiffness split for the minor axis
+            args[mslot] = e[mslot] * (N_STIFF + 1.0) / N_STIFF
         ops.element("elasticBeamColumn", e["tag"], ni, nj, args["A"], args["E"], args["G"], args["J"],
                     args["Iy"], args["Iz"], e["transf"], *rel)
         stats.setdefault("elastic_ele_tags", []).append(e["tag"])
         K0 = N_STIFF * 6.0 * e["E"] * I / L
-        for end, on, no, nn in ((1, hinge_i, e["n1"], ni), (2, hinge_j, e["n2"], nj)):
-            if not on:
+        K0m = N_STIFF * 6.0 * e["E"] * e[mslot] / L if mslot else None
+        pcr = prm.get("numerics", {}).get("post_cap_ratio", 0.15)
+        for end, on, onm, no, nn in ((1, hinge_i, mn_i, e["n1"], ni), (2, hinge_j, mn_j, e["n2"], nj)):
+            if not (on or onm):
                 continue
-            mat += 1
-            HM.make_imk_material(mat, spec, K0, post_cap_ratio=prm.get("numerics", {}).get("post_cap_ratio", 0.15))
             other_rot = 4 if dof == 5 else 5
-            mats = {1: 1, 2: 1, 3: 1, other_rot: 2, 6: 2, dof: mat}
+            mats = {1: 1, 2: 1, 3: 1, other_rot: 2, 6: 2, dof: 2}
+            if on:
+                mat += 1
+                HM.make_imk_material(mat, spec, K0, post_cap_ratio=pcr)
+                mats[dof] = mat; mat_maj = mat
+            if onm:
+                # NL-R2-32: independent uniaxial minor-axis spring in the same zeroLength (no biaxial interaction)
+                mat += 1
+                HM.make_imk_material(mat, spec_mn, K0m, post_cap_ratio=pcr)
+                mats[other_rot] = mat
             zl = ZL_BASE + e["tag"] * 10 + end
             # Scissors: FR beam ends attach to beam-side node; columns stay on the joint (column continuity).
             attach = beam_side[no] if (kind == "beam" and no in beam_side) else no
             ops.element("zeroLength", zl, attach, nn, "-mat", *[mats[k] for k in (1, 2, 3, 4, 5, 6)], "-dir", 1, 2, 3, 4, 5, 6)
-            hinges[zl] = dict(ele=e["tag"], end=end, kind=kind, section=sec, dof=dof, K0=K0, mat=mat,
-                              node=no, z=p1[2] if end == 1 else p2[2], spec=spec)
+            if on:
+                hinges[zl] = dict(ele=e["tag"], end=end, kind=kind, section=sec, dof=dof, K0=K0, mat=mat_maj,
+                                  node=no, z=p1[2] if end == 1 else p2[2], spec=spec)
+            if onm:
+                hinges[zl + MINOR_KEY_OFF] = dict(ele=e["tag"], end=end, kind=kind, section=sec, dof=other_rot, K0=K0m, mat=mat,
+                                                  node=no, z=p1[2] if end == 1 else p2[2], spec=spec_mn, axis="minor", zl=zl)
+                stats["col_minor_hinges"] = stats.get("col_minor_hinges", 0) + 1
         stats[kind] += 1
     # Scissors panel-zone springs at FR joints (after member hinges, before diaphragms).
     # Use a single 6-DOF zeroLength (rigid on non-PZ DOFs + spring on active rot) — NOT equalDOF.
@@ -1304,14 +1384,20 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
         ops.rigidDiaphragm(perp, master, *slaves)
     _pt_mass_balance(pkg, ctx, stats)
     _link_mass_balance(pkg, ctx, stats)                          # NL-R2-22
+    # NL-R2-32: how the minor axis of the concentrated-hinge columns is modelled (reports / 16.1.4 text)
+    stats["column_minor_axis"] = ("elastic (column_flexure.minor_axis_hinge = false)" if not HM.minor_axis_hinge_on(prm) else
+                                  "elastic (L2 ConcentratedPlasticity FBC path: major-axis hinges only)" if FBC.want_fbc(prm) else "hinge")
+    stats.setdefault("col_minor_hinges", 0)
     finish_stats(stats, ctx, prm, "imk")
     if verbose:
         print("[nonlinear_model] hinges: %d  (cols %d, beams %d, brace elements %d of which nonlinear %d [BRB %d, physical-theory %d], "
-              "EBF links %d, force-controlled cols %d, released ends %d, panel_zones %s=%d, rbs7=%d, fbc_cp=%d, elastic_eles=%d)"
+              "EBF links %d, force-controlled cols %d, released ends %d, panel_zones %s=%d, rbs7=%d, fbc_cp=%d, elastic_eles=%d, "
+              "column minor-axis springs %d [%s])"
               % (len(hinges), stats["col"], stats["beam"], stats["brace"], stats["brace_nonlinear"], stats.get("brb", 0),
                  stats.get("brace_physical_theory", 0), stats.get("links", 0), stats["force_controlled"], stats["released_ends"],
                  stats["panel_zone_mode"], stats["panel_zones"], stats.get("rbs_remesh_beams", 0),
-                 stats.get("fbc_cp_members", 0), len(stats.get("elastic_ele_tags") or [])))
+                 stats.get("fbc_cp_members", 0), len(stats.get("elastic_ele_tags") or []),
+                 stats["col_minor_hinges"], stats["column_minor_axis"].split(" ")[0]))
         for w in stats.get("model_warnings") or []:
             print("  !! " + w)
     return hinges, stats
