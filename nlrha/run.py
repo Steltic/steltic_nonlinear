@@ -223,6 +223,51 @@ def update_peaks(peak_def, signed_def, hz, vals):
             signed_def[tg] = (max(p, v), min(n, v))
 
 
+def update_col_env(col_env, peak_colN, colinfo, forces=None):
+    """NL-R2-34 (columns): fold one committed state's column forces into the record's force-controlled column envelope
+    (16.4.2.1): col_env[c] Pc (max compression), Pt (min, most tensile), Mmaj / Mmin (max |M| over both ends), the
+    concurrent (P, |Mmaj|, |Mmin|) instants conc_c / conc_t (most utilised in compression / tension, by the proxy
+    strengths A Fye, Zx Fye, Zy Fye) and conc_m (NL-R2-16 round 4: the largest concurrent moment pair while in
+    compression), and peak_colN[c] = max compression. Called at EVERY committed step (it was sampled only at the
+    viewer frames, every rec_every * dt_max: on Ex22 record 1 the frame sampling missed up to 10 % of Pc / Mmin and up
+    to 38.6 kip of tension). `forces(ci)` -> _column_forces(ci) by default (tests pass a stub)."""
+    forces = forces or _column_forces
+    for c, ci in colinfo.items():
+        f = forces(ci)
+        if f is None:
+            continue
+        ev = col_env[c]
+        if f[0] > ev["Pc"]:
+            ev["Pc"] = f[0]
+        if f[0] < ev["Pt"]:
+            ev["Pt"] = f[0]
+        if f[1] > ev["Mmaj"]:
+            ev["Mmaj"] = f[1]
+        if f[2] > ev["Mmin"]:
+            ev["Mmin"] = f[2]
+        px = ci.get("proxy")
+        if px:                                                      # concurrent (P, Mmaj, Mmin) at the most utilised instant / end
+            for trip in f[3]:
+                mm = trip[1] / px[1] + trip[2] / px[2]
+                uc = max(trip[0], 0.0) / px[0] + mm; ut = max(-trip[0], 0.0) / px[0] + mm
+                if uc > ev["_uc"]:
+                    ev["_uc"] = uc; ev["conc_c"] = trip
+                if trip[0] < 0 and ut > ev["_ut"]:
+                    ev["_ut"] = ut; ev["conc_t"] = trip
+                # NL-R2-16 (round 4): the largest concurrent moment pair while in compression -- the moments of
+                # the 16.4.2.1 Exception 2 check (C3-9 with E_mc, AISC 342-22 C3.4a.2b)
+                if trip[0] > 0 and mm > ev["_um"]:
+                    ev["_um"] = mm; ev["conc_m"] = trip
+        if f[0] > peak_colN[c]:
+            peak_colN[c] = f[0]
+
+
+def new_col_env(cols):
+    """Empty record envelope for update_col_env."""
+    return ({c: dict(Pc=-1e30, Pt=1e30, Mmaj=0.0, Mmin=0.0, conc_c=None, conc_t=None, conc_m=None, _uc=-1.0, _ut=-1.0, _um=-1.0) for c in cols},
+            {c: 0.0 for c in cols})
+
+
 def _truss_axial(tag):
     """NL-R2-22: axial force (kip, + tension) of a truss element."""
     f = ops.eleResponse(tag, "axialForce")
@@ -490,8 +535,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     cols = list(colinfo)
     peak_drift = np.zeros((len(lv), 2)); peak_at = [[None, None] for _ in lv]; peak_roof = np.zeros(2)
     peak_def = {t: 0.0 for t in hz}; signed_def = {t: (0.0, 0.0) for t in hz}       # (max positive, max negative)
-    peak_colN = {c: 0.0 for c in cols}
-    col_env = {c: dict(Pc=-1e30, Pt=1e30, Mmaj=0.0, Mmin=0.0, conc_c=None, conc_t=None, conc_m=None, _uc=-1.0, _ut=-1.0, _um=-1.0) for c in cols}
+    col_env, peak_colN = new_col_env(cols)
     hist_t, hist_roof = [], []
     brace_hist = []
     frames_t, frames_story, frames_brace, frames_ag = [], [], [], []       # viewer frames (every rec_every steps)
@@ -567,6 +611,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
         # was missed and the acceptance read a smaller, later deformation)
         hvals = hinge_deformations(hz, hinges, K0)
         update_peaks(peak_def, signed_def, hz, hvals)
+        update_col_env(col_env, peak_colN, colinfo)                # NL-R2-34 (columns): force-controlled column envelope, every step
         # 16.4.1.2 drift at vertically aligned points, both directions (NL-12)
         disp = {n: (ops.nodeDisp(n, 1), ops.nodeDisp(n, 2)) for n in pnodes}
         dnow, at = DR.story_drifts(pts, disp)
@@ -585,26 +630,6 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
             frames_brace.append([round(ops.eleResponse(b, "deformation")[0], 4) for b in braces])
             ir = min(int(t / dt_rec), n_rec - 1); frames_ag.append([round(float(ax[ir] * sf), 4), round(float(ay[ir] * sf), 4)])
             frames_hinge.append([round(v, 6) for v in hvals])
-            for c in cols:
-                f = _column_forces(colinfo[c])
-                if f is None:
-                    continue
-                ev = col_env[c]
-                ev["Pc"] = max(ev["Pc"], f[0]); ev["Pt"] = min(ev["Pt"], f[0]); ev["Mmaj"] = max(ev["Mmaj"], f[1]); ev["Mmin"] = max(ev["Mmin"], f[2])
-                px = colinfo[c].get("proxy")
-                if px:                                              # concurrent (P, Mmaj, Mmin) at the most utilised instant / end
-                    for trip in f[3]:
-                        mm = trip[1] / px[1] + trip[2] / px[2]
-                        uc = max(trip[0], 0.0) / px[0] + mm; ut = max(-trip[0], 0.0) / px[0] + mm
-                        if uc > ev["_uc"]:
-                            ev["_uc"] = uc; ev["conc_c"] = trip
-                        if trip[0] < 0 and ut > ev["_ut"]:
-                            ev["_ut"] = ut; ev["conc_t"] = trip
-                        # NL-R2-16 (round 4): the largest concurrent moment pair while in compression -- the moments of
-                        # the 16.4.2.1 Exception 2 check (C3-9 with E_mc, AISC 342-22 C3.4a.2b)
-                        if trip[0] > 0 and mm > ev["_um"]:
-                            ev["_um"] = mm; ev["conc_m"] = trip
-                peak_colN[c] = max(peak_colN[c], f[0])
             if sample_brace and sample_brace in hinges:
                 d = ops.eleResponse(sample_brace, "deformation")
                 brace_hist.append((d[0] if d else 0.0, HM.brace_axial_force(sample_brace, hinges[sample_brace])))   # NL-10: physical-theory braces
