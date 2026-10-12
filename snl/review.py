@@ -520,8 +520,15 @@ def mock_review(ev: dict, focus: str = "", search=None) -> str:
         lines.append("- Unacceptable responses %s of %s (allowed %s) — %s %s" % (v.get("n_unacceptable"), v.get("n_records"), v.get("unacceptable_allowed"), "OK" if v.get("unacceptable_ok") else "NOT OK", cite["16.4.1.1"]))
         lines.append("- Deformation-controlled actions: worst CP D/C %s — %s; valid range %s" % (_f(sn.get("worst_DC_CP")), "OK" if v.get("deformation_ok") else "NOT OK", "OK" if v.get("valid_range_ok") else "NOT OK"))
         lines.append("- Force-controlled columns: worst D/C %s — %s %s%s" % (_f(sn.get("worst_DC_force_controlled")), "OK" if v.get("force_controlled_ok") else "NOT OK", cite["16.4.2.1"],
-                     ("; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4 with the concurrent moments by AISC 342 C3-9, m = 1) used for %s (default check D/C %s)" % ("; ".join((v.get("FC_exception_2") or {}).get("members") or []), _f(v.get("worst_FC_DC_default"))))
+                     ("; 16.4.2.1 Exception 2 (Eqs. 16.4-3/16.4-4%s) used for %s (default check D/C %s)" % (
+                         "" if (v.get("column_flexure_interaction") or "informative") == "informative" else " with the concurrent moments by AISC 342 C3-9, m = 1",
+                         "; ".join((v.get("FC_exception_2") or {}).get("members") or []), _f(v.get("worst_FC_DC_default"))))
                      if (v.get("FC_exception_2") or {}).get("used") else ""))       # NL-R2-16
+        if v.get("worst_C3_9_info") is not None:                   # NL-R2-16 (round 4, Ch. 16 column check)
+            lines.append("- AISC 342-22 C3.4a.2b (C3-9, m = 1) on columns with deformation-controlled flexure: worst %s%s — %s" % (
+                _f(v.get("worst_C3_9_info")), (" (%s)" % v["worst_C3_9_info_column"]) if v.get("worst_C3_9_info_column") else "",
+                "informative, not part of the ASCE 7 Chapter 16 verdict (16.4.2 classifies actions only; 16.4.2.2 judges deformation-controlled flexure by its valid range)"
+                if (v.get("column_flexure_interaction") or "informative") == "informative" else "in the verdict (column_flexure_interaction = verdict)"))
         lines.append("- Residual drift: %s" % ("not applicable at this height" if not v.get("residual_applicable") else ("OK" if v.get("residual_ok") else "NOT OK")))
     else:
         lines.append("Not in the run.")

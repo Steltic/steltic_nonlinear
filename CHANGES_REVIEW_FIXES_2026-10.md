@@ -351,6 +351,11 @@ Combination with flexure:
 - Deformation-controlled flexure uses m = 1 and M_CE, as AISC 342 C3.4b ("shall also satisfy Equations C3-9, C3-10, and C3-11 … m taken as unity") requires.
 - C3-10 is checked.
 - Hand check of a test case: Pr = 650.8, DC_axial 0.6508, H1-1a, tension 339.8.
+- SUPERSEDED (NL-R2-16 round 4, Ch. 16 column check, user decision): ASCE 7-22 16.4.2 takes only the classification of actions
+  from ASCE 41; 16.4.2.1 checks the force-controlled column axial force and 16.4.2.2 judges deformation-controlled flexure by its
+  valid range of modelling. C3-9 / C3-10 for deformation-controlled flexure are therefore INFORMATIVE by default
+  (ch16_params force_controlled.column_flexure_interaction = "informative"; "verdict" restores the behaviour above). Columns with
+  force-controlled flexure keep the H1-1 interaction.
 
 CONCERN (method): the suite D/C is the 16.4 mean of the per-record concurrent interaction, not the interaction of the mean demands. The non-concurrent envelope is reported alongside. This is defensible, but the engineer should know it.
 

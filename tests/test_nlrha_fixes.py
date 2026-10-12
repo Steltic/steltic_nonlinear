@@ -231,10 +231,20 @@ def test_fc_check_combines_axial_and_flexure_and_counteracting_case():
 
 
 def test_flexure_makes_fc_check_stricter_than_axial_only():
-    acc = _eval([_rec(i) for i in range(11)], planned=[dict(record="R%d" % i) for i in range(11)])
+    """column_flexure_interaction = verdict: AISC 342 C3-9 in the verdict. Default (informative, NL-R2-16 round 4):
+    a deformation-controlled column is checked on its axial force; C3-9 reported as DC_C3_9_info."""
+    from nlrha import acceptance as AC
+    ch = _ch16(); ch["force_controlled"]["column_flexure_interaction"] = "verdict"
+    split = dict(sum_D=1000.0, sum_Lexp=200.0, no_live_case_needed=False)
+    acc = AC.evaluate([_rec(i) for i in range(11)], _col_pkg(), ch, {7: 200.0}, split, 1.5, Ie=1.0, rc="I_II",
+                      prm={"material": {"Fy_ksi": 50.0, "Ry_expected": 1.1}}, planned=[dict(record="R%d" % i) for i in range(11)], suite_size=11)
     row = acc["force_controlled_columns"][0]
     assert row["DC"] > row["DC_axial"] * 1.5 and row["DC_envelope"] >= row["DC"] - 1e-12
     assert acc["verdict"]["status"] in ("ACCEPTABLE", "NOT ACCEPTABLE")
+    acc = _eval([_rec(i) for i in range(11)], planned=[dict(record="R%d" % i) for i in range(11)])
+    ri = acc["force_controlled_columns"][0]
+    assert ri["DC"] == pytest.approx(ri["DC_axial"]) and ri["DC_C3_9_info"] == pytest.approx(row["DC"])
+    assert acc["verdict"]["column_flexure_interaction"] == "informative"
 
 
 def test_crawl_abort_is_incomplete_not_nonconvergence():

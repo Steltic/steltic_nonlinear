@@ -126,7 +126,19 @@ def _material(prm):
     return Fy, Ry
 
 
-def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
+INTERACTION_MODES = ("informative", "verdict")
+
+
+def interaction_mode(ch16):
+    """NL-R2-16 (round 4, Ch. 16 column check): force_controlled.column_flexure_interaction -- 'informative' (default)
+    or 'verdict'."""
+    m = str(((ch16 or {}).get("force_controlled") or {}).get("column_flexure_interaction", "informative")).strip().lower()
+    if m not in INTERACTION_MODES:
+        raise ValueError("ch16_params force_controlled.column_flexure_interaction must be one of %s, not %r" % (INTERACTION_MODES, m))
+    return m
+
+
+def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma, mode="informative"):
     """16.4.2.1 for one column with concurrent flexure (NL-18).
 
     Q   : dict(Pc, Pt, Mmaj, Mmin) -- mean (suite) or record peak demands; Pc compression +, Pt most tensile (signed)
@@ -136,17 +148,22 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
     Eq. (16.4-1): (1.2 + 0.12 SMS) D + 0.5 L + 1.3 Ie (Qu - Qns)  [compression]
     Eq. (16.4-2): (0.9 - 0.12 SMS) D + 1.3 Ie (Qu - Qns)           [counteracting gravity: tension / uplift]
     (cited by content: in the converted corpus these numbers collide with the drift equation 16.4-1.)
-    Flexure classification per AISC 342-22 C3.4 (ASCE 41-23 7.5): deformation-controlled for P_G/P_ye <= 0.6, else
+    Flexure is classified per AISC 342-22 C3.4 (ASCE 41-23 7.5): deformation-controlled for P_G/P_ye <= 0.6, else
     force-controlled. Force-controlled flexure is transformed the same way as the axial force and resisted by phi Mn
-    (AISC 360 F2/F3/F6) in both equations. Deformation-controlled flexure enters with the analysed moment itself and
-    the expected strength M_CE (MCx = MCEx in C3-9), per AISC 342-22 C3.4a.2b: "Columns or braces classified as
-    deformation-controlled for flexure shall also satisfy Equations C3-9, C3-10, and C3-11 when the column or brace is
-    in compression except that values for mx and my shall be taken as unity" -- so ONLY in the compression case
-    (Eq. 16.4-1); in the counteracting case (Eq. 16.4-2, net tension) a deformation-controlled moment is judged by the
-    hinge rotation (C3.4a.2b, Table C3.6) and is not combined with the axial tension (NL-R2-30). Interaction per AISC
-    360-22 H1-1 (identical to AISC 342-22 C3-9 with C3-12 / C3-13); C3-10 (|P_UF| / Pye <= 0.75) where flexure is
-    deformation-controlled. A deformation-controlled axis MODELLED elastic (e.g. the minor axis of concentrated-hinge
-    columns) whose demand exceeds M_CE is flagged: yielding the model cannot represent (16.3.1)."""
+    (AISC 360 F2/F3/F6) in both equations, combined with the axial force by the H1-1 interaction -- a force-controlled
+    action of 16.4.2.1 (both settings of `mode`).
+    Deformation-controlled flexure (NL-R2-16 round 4, user decision): ASCE 7-22 16.4.2 takes only the CLASSIFICATION of
+    actions from ASCE 41; 16.4.2.1 checks the force-controlled action -- the column AXIAL force, Eqs. 16.4-1 vs phi Pn
+    and 16.4-2 (net tension) vs phi Fy Ag -- and 16.4.2.2 judges the deformation-controlled flexure by the valid range
+    of modelling only (hinge rotation). Chapter 16 adopts no P-M interaction for such a column, so with
+    mode = "informative" (default, ch16_params force_controlled.column_flexure_interaction) the verdict D/C is axial
+    only and AISC 342-22 C3.4a.2b ("Columns or braces classified as deformation-controlled for flexure shall also
+    satisfy Equations C3-9, C3-10, and C3-11 when the column or brace is in compression except that values for mx and my
+    shall be taken as unity") is reported as INFORMATIVE: DC_C3_9_info = the 16.4-1 compression with the analysed
+    moment over M_CE (MCx = MCEx, C3-9 with C3-12 / C3-13 = H1-1 form), DC_C3_10_info = |P| / (0.75 Pye); in tension the
+    moment is not combined (NL-R2-30). mode = "verdict": those two enter the verdict (the a73832b behaviour).
+    A deformation-controlled axis MODELLED elastic (e.g. the minor axis of concentrated-hinge columns) whose demand
+    exceeds M_CE is flagged: yielding the model cannot represent (16.3.1)."""
     k1 = 1.2 + 0.12 * SMS; k2 = 0.9 - 0.12 * SMS
     def split(qns):
         D = qns * frac_D
@@ -161,7 +178,8 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
         if Mu is None:
             return None
         if flex[{"Mmaj": "major", "Mmin": "minor"}[axis]] == "deformation":
-            # deformation-controlled: analysed moment, not amplified, and only with compression (C3.4a.2b, NL-R2-30)
+            # deformation-controlled: analysed moment, not amplified, only with compression (C3.4a.2b, NL-R2-30) --
+            # used by the informative C3-9 (or the verdict with mode 'verdict'), NL-R2-16 round 4
             return Mu if eq == 1 else 0.0
         Dm, hLm = split(Mns)
         return (k1 * Dm + hLm if eq == 1 else k2 * Dm) + gamma * Ie * max(Mu - Mns, 0.0)
@@ -188,37 +206,57 @@ def _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, gamma):
     dc_c = h1(max(Pr1, 0.0), cap["phiPn"], mx1, my1)
     dc_t = h1(-Pr2, cap["phiTn"], mx2, my2) if Pr2 < 0 else None
     dc_310 = (max(Pr1, 0.0) / (0.75 * cap["Pye"])) if (flex["major"] == "deformation" or flex["minor"] == "deformation") else None
+    deform = "deformation" in (flex["major"], flex["minor"])
+    axial_only = deform and mode != "verdict"                     # NL-R2-16 (round 4, Ch. 16 column check)
     t_lbl = ("H1-1 tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)" if (mx2 or my2) else
-             "axial tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)" + (" (deformation-controlled flexure not combined in tension, AISC 342-22 C3.4a.2b)"
-                                                                  if "deformation" in (flex["major"], flex["minor"]) else ""))
-    cands = [(dc_c, "H1-1 compression, Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns)"), (dc_t, t_lbl),
-             (dc_310, "AISC 342 C3-10 |P|/Pye <= 0.75")]
+             "axial tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns)" + (" (deformation-controlled flexure not combined in tension)" if deform else ""))
+    if axial_only:
+        dc_ta = (-Pr2 / cap["phiTn"]) if Pr2 < 0 else None
+        cands = [(dc_axial, "axial compression, Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns) <= phi Pn (flexure deformation-controlled: 16.4.2.2)"),
+                 (dc_ta, "axial tension, Eq. (0.9-0.12SMS)D+1.3Ie(Qu-Qns) <= phi Fy Ag")]
+    else:
+        cands = [(dc_c, ("AISC 342 C3-9 (m = 1, M_CE) with " if deform else "H1-1 compression, ") + "Eq. (1.2+0.12SMS)D+0.5L+1.3Ie(Qu-Qns)"), (dc_t, t_lbl),
+                 (dc_310, "AISC 342 C3-10 |P|/Pye <= 0.75")]
     cands = [c for c in cands if c[0] is not None]
-    if cands:
+    rec_m = mx1 is not None and my1 is not None
+    if cands and (axial_only or rec_m):
         DC, gov = max(cands, key=lambda c: c[0])
     else:
         DC, gov = dc_axial, "axial only (column moments not recorded by this run)"
     return dict(demand=Pr1, demand_tension=(-Pr2 if Pr2 < 0 else 0.0), Mr_maj=mx1, Mr_min=my1, DC=DC, DC_axial=dc_axial, DC_H1_comp=dc_c,
-                DC_H1_tens=dc_t, DC_C3_10=dc_310, governing=gov, moments_recorded=bool(cands) and mx1 is not None, flags=flags)
+                DC_H1_tens=dc_t, DC_C3_10=dc_310, governing=gov, moments_recorded=rec_m, moments_needed=not axial_only, flags=flags,
+                DC_C3_9_info=(dc_c if deform else None), DC_C3_10_info=(dc_310 if deform else None), interaction=mode,
+                C3_9_in_verdict=bool(deform and not axial_only))
 
 
-def _record_column_dc(ev, Qns, cap, flex, frac_D, SMS, Ie, gamma):
-    """One record, one column: the 16.4.2.1 interaction at the most utilised CONCURRENT (P, Mmaj, Mmin) instants
-    (compression and tension), and the pure-axial checks at the record's axial peaks. None if the run did not record
-    concurrent forces (older build)."""
+def _record_column_dcs(ev, Qns, cap, flex, frac_D, SMS, Ie, gamma, mode="informative"):
+    """One record, one column: dict(DC = the verdict D/C, C3_9 = AISC 342 C3-9 at the concurrent compression instant
+    (deformation-controlled flexure; None otherwise), C3_10). The 16.4.2.1 interaction at the most utilised CONCURRENT
+    (P, Mmaj, Mmin) instants (compression and tension) and the pure-axial checks at the record's axial peaks; for a
+    column with deformation-controlled flexure and mode 'informative' the verdict is the axial checks only (NL-R2-16
+    round 4, Ch. 16 column check). None if the run did not record concurrent forces (older build)."""
     if not ev or ev.get("conc_c") is None:
         return None
     cc = ev["conc_c"]; ct = ev.get("conc_t")
-    out = []
-    c1 = _fc_column_check(dict(Pc=cc[0], Pt=None, Mmaj=cc[1], Mmin=cc[2]), Qns, cap, flex, frac_D, SMS, Ie, gamma)
-    out.append(c1["DC_H1_comp"])
-    if ct is not None:
-        c2 = _fc_column_check(dict(Pc=None, Pt=ct[0], Mmaj=ct[1], Mmin=ct[2]), Qns, cap, flex, frac_D, SMS, Ie, gamma)
-        out.append(c2["DC_H1_tens"])
-    c3 = _fc_column_check(dict(Pc=ev.get("Pc"), Pt=ev.get("Pt"), Mmaj=0.0, Mmin=0.0), Qns, cap, flex, frac_D, SMS, Ie, gamma)
-    out += [c3["DC_axial"], c3["DC_H1_tens"], c3["DC_C3_10"]]
+    deform = "deformation" in (flex["major"], flex["minor"])
+    c1 = _fc_column_check(dict(Pc=cc[0], Pt=None, Mmaj=cc[1], Mmin=cc[2]), Qns, cap, flex, frac_D, SMS, Ie, gamma, mode)
+    c3 = _fc_column_check(dict(Pc=ev.get("Pc"), Pt=ev.get("Pt"), Mmaj=0.0, Mmin=0.0), Qns, cap, flex, frac_D, SMS, Ie, gamma, mode)
+    if deform and mode != "verdict":
+        out = [c3["DC_axial"], c3["DC_H1_tens"]]                   # H1_tens without moment = the axial tension ratio
+    else:
+        out = [c1["DC_H1_comp"]]
+        if ct is not None:
+            c2 = _fc_column_check(dict(Pc=None, Pt=ct[0], Mmaj=ct[1], Mmin=ct[2]), Qns, cap, flex, frac_D, SMS, Ie, gamma, mode)
+            out.append(c2["DC_H1_tens"])
+        out += [c3["DC_axial"], c3["DC_H1_tens"], c3["DC_C3_10"]]
     vals = [v for v in out if v is not None]
-    return max(vals) if vals else None
+    return dict(DC=(max(vals) if vals else None), C3_9=(c1["DC_H1_comp"] if deform else None), C3_10=(c3["DC_C3_10"] if deform else None))
+
+
+def _record_column_dc(ev, Qns, cap, flex, frac_D, SMS, Ie, gamma, mode="informative"):
+    """The verdict D/C of _record_column_dcs (None for an older build)."""
+    r = _record_column_dcs(ev, Qns, cap, flex, frac_D, SMS, Ie, gamma, mode)
+    return r["DC"] if r else None
 
 
 def _len(v):
@@ -474,7 +512,7 @@ def _c3_9(Pr, Pc, m):
     return r + 8.0 / 9.0 * m if r >= 0.2 else r / 2.0 + m
 
 
-def _exc2_column_check(Emc_c, Emc_t, Qns, cap, frac_D, SMS, S_kip=0.0, moments=None, stat=None):
+def _exc2_column_check(Emc_c, Emc_t, Qns, cap, frac_D, SMS, S_kip=0.0, moments=None, stat=None, mode="informative"):
     """16.4.2.1 Exception 2 for a column axial force limited by a yield mechanism (NL-R2-16):
     Eq. (16.4-3): (1.2 + 0.12 SMS) D + 0.5 L + 0.2 S + Emc <= phi B Rn   (compression, Rn = Pn of AISC 360 E3)
     Eq. (16.4-4): (0.9 - 0.12 SMS) D + Emc <= phi B Rn                   (Emc counteracting gravity: net tension vs
@@ -482,8 +520,10 @@ def _exc2_column_check(Emc_c, Emc_t, Qns, cap, frac_D, SMS, S_kip=0.0, moments=N
     load factor 1.0 on Emc; phi, B as in 16.4.2.1. D and 0.5 L split from the model's gravity state Qns as in the
     default check. AISC 342-22 C3-10 (|P| / Pye <= 0.75) is kept on the Exception-2 compression (conservative).
 
-    NL-R2-16 (round 4, user decision): Exception 2 relaxes the AXIAL demand only. The column's flexure is
-    deformation-controlled (a condition of qualifying), and AISC 342-22 C3.4a.2b (nonlinear procedures) requires
+    NL-R2-16 (round 4, Ch. 16 column check -- user decision): with mode 'informative' (default) the verdict is the
+    axial Eqs. (16.4-3) / (16.4-4) only (the column's flexure is deformation-controlled, a condition of qualifying, and
+    Chapter 16 judges it by 16.4.2.2); the C3-9 / C3-10 below are computed and reported as INFORMATIVE. With mode
+    'verdict' they enter the verdict: Exception 2 relaxes the AXIAL demand only, and AISC 342-22 C3.4a.2b requires
     "Columns or braces classified as deformation-controlled for flexure shall also satisfy Equations C3-9, C3-10, and
     C3-11 when the column or brace is in compression except that values for mx and my shall be taken as unity" -- so
     the Eq. (16.4-3) compression is combined by C3-9 with the analysed concurrent moments over M_CE (MCx = MCEx,
@@ -515,9 +555,12 @@ def _exc2_column_check(Emc_c, Emc_t, Qns, cap, frac_D, SMS, S_kip=0.0, moments=N
              (dc3, "16.4.2.1 Exception 2, Eq. (16.4-3) (1.2+0.12SMS)D+0.5L+0.2S+Emc <= phi B Pn"),
              (dc4, "16.4.2.1 Exception 2, Eq. (16.4-4) (0.9-0.12SMS)D+Emc (net tension) <= phi B Tn"),
              (dc310, "AISC 342 C3-10 |P|/Pye <= 0.75 on the Eq. (16.4-3) compression")]
+    if mode != "verdict":                                         # NL-R2-16 (round 4, Ch. 16 column check): axial only
+        cands = cands[1:3]
     DC, gov = max([c for c in cands if c[0] is not None], key=lambda c: c[0])
     return dict(Pr_16_4_3=Pr3, Tr_16_4_4=(-Pr4 if Pr4 < 0 else 0.0), DC_16_4_3=dc3, DC_16_4_4=dc4, DC_C3_10=dc310, DC_C3_9=dc39,
-                Mu_maj_C3_9=Mx, Mu_min_C3_9=My, moments_recorded=dc39 is not None, DC=DC, governing=gov,
+                Mu_maj_C3_9=Mx, Mu_min_C3_9=My, moments_recorded=dc39 is not None, C3_9_in_verdict=(mode == "verdict"), interaction=mode,
+                DC=DC, governing=gov,
                 Emc_c=Emc_c, Emc_t=Emc_t, S_kip=S_kip or 0.0)
 
 
@@ -535,7 +578,7 @@ def _exc2_moments(runs, c):
     return out or None
 
 
-def _per_record_fc_and_governing(results, per, col_table, grav_split, SMS, Ie, ch16, caps=None):
+def _per_record_fc_and_governing(results, per, col_table, grav_split, SMS, Ie, ch16, caps=None, mode=None):
     """Per-record FC D/C on suite force-controlled columns + ordered governing refine candidates.
 
     Governing FC refine records = motions behind the suite-worst FC column, ranked by
@@ -544,6 +587,7 @@ def _per_record_fc_and_governing(results, per, col_table, grav_split, SMS, Ie, c
     if not col_table:
         return [], []
     fc = ch16["force_controlled"]
+    mode = mode or interaction_mode(ch16)
     denom = grav_split["sum_D"] + grav_split["sum_Lexp"]
     frac_D = grav_split["sum_D"] / denom if denom else 1.0
     by_ele = {r["ele"]: r for r in col_table}
@@ -561,7 +605,7 @@ def _per_record_fc_and_governing(results, per, col_table, grav_split, SMS, Ie, c
             if Qu is None:
                 continue
             Qu = float(Qu)
-            rdc = _record_column_dc(env.get(ele), srow["_Qns"], caps[ele], srow["_flex"], frac_D, SMS, Ie, fc["gamma"]) if (caps and ele in caps) else None
+            rdc = _record_column_dc(env.get(ele), srow["_Qns"], caps[ele], srow["_flex"], frac_D, SMS, Ie, fc["gamma"], mode) if (caps and ele in caps) else None
             if rdc is not None:
                 DC = rdc
             else:
@@ -755,6 +799,7 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         for c, fl in (r.get("col_flexure") or {}).items():
             flexmap.setdefault(c, fl)
     col_rows = []; caps = {}; fc_notes = set(); moments_missing = False
+    mode = interaction_mode(ch16)                                # NL-R2-16 (round 4, Ch. 16 column check)
     # NL-R2-16: ASCE 7-22 16.4.2.1 Exception 2 for column axial force limited by a yield mechanism (user decision 7 Oct;
     # ch16_params force_controlled.exception_2.apply). Default check (16.4-1/16.4-2 with H1-1) reported beside it.
     ex2_cfg = fc.get("exception_2") or {}
@@ -783,14 +828,23 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         mean = lambda key: (_f(suite_stat(np.array([ev[key] for ev in evs if ev.get(key) is not None]))) if any(ev.get(key) is not None for ev in evs) else None)
         Q = dict(Pc=(mean("Pc") if evs else _f(suite_stat(np.array(vals)))), Pt=mean("Pt") if evs else None,
                  Mmaj=mean("Mmaj") if evs else None, Mmin=mean("Mmin") if evs else None)
-        chk = _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, fc["gamma"])          # non-concurrent envelope of mean peaks
-        rdcs = [_record_column_dc((r.get("col_env") or {}).get(c), Qns, cap, flex, frac_D, SMS, Ie, fc["gamma"]) for r in acc_runs]
-        if rdcs and all(v is not None for v in rdcs):
-            dc_conc = _f(suite_stat(np.array(rdcs)))
+        chk = _fc_column_check(Q, Qns, cap, flex, frac_D, SMS, Ie, fc["gamma"], mode)    # non-concurrent envelope of mean peaks
+        axial_only = not chk["moments_needed"]
+        rd = [_record_column_dcs((r.get("col_env") or {}).get(c), Qns, cap, flex, frac_D, SMS, Ie, fc["gamma"], mode) for r in acc_runs]
+        if rd and all(v is not None and v["DC"] is not None for v in rd):
+            dc_conc = _f(suite_stat(np.array([v["DC"] for v in rd])))
             env_info = dict(DC_envelope=chk["DC"], governing_envelope=chk["governing"])
-            chk = dict(chk, DC=dc_conc, governing="16.4 mean of the per-record interaction at concurrent (P, M) instants (both 16.4.2.1 equations, H1-1); "
-                       "non-concurrent envelope of mean peaks: %.2f (%s)" % (env_info["DC_envelope"], env_info["governing_envelope"]), **env_info)
-        chk = dict(chk, DC_default=chk["DC"], governing_default=chk["governing"], fc_basis="16.4.2.1 Eqs. (16.4-1)/(16.4-2) with H1-1")
+            chk = dict(chk, DC=dc_conc, governing=("16.4 mean of the per-record axial peaks (both 16.4.2.1 equations; flexure deformation-controlled -> 16.4.2.2); "
+                                                   if axial_only else
+                                                   "16.4 mean of the per-record interaction at concurrent (P, M) instants (both 16.4.2.1 equations, H1-1); ")
+                       + "non-concurrent envelope of mean peaks: %.2f (%s)" % (env_info["DC_envelope"], env_info["governing_envelope"]), **env_info)
+            if all(v["C3_9"] is not None for v in rd):           # informative C3-9 at the concurrent instants
+                chk["DC_C3_9_info"] = _f(suite_stat(np.array([v["C3_9"] for v in rd])))
+            if all(v["C3_10"] is not None for v in rd):
+                chk["DC_C3_10_info"] = _f(suite_stat(np.array([v["C3_10"] for v in rd])))
+        chk = dict(chk, DC_default=chk["DC"], governing_default=chk["governing"],
+                   fc_basis="16.4.2.1 Eqs. (16.4-1)/(16.4-2)" + (" axial (flexure deformation-controlled, 16.4.2.2)" if axial_only else
+                                                                 (" with AISC 342 C3-9/C3-10 (column_flexure_interaction = verdict)" if chk["C3_9_in_verdict"] else " with H1-1")))
         if ex2_on:
             eb = ex2.get(c) or dict(qualifies=False, reason=ex2_note or "no mechanism bound for this column")
             info = dict(qualifies=bool(eb.get("qualifies")), reason=eb.get("reason"))
@@ -811,23 +865,27 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
                                        "analysed suite maximum (above the mechanism statics %.0f / %.0f kip: dynamic effects or hardening beyond Mc/My)" % (eb["Emc_c"], eb["Emc_t"])))
             if info["qualifies"]:
                 x = _exc2_column_check(info["Emc_c"], info["Emc_t"], Qns, cap, frac_D, SMS, (snow_col or {}).get(c, 0.0),
-                                       moments=_exc2_moments(acc_runs, c), stat=suite_stat)
+                                       moments=_exc2_moments(acc_runs, c), stat=suite_stat, mode=mode)
                 info.update(x)
                 # An exception RELAXES the requirement ("need only satisfy"): a qualifying column is acceptable when it meets
                 # EITHER the default equations or Eqs. (16.4-3)/(16.4-4). Exception 2 is used only where it gives the
                 # lower D/C; where the full-mechanism E_mc exceeds the analysed demand (e.g. braces far from their capacity in
                 # a low-seismic building) the default check governs and Exception 2 is reported for information.
-                # NL-R2-16 (round 4): never without the C3-9 moment terms (no concurrent moments recorded -> not used)
-                info["used"] = bool(x["moments_recorded"] and x["DC"] < chk["DC_default"])
+                # NL-R2-16 (round 4): with column_flexure_interaction = verdict never without the C3-9 moment terms
+                need_m = mode == "verdict"
+                info["used"] = bool((x["moments_recorded"] or not need_m) and x["DC"] < chk["DC_default"])
                 if info["used"]:
-                    chk = dict(chk, DC=x["DC"], governing=x["governing"] + " [default 16.4-1/16.4-2 + H1-1: %.2f]" % chk["DC_default"],
-                               fc_basis="16.4.2.1 Exception 2, Eqs. (16.4-3)/(16.4-4)")
-                elif not x["moments_recorded"]:
+                    chk = dict(chk, DC=x["DC"], governing=x["governing"] + " [default 16.4-1/16.4-2: %.2f]" % chk["DC_default"],
+                               fc_basis="16.4.2.1 Exception 2, Eqs. (16.4-3)/(16.4-4)" + (" with AISC 342 C3-9/C3-10" if need_m else " axial"))
+                    if x.get("DC_C3_9") is not None:              # informative C3-9 of the basis used (E_mc pairing)
+                        chk["DC_C3_9_info"] = x["DC_C3_9"]
+                    chk["DC_C3_10_info"] = x.get("DC_C3_10")
+                elif need_m and not x["moments_recorded"]:
                     chk = dict(chk, governing=chk["governing"] + " [Exception 2 not used: concurrent moments not recorded by this run, C3-9 cannot be evaluated]")
                 else:
-                    chk = dict(chk, governing=chk["governing"] + " [Exception 2 not needed: 16.4-3/16.4-4 + C3-9 D/C %.2f >= default]" % x["DC"])
+                    chk = dict(chk, governing=chk["governing"] + " [Exception 2 not needed: 16.4-3/16.4-4%s D/C %.2f >= default]" % (" + C3-9" if need_m else "", x["DC"]))
             chk["exception_2"] = info
-        if not chk["moments_recorded"]:                           # NL-R2-16 (round 4): Exception 2 keeps the moments too
+        if chk["moments_needed"] and not chk["moments_recorded"]:  # NL-R2-16 (round 4): only where moments enter the verdict
             moments_missing = True
         col_rows.append(dict(ele=c, section=sec, z_in=pkg.model.nodes[e["n1"]][2], Qu=Q["Pc"], Qu_tension=Q["Pt"], Qns=Qns.get("P", 0.0),
                              Mu_maj=Q["Mmaj"], Mu_min=Q["Mmin"], Mns_maj=Qns.get("Mmaj"), Mns_min=Qns.get("Mmin"),
@@ -842,11 +900,18 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         if k not in best or r["DC"] > best[k]["DC"]:
             best[k] = r
         dflt[k] = max(dflt.get(k, 0.0), r.get("DC_default", r["DC"]))
+    info39 = {}
+    for r in col_rows:
+        if r.get("DC_C3_9_info") is not None:
+            k = (r["section"], round(r["z_in"]))
+            info39[k] = max(info39.get(k, 0.0), r["DC_C3_9_info"])
     for k, r in best.items():
         r["DC_default_group_max"] = dflt[k]                        # NL-R2-16: worst default-check D/C of the group
+        if k in info39:
+            r["DC_C3_9_info_group_max"] = info39[k]                # NL-R2-16 (round 4): informative AISC 342 C3-9
     col_table = sorted(best.values(), key=lambda r: (r["z_in"], r["section"]))
     per_record_fc, governing_fc_records = _per_record_fc_and_governing(
-        results, per, col_table, grav_split, SMS, Ie, ch16, caps=caps)
+        results, per, col_table, grav_split, SMS, Ie, ch16, caps=caps, mode=mode)
     for r in col_table:
         r.pop("_Qns", None); r.pop("_flex", None)
     if governing_fc_records:
@@ -896,6 +961,11 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
         worst_FC_DC_ebf_braces=(max((r["DC"] for r in brace_fc), default=None)),
         worst_FC_DC_default=(max((r.get("DC_default_group_max", r["DC"]) for r in col_table), default=None)),
         FC_exception_2=_exc2_summary(col_table, ex2_on, ex2_note, snow_basis),
+        # NL-R2-16 (round 4, Ch. 16 column check): AISC 342-22 C3.4a.2b (C3-9, m = 1) -- informative unless the switch says verdict
+        column_flexure_interaction=mode,
+        worst_C3_9_info=(max((r.get("DC_C3_9_info_group_max") for r in col_table if r.get("DC_C3_9_info_group_max") is not None), default=None)),
+        worst_C3_9_info_column=(lambda rr: ("%s @ z %.0f in" % (rr["section"], rr["z_in"])) if rr else None)(
+            max((r for r in col_table if r.get("DC_C3_9_info_group_max") is not None), key=lambda r: r["DC_C3_9_info_group_max"], default=None)),
         residual_applicable=tall240, residual_ok=(None if not tall240 else (bool(np.max(mean_resid) <= ch16["residual_drift"]["limit"]) if mean_resid is not None else None)))
     crit_fail = [k for k in ("mean_drift_ok", "deformation_ok", "force_controlled_ok") if verdict[k] is False] + (["residual_ok"] if (tall240 and verdict["residual_ok"] is False) else [])
     if not verdict["unacceptable_ok"]:

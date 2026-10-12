@@ -12,8 +12,14 @@ from nlrha import acceptance as AC  # noqa: E402
 NS = types.SimpleNamespace
 
 
-def _ch16():
-    return json.load(open(os.path.join(ROOT, "nlrha", "ch16_params.json")))
+def _ch16(mode=None):
+    ch = json.load(open(os.path.join(ROOT, "nlrha", "ch16_params.json")))
+    if mode:                                                          # NL-R2-16 (round 4, Ch. 16 column check)
+        ch["force_controlled"]["column_flexure_interaction"] = mode
+    return ch
+
+
+VERDICT = "verdict"
 
 
 def _frame(beam_release=None, hinged=(201, 202), brace=False, y_beam=False):
@@ -142,10 +148,10 @@ def _evaluate(results, ch16=None, meta=None, specs=None, pkg=None):
 
 
 def test_verdict_uses_exception_2_and_reports_the_default_check():
-    """Exception 2 relaxes the AXIAL demand (E_mc, factor 1.0, instead of 1.3 Ie (Qu - Qns)); the concurrent moments stay
-    in the check by AISC 342-22 C3-9 with m = 1 (C3.4a.2b, NL-R2-16 round 4). Analysed Pc 600 kip (Qu - Qns = 400 kip
-    -> 1.3 x 400 = 520 kip in 16.4-1) vs E_mc = 400 kip: the default fails, Exception 2 passes."""
-    acc = _evaluate(_recs(Pc=600.0, M=3000.0))
+    """column_flexure_interaction = verdict: Exception 2 relaxes the AXIAL demand (E_mc, factor 1.0, instead of 1.3 Ie
+    (Qu - Qns)); the concurrent moments stay in the check by AISC 342-22 C3-9 with m = 1 (C3.4a.2b). Analysed Pc 600 kip
+    (Qu - Qns = 400 kip -> 1.3 x 400 = 520 kip in 16.4-1) vs E_mc = 400 kip: the default fails, Exception 2 passes."""
+    acc = _evaluate(_recs(Pc=600.0, M=3000.0), ch16=_ch16(VERDICT))
     v = acc["verdict"]
     base = next(r for r in acc["force_controlled_columns"] if r["z_in"] == 0.0)
     e = base["exception_2"]
@@ -164,17 +170,17 @@ def test_verdict_uses_exception_2_and_reports_the_default_check():
     x2 = v["FC_exception_2"]
     assert x2["used"] and x2["n_columns"] == 2 and "W14X90 @ z 0 in" in x2["members"]
     # switched off -> every column by the default check, identical numbers
-    ch = _ch16(); ch["force_controlled"]["exception_2"]["apply"] = False
+    ch = _ch16(VERDICT); ch["force_controlled"]["exception_2"]["apply"] = False
     acc0 = _evaluate(_recs(Pc=600.0, M=3000.0), ch16=ch)
     base0 = next(r for r in acc0["force_controlled_columns"] if r["z_in"] == 0.0)
     assert base0["DC"] == pytest.approx(base["DC_default"]) and "exception_2" not in base0
     assert acc0["verdict"]["force_controlled_ok"] is False and not acc0["verdict"]["FC_exception_2"]["used"]
 
 
-def test_exception_2_keeps_the_moments():
-    """NL-R2-16 (round 4, user decision): a hinging column (moment at M_CE) is NOT accepted by dropping its moment --
+def test_exception_2_keeps_the_moments_in_verdict_mode():
+    """column_flexure_interaction = verdict: a hinging column (moment at M_CE) is NOT accepted by dropping its moment --
     the Exception 2 compression is combined with the analysed concurrent moments (C3-9, m = 1)."""
-    acc = _evaluate(_recs(M=9000.0))                                   # M > MCEx of the W14X90 (8308 k-in)
+    acc = _evaluate(_recs(M=9000.0), ch16=_ch16(VERDICT))              # M > MCEx of the W14X90 (8308 k-in)
     for r in acc["force_controlled_columns"]:
         e = r["exception_2"]
         assert e["qualifies"] and e["DC_16_4_3"] < 0.5 and e["DC_C3_9"] > 1.0 and r["DC"] > 1.0
@@ -184,28 +190,33 @@ def test_exception_2_keeps_the_moments():
     for r in recs:
         for ev in r["col_env"].values():
             ev["conc_m"] = (250.0, 5000.0, 100.0)
-    e = next(r for r in _evaluate(recs)["force_controlled_columns"] if r["z_in"] == 0.0)["exception_2"]
+    e = next(r for r in _evaluate(recs, ch16=_ch16(VERDICT))["force_controlled_columns"] if r["z_in"] == 0.0)["exception_2"]
     assert e["Mu_maj_C3_9"] == pytest.approx(5000.0) and e["DC_C3_9"] > 1.0
     # tension (16.4-4): axial only, as in the default check (C3.4a.2b: compression only)
     cap = dict(phiPn=1000.0, phiTn=1200.0, Pye=1450.0, MCEx=8000.0, MCEy=4000.0)
-    x = AC._exc2_column_check(100.0, 900.0, dict(P=200.0), cap, 0.8, 1.5, moments=[[(-500.0, 7000.0, 0.0)]], stat=lambda a: a.mean())
+    x = AC._exc2_column_check(100.0, 900.0, dict(P=200.0), cap, 0.8, 1.5, moments=[[(-500.0, 7000.0, 0.0)]], stat=lambda a: a.mean(), mode=VERDICT)
     assert x["DC_16_4_4"] == pytest.approx((900.0 - 0.72 * 160.0) / 1200.0)
     assert x["DC_C3_9"] == pytest.approx(x["Pr_16_4_3"] / 1000.0 + 8.0 / 9.0 * 7000.0 / 8000.0)
 
 
 def test_exception_2_not_used_without_recorded_moments():
-    """An older run without concurrent column moments: Exception 2 cannot be evaluated with C3-9 -> not used, and the
-    verdict is INCOMPLETE (moments not recorded), never an axial-only pass."""
+    """column_flexure_interaction = verdict, an older run without concurrent column moments: Exception 2 cannot be
+    evaluated with C3-9 -> not used, and the verdict is INCOMPLETE (moments not recorded), never an axial-only pass.
+    Informative (default): the verdict needs no moments for these columns -- Exception 2 used, no INCOMPLETE flag."""
     recs = _recs(Pc=600.0, M=3000.0)
     for r in recs:
         for ev in r["col_env"].values():
             ev["conc_c"] = None; ev["conc_t"] = None; ev["Mmaj"] = None; ev["Mmin"] = None
-    acc = _evaluate(recs)
+    acc = _evaluate(recs, ch16=_ch16(VERDICT))
     for r in acc["force_controlled_columns"]:
         e = r["exception_2"]
         assert e["qualifies"] and e["DC_C3_9"] is None and not e["used"] and not e["moments_recorded"]
     assert acc["verdict"]["force_controlled_ok"] is not True and acc["verdict"]["status"] != "ACCEPTABLE"
     assert any("moments not recorded" in w for w in acc["verdict"]["not_evaluated"])
+    acc = _evaluate(recs)
+    assert all(r["exception_2"]["used"] for r in acc["force_controlled_columns"])
+    assert not any("moments not recorded" in w for w in acc["verdict"]["not_evaluated"]) and acc["verdict"]["force_controlled_ok"] is True
+    assert acc["verdict"]["worst_C3_9_info"] is None
 
 
 def test_emc_never_below_the_analysed_maximum_and_force_controlled_flexure_keeps_default():
@@ -252,3 +263,50 @@ def test_exception_2_only_relaxes_the_default_check():
     assert all(("%s @ z %.0f in" % (r["section"], r["z_in"]) in used) == bool((r.get("exception_2") or {}).get("used"))
                for r in acc["force_controlled_columns"] if (r.get("exception_2") or {}).get("qualifies"))
     assert n_not_used >= 1 and acc["verdict"]["worst_FC_DC"] == pytest.approx(acc["verdict"]["worst_FC_DC_default"])
+
+
+# ----------------------------------------------------------------------------- NL-R2-16 (round 4, Ch. 16 column check)
+def test_informative_default_axial_only_verdict_with_c3_9_reported():
+    """User decision: ASCE 7-22 16.4.2 classifies actions per ASCE 41 only; 16.4.2.1 checks the force-controlled column
+    AXIAL force; 16.4.2.2 judges deformation-controlled flexure by the valid range only. Default 'informative': the
+    verdict D/C of a column with deformation-controlled flexure is axial (16.4-1 / 16.4-2, Exception 2: 16.4-3 / 16.4-4),
+    AISC 342 C3-9 (m = 1) is reported beside it and never enters the verdict."""
+    assert AC.interaction_mode(_ch16()) == "informative"
+    cap = AC._column_caps(_frame()[0], 101, PRM, 0.9, 1.0)[5]
+    acc = _evaluate(_recs(M=9000.0))                                   # hinging columns (M > M_CE)
+    v = acc["verdict"]
+    assert v["column_flexure_interaction"] == "informative" and v["force_controlled_ok"] is True
+    for r in acc["force_controlled_columns"]:
+        e = r["exception_2"]
+        assert r["DC"] < 0.5 and r["DC_C3_9_info"] > 1.0 and r["DC_C3_9_info_group_max"] >= r["DC_C3_9_info"]
+        assert e["DC_C3_9"] > 1.0 and e["DC"] == pytest.approx(max(e["DC_16_4_3"], e["DC_16_4_4"] or 0.0))
+        assert "C3-9" not in r["governing"].split("[")[0] and not r["C3_9_in_verdict"]
+    assert v["worst_C3_9_info"] > 1.0 and "W14X90" in v["worst_C3_9_info_column"]
+    # default (no Exception 2 used) axial by hand: Pr = 1.38 x 160 + 40 + 1.3 x (600 - 200)
+    acc = _evaluate(_recs(Pc=600.0, M=3000.0))
+    base = next(r for r in acc["force_controlled_columns"] if r["z_in"] == 0.0)
+    assert base["DC_default"] == pytest.approx((1.38 * 160.0 + 40.0 + 520.0) / cap["phiPn"])
+    e = base["exception_2"]
+    assert e["used"] and base["DC"] == pytest.approx((1.38 * 160.0 + 40.0 + 400.0) / cap["phiPn"]) and base["DC"] == pytest.approx(e["DC_16_4_3"])
+    # the informative C3-9 of the basis used = the E_mc pairing (same number the verdict setting would use)
+    assert base["DC_C3_9_info"] == pytest.approx(e["DC_C3_9"]) and e["DC_C3_9"] == pytest.approx(
+        e["Pr_16_4_3"] / cap["phiPn"] + 8.0 / 9.0 * (3000.0 / cap["MCEx"] + 100.0 / cap["MCEy"]))
+    accv = _evaluate(_recs(Pc=600.0, M=3000.0), ch16=_ch16(VERDICT))
+    bv = next(r for r in accv["force_controlled_columns"] if r["z_in"] == 0.0)
+    assert bv["DC"] == pytest.approx(e["DC_C3_9"]) and bv["C3_9_in_verdict"]                  # 'verdict': it decides
+
+
+def test_force_controlled_flexure_keeps_the_interaction_in_both_settings():
+    """A column whose flexure is force-controlled (P_G/P_ye > 0.6) keeps the H1-type interaction with the 16.4
+    demand (moments transformed like the axial force, phi Mn) whatever the switch says."""
+    a = _evaluate(_recs(flex="force", M=3000.0))
+    b = _evaluate(_recs(flex="force", M=3000.0), ch16=_ch16(VERDICT))
+    for ra, rb in zip(a["force_controlled_columns"], b["force_controlled_columns"]):
+        assert ra["DC"] == pytest.approx(rb["DC"]) and ra["DC"] > ra["DC_axial"] * 1.2
+        assert ra["DC_C3_9_info"] is None and "H1-1" in ra["governing"]
+    assert a["verdict"]["worst_C3_9_info"] is None
+
+
+def test_bad_switch_value_is_refused():
+    with pytest.raises(ValueError):
+        AC.interaction_mode(_ch16("sometimes"))
