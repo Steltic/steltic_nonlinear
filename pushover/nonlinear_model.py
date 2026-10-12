@@ -884,6 +884,7 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
                           nodes=list(own), ends=(gA, gB)))
         return sg, ch
 
+    cross = None
     if cr is None:
         Lcl = min(Lc, L); ez = 0.5 * (L - Lcl)
         segs, chain = unit(e["n1"], p1, e["n2"], p2, ez, ez, 1.0, True, True)
@@ -897,6 +898,8 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
         pn = ctx["pt_cross_nodes"].get(cr["partner"])
         if pn is not None:
             ops.equalDOF(pn, xn, 1, 2, 3)
+        # NL-R2-20 (round 4): what a fracture of both halves leaves at the crossing (nlrha.brace_fracture.remove_unit)
+        cross = dict(node=xn, partner=cr["partner"], constrained=pn is not None, frame=(e["n1"], e["n2"]))
         s = cr["s"]; L1 = s * L; L2 = (1 - s) * L
         e1 = max(0.0, L1 - min(Lc, L1)); e2 = max(0.0, L2 - min(Lc, L2))
         segs1, ch1 = unit(e["n1"], p1, xn, X, e1, 0.0, 1.0, True, False)
@@ -910,7 +913,7 @@ def _build_physical_theory_brace(pkg, e, sec, prm, spec, L, p1, p2, mat, hinges,
     ops.element("corotTruss", tag, e["n1"], e["n2"], 1.0, mat)  # deformation monitor (no stiffness)
     hinges[tag] = _brace_hinge(e, sec, p1, p2, spec, mat, E_KSI_AL(spec), form="physical_theory", force_ele=segs[0],
                                segments=segs, fatigue=dict(eps0=fp["eps0"], m=fp["m"]), camber=fp["camber"], geometry=geom, Lc=Lc,
-                               pt_units=units, nip=max(3, fp["nip"]))
+                               pt_units=units, nip=max(3, fp["nip"]), **({"pt_cross": cross} if cross else {}))
     stats["brace_physical_theory"] = stats.get("brace_physical_theory", 0) + 1
     stats.setdefault("pt_ele_tags", []).extend(segs)
     stats.setdefault("pt_geometry", []).append(geom + "; pin springs %s kip/in" % "/".join("%.3g" % k for k in c.get("pin_k", [])))

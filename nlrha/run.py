@@ -93,6 +93,23 @@ def transient_step(h):
     return ok
 
 
+def transient_analysis(tol, integrator="hht", system="UmfPack"):
+    """The NLRHA transient analysis objects (wiped and re-created): Transformation constraints, RCM, UmfPack,
+    NormDispIncr tol / 30 iterations, Newton, HHT alpha = 0.9 (or Newmark average acceleration). Used at the start of a
+    record and, NL-R2-20 (round 4), to rebuild the analysis on a domain that lost a fractured brace's elements and nodes
+    (OpenSees' UmfPack SOE cannot shrink on a domainChange; the transient integrator re-reads displacement / velocity /
+    acceleration from the committed nodes -- tests/test_brace_fracture.py checks the continuation against an unshrunk
+    BandGeneral run)."""
+    ops.wipeAnalysis()
+    ops.constraints("Transformation"); ops.numberer("RCM"); ops.system(system)
+    ops.test("NormDispIncr", tol, 30, 0); ops.algorithm("Newton")
+    if integrator == "newmark":
+        ops.integrator("Newmark", 0.5, 0.25)
+    else:
+        ops.integrator("HHT", 0.9)
+    ops.analysis("Transient")
+
+
 def _column_info(pkg, hinges, stats, PG=None, prm=None):
     """Per column element: the element tags at its i and j ends (sub-divided members: first and last segment), the
     local force indices of the major / minor moments, how each flexural axis is MODELLED (hinge / elastic / fibre) and
@@ -488,8 +505,6 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     ops.timeSeries("Path", 12, "-dt", dt_rec, "-values", *(ay * G_IN * sf).tolist())
     ops.pattern("UniformExcitation", 11, 1, "-accel", 11)
     ops.pattern("UniformExcitation", 12, 2, "-accel", 12)
-    ops.wipeAnalysis()
-    ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
     # NL-R2-21 (R5): displacement-increment tolerance 1e-5 in (on 10k+ DOF braced models Newton stalls at a round-off floor of
     # 1e-6..1e-5 in) and NO fallback algorithms by default: ModifiedNewton -initial never converged, and KrylovNewton /
     # NewtonLineSearch "converged" on the displacement test while out of equilibrium, committing states that blew up a few
@@ -499,27 +514,16 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     num = (prm.get("numerics") or {}) if isinstance(prm, dict) else {}
     tol = float(num.get("nlrha_disp_tol", 1e-5))
     ladder = (("ModifiedNewton", "-initial"), ("KrylovNewton",), ("NewtonLineSearch",)) if num.get("nlrha_fallback") == "legacy" else ()
-    ops.test("NormDispIncr", tol, 30, 0); ops.algorithm("Newton")
-    if integrator == "newmark":
-        ops.integrator("Newmark", 0.5, 0.25)                        # average acceleration, no numerical damping
+    transient_analysis(tol, integrator)
+    if integrator == "newmark":                                     # average acceleration, no numerical damping
         alg_damp = dict(integrator="Newmark average acceleration", alpha=None, xi_T1=0.0, xi_02T1=0.0)
-    else:
-        ops.integrator("HHT", 0.9)                                  # alpha = 0.9: second-order accurate, damps the spurious high modes of stiff hinge springs
+    else:                                                           # alpha = 0.9: second-order accurate, damps the spurious high modes of stiff hinge springs
         alg_damp = dict(integrator="HHT", alpha=0.9, xi_T1=hht_algorithmic_damping(0.9, dt_max, T1),
                         xi_02T1=hht_algorithmic_damping(0.9, dt_max, 0.2 * T1))
-    ops.analysis("Transient")
 
     def _rebuild_analysis():
-        # NL-R2-20 (round 4): the same analysis on a domain that lost a fractured brace's elements and nodes (wipe and
-        # re-create: OpenSees' UmfPack SOE cannot shrink on a domainChange; the integrator re-reads the committed state)
-        ops.wipeAnalysis()
-        ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
-        ops.test("NormDispIncr", tol, 30, 0); ops.algorithm("Newton")
-        if integrator == "newmark":
-            ops.integrator("Newmark", 0.5, 0.25)
-        else:
-            ops.integrator("HHT", 0.9)
-        ops.analysis("Transient")
+        # NL-R2-20 (round 4): the same analysis on a domain that lost a fractured brace's elements and nodes
+        transient_analysis(tol, integrator)
     dt = dt_max                                                   # Path series interpolates the record; dt_max ~ T_lower/15
     dt_cur = dt_max; n_ok_since_cut = 0; consec_fail = 0; crawl = 0; n_fallback = 0; dt_floor = dt_max / 32.0; dt_min_used = dt_max
     next_rec = rec_every * dt_max; next_hist = 5 * dt_max                 # time-based recording (the step is adaptive)

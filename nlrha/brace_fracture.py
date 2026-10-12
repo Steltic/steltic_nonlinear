@@ -20,7 +20,8 @@ segments is read (fiberData). A section with every fibre failed (|stress| <= 1e-
 material's own `failure` flag) fractures that buckling unit through: its fibre segments, its end pin springs and its
 own chain nodes are removed from the domain (the gusset end zones stay on the frame; an X-brace half that is still
 whole stays), the removed chain nodes' translational mass goes to the unit's two attach nodes (the mass taken off the
-floors at build time stays in the model), and the analysis is rebuilt on the smaller domain (the caller's `rebuild`:
+floors at build time stays in the model; when both halves of an X diagonal are gone the crossing node's mass goes to
+the diagonal's frame ends, and when both diagonals are gone the two crossing nodes are removed), and the analysis is rebuilt on the smaller domain (the caller's `rebuild`:
 nlrha.run wipes and re-creates the same analysis objects -- the UmfPack SOE of OpenSees 3.7/3.8 fails its symbolic
 analysis when a domainChange shrinks the system ('symbolic analysis returns -8'), and the transient integrators re-read
 displacement / velocity / acceleration from the committed nodes, so the response continues unchanged). From then on the
@@ -70,9 +71,48 @@ def _add_mass(node, m):
     return True
 
 
-def remove_unit(h, k):
+def _move_cross_mass(h):
+    """NL-R2-20 (round 4, test): both halves of an X diagonal gone -> its crossing node keeps the chain-end mass of both
+    halves with no stiffness of its own; that translational mass goes half to each frame end of the diagonal (the
+    crossing node keeps its tiny rotational inertia; its translations stay tied to the partner's crossing node).
+    Returns the mass moved."""
+    xc = h.get("pt_cross")
+    if not xc or xc.get("mass_moved") is not None or xc["node"] not in ops.getNodeTags():
+        return 0.0
+    cur = list(ops.nodeMass(xc["node"]))
+    m = float(cur[0]) if cur else 0.0
+    if m > 0.0:
+        ops.mass(xc["node"], 0.0, 0.0, 0.0, *cur[3:6])
+        for g in xc["frame"]:
+            _add_mass(g, 0.5 * m)
+    xc["mass_moved"] = m
+    return m
+
+
+def _drop_crossing(h, hinges):
+    """Both diagonals of a connected X fractured through: the two crossing nodes have no stiffness and (after
+    _move_cross_mass) no translational mass -- a singular pair. Remove their equalDOF and both nodes."""
+    xc = h.get("pt_cross")
+    p = (hinges or {}).get(xc["partner"]) if xc else None
+    pc = (p or {}).get("pt_cross")
+    if not (pc and p.get("fractured") and h.get("fractured")) or xc.get("dropped") or pc.get("dropped"):
+        return False
+    nodes = set(ops.getNodeTags())
+    con = xc if xc.get("constrained") else pc                     # equalDOF(retained, constrained): the second-built half
+    if con["node"] in nodes:
+        ops.remove("mp", int(con["node"]))
+    for c in (xc, pc):
+        if c["node"] in nodes:
+            ops.remove("node", int(c["node"]))
+        c["dropped"] = True
+    return True
+
+
+def remove_unit(h, k, hinges=None):
     """Remove buckling unit k of physical-theory brace hinge h (segments, pin springs, own chain nodes); its chain
-    nodes' translational mass goes half to each attach node. Returns the removed translational mass (kip-s2/in)."""
+    nodes' translational mass goes half to each attach node. When the last unit of an X diagonal goes, its crossing
+    node's translational mass goes to the diagonal's frame ends too, and when the partner diagonal (`hinges`) is
+    fractured as well both crossing nodes are removed. Returns the removed translational mass (kip-s2/in)."""
     u = h["pt_units"][k]
     for t in list(u["segs"]) + list(u["pins"]):
         ops.remove("element", int(t))
@@ -92,6 +132,8 @@ def remove_unit(h, k):
         h["force_ele"] = left[0] if left else None
     if all(v.get("removed") for v in h["pt_units"]):
         h["fractured"] = True
+        _move_cross_mass(h)                                       # recorded in h["pt_cross"]["mass_moved"]
+        _drop_crossing(h, hinges)
     return m
 
 
@@ -128,7 +170,7 @@ class FractureMonitor:
                 if hit is None:
                     continue
                 d = ops.eleResponse(tag, "deformation")
-                m = remove_unit(h, k)
+                m = remove_unit(h, k, self.hinges)
                 ev = dict(brace=tag, section=h["section"], z=h["z"], unit=k, n_units=len(h["pt_units"]), segment=hit[0] + 1,
                           n_segments=len(u["segs"]), ip=hit[2], t=t, deformation_in=(d[0] if d else None), mass_moved=m,
                           whole_brace=bool(h.get("fractured")))
