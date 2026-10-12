@@ -197,7 +197,7 @@ def svg_lambda(sel):
 
 
 # --------------------------------------------------------------------------------------------- the sheet
-def build(job, out_name="four_analyses.html", title=None):
+def build(job, out_name="four_analyses.html", title=None, not_evaluated=None):
     job = os.path.abspath(job)
     st = steltic_facts(job)
     po = _load_json(os.path.join(job, "pushover", "pushover_package.json"))
@@ -465,6 +465,17 @@ def build(job, out_name="four_analyses.html", title=None):
     if _exist:
         summary["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "every nonlinear check on this sheet (pushover, NLRHA, DDM)"))
         disc.insert(0, "EXISTING STRUCTURE declared by the package: assessed with NEW-building criteria, not an ASCE 41 evaluation (banner at the top).")
+    # NL-R2-L2 follow-up: an engine that refused the package up front (system not supported) is NOT EVALUATED, said so
+    ne_banner = ""
+    if not_evaluated:
+        summary["not_evaluated"] = dict(not_evaluated)
+        for k in not_evaluated:
+            if k in summary and not summary[k]:
+                summary[k] = dict(status="NOT EVALUATED", reason=not_evaluated[k])
+        ne_banner = ('<div class="banner not-evaluated" style="border:2px solid #8a6d00;background:#fff8e1;color:#4a3b00;'
+                     'padding:10px 12px;margin:10px 0;font-weight:600">NOT EVALUATED by this module: '
+                     + "; ".join(f"<b>{html.escape(k)}</b> -- {html.escape(v)}" for k, v in not_evaluated.items()) + "</div>")
+        disc.insert(0, "NOT EVALUATED: " + "; ".join(f"{k}: {v}" for k, v in not_evaluated.items()))
     css = open(os.path.join(_HERE, "four_analyses.css"), encoding="utf-8").read()
     title = title or f"{name} Four Analyses"
     sys_ = basis.get("system") or (st["capacity_design"].get("system") if isinstance(st["capacity_design"], dict) else "") or ""
@@ -490,6 +501,7 @@ def build(job, out_name="four_analyses.html", title=None):
   </div>
 </header>
 {exist_banner}
+{ne_banner}
 
 <section class="sheet">
   <div class="sheet-head"><h2>Four verdicts on the same steel</h2><span class="no">SHEET 1</span></div>
