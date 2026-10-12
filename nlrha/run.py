@@ -491,7 +491,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     peak_drift = np.zeros((len(lv), 2)); peak_at = [[None, None] for _ in lv]; peak_roof = np.zeros(2)
     peak_def = {t: 0.0 for t in hz}; signed_def = {t: (0.0, 0.0) for t in hz}       # (max positive, max negative)
     peak_colN = {c: 0.0 for c in cols}
-    col_env = {c: dict(Pc=-1e30, Pt=1e30, Mmaj=0.0, Mmin=0.0, conc_c=None, conc_t=None, _uc=-1.0, _ut=-1.0) for c in cols}
+    col_env = {c: dict(Pc=-1e30, Pt=1e30, Mmaj=0.0, Mmin=0.0, conc_c=None, conc_t=None, conc_m=None, _uc=-1.0, _ut=-1.0, _um=-1.0) for c in cols}
     hist_t, hist_roof = [], []
     brace_hist = []
     frames_t, frames_story, frames_brace, frames_ag = [], [], [], []       # viewer frames (every rec_every steps)
@@ -600,6 +600,10 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
                             ev["_uc"] = uc; ev["conc_c"] = trip
                         if trip[0] < 0 and ut > ev["_ut"]:
                             ev["_ut"] = ut; ev["conc_t"] = trip
+                        # NL-R2-16 (round 4): the largest concurrent moment pair while in compression -- the moments of
+                        # the 16.4.2.1 Exception 2 check (C3-9 with E_mc, AISC 342-22 C3.4a.2b)
+                        if trip[0] > 0 and mm > ev["_um"]:
+                            ev["_um"] = mm; ev["conc_m"] = trip
                 peak_colN[c] = max(peak_colN[c], f[0])
             if sample_brace and sample_brace in hinges:
                 d = ops.eleResponse(sample_brace, "deformation")
@@ -614,7 +618,7 @@ def run_record(pkg, prm, ch16, PG, loads, rec, xi, elastic_eles_cb, dt_max=0.02,
     else:
         resid = np.full(len(lv), np.nan)
     col_env = {c: dict(Pc=(v["Pc"] if v["Pc"] > -1e29 else None), Pt=(v["Pt"] if v["Pt"] < 1e29 else None), Mmaj=v["Mmaj"], Mmin=v["Mmin"],
-                       conc_c=v["conc_c"], conc_t=v["conc_t"]) for c, v in col_env.items()}
+                       conc_c=v["conc_c"], conc_t=v["conc_t"], conc_m=v["conc_m"]) for c, v in col_env.items()}
     out = dict(record=rec["id"], label="%s %s (%s)" % (rec.get("earthquake") or rec["id"], rec.get("station") or "", rec.get("year") or "?"), sf=sf, x_comp=rec["x_comp"],
                converged=(status == "completed"), status=status, reason=reason, steps=step, fails=fails, fallback_steps=n_fallback, analyze_calls=calls,
                budget=dict(wall_s=wall_budget_s, basis=budget_basis, step_calls=step_budget, n_nodes=n_nodes),

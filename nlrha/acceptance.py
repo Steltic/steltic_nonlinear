@@ -319,8 +319,9 @@ def _column_caps(pkg, c, prm, phi_col, B):
 # capacity in the model (beam hinges at their capping moment Mc = (Mc/My) Mpe, Fye = Ry Fy; braces at h x Pye in
 # tension and Pcre / 0.3 Pcre in compression = AISC 341-22 F2.3 analyses (a) / (b); BRBs at omega Qce / beta omega
 # Qce), one sway direction per analysis, X, Y and both together (AISC 341-22 D1.4a / F2.3, columns common to
-# intersecting frames). Applied moments are neglected in this axial check as AISC 341-22 D1.4a(b) permits (no
-# member loads act on the columns between lateral supports in this model); the column's flexural hinging stays a
+# intersecting frames). Exception 2 relaxes the axial demand only (NL-R2-16 round 4, user decision): the Eq. (16.4-3)
+# compression is combined with the analysed concurrent moments over M_CE by AISC 342-22 C3-9 (m = 1), as C3.4a.2b
+# requires of columns deformation-controlled for flexure in compression; the hinge rotation stays a
 # deformation-controlled action (16.4.2.2).
 _SWAYS = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
 
@@ -464,13 +465,35 @@ def mechanism_axial_bounds(pkg, hinges_meta, specs, prm, plasticity=None):
     return res, None
 
 
-def _exc2_column_check(Emc_c, Emc_t, Qns, cap, frac_D, SMS, S_kip=0.0):
+def _c3_9(Pr, Pc, m):
+    """AISC 342-22 C3-9 with C3-11 / C3-12 / C3-13 (identical to AISC 360-22 H1-1): Pr / Pc + 8/9 m for Pr / Pc >= 0.2,
+    Pr / (2 Pc) + m below; m = M_ux / M_Cx + M_uy / M_Cy with m_x = m_y = 1."""
+    r = Pr / Pc if Pc else float("inf")
+    if m == 0.0:
+        return r
+    return r + 8.0 / 9.0 * m if r >= 0.2 else r / 2.0 + m
+
+
+def _exc2_column_check(Emc_c, Emc_t, Qns, cap, frac_D, SMS, S_kip=0.0, moments=None, stat=None):
     """16.4.2.1 Exception 2 for a column axial force limited by a yield mechanism (NL-R2-16):
     Eq. (16.4-3): (1.2 + 0.12 SMS) D + 0.5 L + 0.2 S + Emc <= phi B Rn   (compression, Rn = Pn of AISC 360 E3)
     Eq. (16.4-4): (0.9 - 0.12 SMS) D + Emc <= phi B Rn                   (Emc counteracting gravity: net tension vs
                                                                           phi B Fy Ag, AISC 360 D2)
     load factor 1.0 on Emc; phi, B as in 16.4.2.1. D and 0.5 L split from the model's gravity state Qns as in the
-    default check. AISC 342-22 C3-10 (|P| / Pye <= 0.75) is kept on the Exception-2 compression (conservative)."""
+    default check. AISC 342-22 C3-10 (|P| / Pye <= 0.75) is kept on the Exception-2 compression (conservative).
+
+    NL-R2-16 (round 4, user decision): Exception 2 relaxes the AXIAL demand only. The column's flexure is
+    deformation-controlled (a condition of qualifying), and AISC 342-22 C3.4a.2b (nonlinear procedures) requires
+    "Columns or braces classified as deformation-controlled for flexure shall also satisfy Equations C3-9, C3-10, and
+    C3-11 when the column or brace is in compression except that values for mx and my shall be taken as unity" -- so
+    the Eq. (16.4-3) compression is combined by C3-9 with the analysed concurrent moments over M_CE (MCx = MCEx,
+    MCy = MCEy, m = 1). `moments` = per record a list of concurrent (P, |M major|, |M minor|) instants in
+    compression (the record's largest concurrent moment pair in compression, run_record col_env conc_m, and the
+    record's most utilised concurrent instant conc_c, whatever its sign -- conservative); per record the worst C3-9
+    over them, then `stat` (the 16.4
+    suite statistic) over the records. The axial force of those instants is replaced by the Eq. (16.4-3) demand.
+    In net tension (Eq. 16.4-4) the deformation-controlled moment is not combined (C3.4a.2b: compression only;
+    NL-R2-30), as in the default check. moments=None: no moment terms (DC_C3_9 = None, moments_recorded False)."""
     k1 = 1.2 + 0.12 * SMS; k2 = 0.9 - 0.12 * SMS
     Pns = Qns.get("P", 0.0) or 0.0
     D = Pns * frac_D; hL = Pns - D
@@ -479,12 +502,37 @@ def _exc2_column_check(Emc_c, Emc_t, Qns, cap, frac_D, SMS, S_kip=0.0):
     dc3 = Pr3 / cap["phiPn"]
     dc4 = (-Pr4 / cap["phiTn"]) if Pr4 < 0 else None
     dc310 = max(Pr3, 0.0) / (0.75 * cap["Pye"])
-    cands = [(dc3, "16.4.2.1 Exception 2, Eq. (16.4-3) (1.2+0.12SMS)D+0.5L+0.2S+Emc <= phi B Pn"),
+    dc39, per_rec, Mx, My = None, None, None, None
+    if moments is not None and all(m for m in moments):
+        per_rec = []
+        for trips in moments:
+            best = max(trips, key=lambda tr: tr[1] / cap["MCEx"] + tr[2] / cap["MCEy"])
+            per_rec.append((_c3_9(max(Pr3, 0.0), cap["phiPn"], best[1] / cap["MCEx"] + best[2] / cap["MCEy"]), best[1], best[2]))
+        vals = np.array([v[0] for v in per_rec])
+        dc39 = float(stat(vals)) if stat is not None else float(vals.mean())
+        worst = max(per_rec, key=lambda v: v[0]); Mx, My = worst[1], worst[2]
+    cands = [(dc39, "16.4.2.1 Exception 2: Eq. (16.4-3) (1.2+0.12SMS)D+0.5L+0.2S+Emc with the analysed concurrent moments, AISC 342 C3-9 (m = 1, M_CE; C3.4a.2b)"),
+             (dc3, "16.4.2.1 Exception 2, Eq. (16.4-3) (1.2+0.12SMS)D+0.5L+0.2S+Emc <= phi B Pn"),
              (dc4, "16.4.2.1 Exception 2, Eq. (16.4-4) (0.9-0.12SMS)D+Emc (net tension) <= phi B Tn"),
              (dc310, "AISC 342 C3-10 |P|/Pye <= 0.75 on the Eq. (16.4-3) compression")]
     DC, gov = max([c for c in cands if c[0] is not None], key=lambda c: c[0])
-    return dict(Pr_16_4_3=Pr3, Tr_16_4_4=(-Pr4 if Pr4 < 0 else 0.0), DC_16_4_3=dc3, DC_16_4_4=dc4, DC_C3_10=dc310, DC=DC, governing=gov,
+    return dict(Pr_16_4_3=Pr3, Tr_16_4_4=(-Pr4 if Pr4 < 0 else 0.0), DC_16_4_3=dc3, DC_16_4_4=dc4, DC_C3_10=dc310, DC_C3_9=dc39,
+                Mu_maj_C3_9=Mx, Mu_min_C3_9=My, moments_recorded=dc39 is not None, DC=DC, governing=gov,
                 Emc_c=Emc_c, Emc_t=Emc_t, S_kip=S_kip or 0.0)
+
+
+def _exc2_moments(runs, c):
+    """Per record, the concurrent (P, |M major|, |M minor|) instants of column c for the Exception 2 C3-9 check:
+    conc_m (largest concurrent moment pair in compression) and conc_c (most utilised concurrent instant). None when a
+    record did not record them (older build)."""
+    out = []
+    for r in runs:
+        ev = (r.get("col_env") or {}).get(c) or {}
+        trips = [tuple(t) for t in (ev.get("conc_m"), ev.get("conc_c")) if t is not None]
+        if not trips:
+            return None
+        out.append(trips)
+    return out or None
 
 
 def _per_record_fc_and_governing(results, per, col_table, grav_split, SMS, Ie, ch16, caps=None):
@@ -762,20 +810,24 @@ def evaluate(results, pkg, ch16, PG16, grav_split, SMS, Ie=1.0, phi_col=0.9, B=1
                             Emc_basis=("mechanism statics" if (a_c <= eb["Emc_c"] + 1e-6 and a_t <= eb["Emc_t"] + 1e-6) else
                                        "analysed suite maximum (above the mechanism statics %.0f / %.0f kip: dynamic effects or hardening beyond Mc/My)" % (eb["Emc_c"], eb["Emc_t"])))
             if info["qualifies"]:
-                x = _exc2_column_check(info["Emc_c"], info["Emc_t"], Qns, cap, frac_D, SMS, (snow_col or {}).get(c, 0.0))
+                x = _exc2_column_check(info["Emc_c"], info["Emc_t"], Qns, cap, frac_D, SMS, (snow_col or {}).get(c, 0.0),
+                                       moments=_exc2_moments(acc_runs, c), stat=suite_stat)
                 info.update(x)
                 # An exception RELAXES the requirement ("need only satisfy"): a qualifying column is acceptable when it meets
                 # EITHER the default equations or Eqs. (16.4-3)/(16.4-4). Exception 2 is used only where it gives the
                 # lower D/C; where the full-mechanism E_mc exceeds the analysed demand (e.g. braces far from their capacity in
                 # a low-seismic building) the default check governs and Exception 2 is reported for information.
-                info["used"] = bool(x["DC"] < chk["DC_default"])
+                # NL-R2-16 (round 4): never without the C3-9 moment terms (no concurrent moments recorded -> not used)
+                info["used"] = bool(x["moments_recorded"] and x["DC"] < chk["DC_default"])
                 if info["used"]:
                     chk = dict(chk, DC=x["DC"], governing=x["governing"] + " [default 16.4-1/16.4-2 + H1-1: %.2f]" % chk["DC_default"],
                                fc_basis="16.4.2.1 Exception 2, Eqs. (16.4-3)/(16.4-4)")
+                elif not x["moments_recorded"]:
+                    chk = dict(chk, governing=chk["governing"] + " [Exception 2 not used: concurrent moments not recorded by this run, C3-9 cannot be evaluated]")
                 else:
-                    chk = dict(chk, governing=chk["governing"] + " [Exception 2 not needed: 16.4-3/16.4-4 D/C %.2f >= default]" % x["DC"])
+                    chk = dict(chk, governing=chk["governing"] + " [Exception 2 not needed: 16.4-3/16.4-4 + C3-9 D/C %.2f >= default]" % x["DC"])
             chk["exception_2"] = info
-        if not chk["moments_recorded"] and not (chk.get("exception_2") or {}).get("qualifies"):
+        if not chk["moments_recorded"]:                           # NL-R2-16 (round 4): Exception 2 keeps the moments too
             moments_missing = True
         col_rows.append(dict(ele=c, section=sec, z_in=pkg.model.nodes[e["n1"]][2], Qu=Q["Pc"], Qu_tension=Q["Pt"], Qns=Qns.get("P", 0.0),
                              Mu_maj=Q["Mmaj"], Mu_min=Q["Mmin"], Mns_maj=Qns.get("Mmaj"), Mns_min=Qns.get("Mmin"),

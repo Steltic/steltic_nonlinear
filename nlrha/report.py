@@ -193,7 +193,7 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     H.append("<tr><td>Deformation-controlled elements (mean vs CP · vs valid range b)</td><td>%s · %s</td><td>16.4.2.2 · 251</td></tr>" % (_tag(v["deformation_ok"], "CP ok", "CP exceeded"), _tag(v["valid_range_ok"], "within b", "beyond b")))
     x2 = v.get("FC_exception_2") or {}
     H.append("<tr><td>Force-controlled columns: axial + concurrent flexure (H1-1), Eqs. (1.2+0.12S<sub>MS</sub>)D+0.5L+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and (0.9−0.12S<sub>MS</sub>)D+1.3I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) ≤ φBR<sub>n</sub>%s</td><td>worst D/C %s %s%s</td><td>16.4.2.1%s · 251</td></tr>"
-             % ((";<br><b>Exception 2</b> for %d column group(s) whose axial force is limited by a yield mechanism: (1.2+0.12S<sub>MS</sub>)D+0.5L+0.2S+E<sub>mc</sub> and (0.9−0.12S<sub>MS</sub>)D+E<sub>mc</sub> ≤ φBR<sub>n</sub> (Eqs. 16.4-3 / 16.4-4)" % x2["n_columns"]) if x2.get("used") else "",
+             % ((";<br><b>Exception 2</b> for %d column group(s) whose axial force is limited by a yield mechanism: (1.2+0.12S<sub>MS</sub>)D+0.5L+0.2S+E<sub>mc</sub> and (0.9−0.12S<sub>MS</sub>)D+E<sub>mc</sub> ≤ φBR<sub>n</sub> (Eqs. 16.4-3 / 16.4-4), the compression combined with the analysed concurrent moments by AISC 342 C3-9 (m = 1, M<sub>CE</sub>)" % x2["n_columns"]) if x2.get("used") else "",
                 _num(v.get("worst_FC_DC")), _tag(v["force_controlled_ok"]),
                 ("<br><small>default check without Exception 2: worst D/C %s</small>" % _num(v.get("worst_FC_DC_default"))) if x2.get("used") else "",
                 " Exc. 2" if x2.get("used") else ""))
@@ -206,7 +206,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     if x2.get("used"):        # NL-R2-16: the use of 16.4.2.1 Exception 2 is stated on the face of the report
         H.append('<div class="note"><b>ASCE 7-22 16.4.2.1 Exception 2 was used</b> (user decision, 7 Oct 2026) for the axial force of these columns, which is limited by the yield '
                  'mechanism of the beams / braces framing into their column lines: %s. For them the verdict is Eqs. (16.4-3) / (16.4-4) with E<sub>mc</sub> (load factor 1.0) in place of '
-                 'Eqs. (16.4-1) / (16.4-2) with 1.3 I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>) and the H1-1 interaction; the default check is reported beside it in section 5 '
+                 'Eqs. (16.4-1) / (16.4-2) with 1.3 I<sub>e</sub>(Q<sub>u</sub>−Q<sub>ns</sub>); Exception 2 relaxes the axial demand only: the Eq. (16.4-3) compression is combined with the analysed '
+                 'concurrent moments over M<sub>CE</sub> by AISC 342-22 C3-9 (m = 1, C3.4a.2b), and C3-10 / C3-11 are kept. The default check is reported beside it in section 5 '
                  '(worst default D/C %s). All other columns: default check.</div>' % ("; ".join(x2.get("members") or []), _num(v.get("worst_FC_DC_default"))))
     elif x2.get("apply") is False:
         H.append('<div class="note">16.4.2.1 Exception 2 is switched off (ch16_params force_controlled.exception_2.apply = false): every column is checked by Eqs. (16.4-1) / (16.4-2).</div>')
@@ -316,8 +317,12 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
         if e2 is None:
             x2c = "not evaluated"
         elif e2.get("qualifies"):
-            x2c = (("%s / %s · %s / %s · <b>%s</b>" + ("" if e2.get("used", True) else " <small>(not used: the default check gives the lower D/C)</small>") + "<br><small>E<sub>mc</sub>: %s (mechanism statics %s / %s, %s; suite max of the analysis %s / %s)%s</small>")
+            x2c = (("%s / %s · %s / %s · <b>%s</b>" + ("" if e2.get("used", True) else (" <small>(not used: %s)</small>" % (
+                        "the default check gives the lower D/C" if e2.get("moments_recorded", True) else "concurrent moments not recorded, C3-9 not evaluated")))
+                    + "<br><small>C3-9 (m = 1) with the concurrent moments %s · %s k-in: %s; axial 16.4-3 %s · 16.4-4 %s · C3-10 %s</small>"
+                    + "<br><small>E<sub>mc</sub>: %s (mechanism statics %s / %s, %s; suite max of the analysis %s / %s)%s</small>")
                    % (_num(e2.get("Emc_c"), "%.0f"), _num(e2.get("Emc_t"), "%.0f"), _num(e2.get("Pr_16_4_3"), "%.0f"), _num(e2.get("Tr_16_4_4"), "%.0f"), _num(e2.get("DC")),
+                      _num(e2.get("Mu_maj_C3_9"), "%.0f"), _num(e2.get("Mu_min_C3_9"), "%.0f"), _num(e2.get("DC_C3_9")), _num(e2.get("DC_16_4_3")), _num(e2.get("DC_16_4_4")), _num(e2.get("DC_C3_10")),
                       e2.get("Emc_basis", ""), _num(e2.get("Emc_mech_c"), "%.0f"), _num(e2.get("Emc_mech_t"), "%.0f"), e2.get("governing_c") or "", _num(e2.get("analysed_max_c"), "%.0f"),
                       _num(e2.get("analysed_max_t"), "%.0f"), ("; 0.2S = %.0f kip" % (0.2 * e2["S_kip"])) if e2.get("S_kip") else ""))
         else:
@@ -351,8 +356,10 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                  'hardening: beam M<sub>c</sub> = (M<sub>c</sub>/M<sub>y</sub>)M<sub>pe</sub> over the clear length between hinges; braces h·P<sub>ye</sub> in tension and P<sub>cre</sub> or 0.3 P<sub>cre</sub> in '
                  'compression = AISC 341-22 F2.3 analyses (a) and (b); BRBs ωQ<sub>CE</sub> / βωQ<sub>CE</sub>), sway in X, in Y and in both together (AISC 341-22 D1.4a, F2.3), and never less '
                  'than the suite maximum the analysis delivered. Load factor 1.0 on E<sub>mc</sub>; φ = 0.9 and B = 1.0 as for 16.4-1; R<sub>n</sub> = P<sub>n</sub> (AISC 360 E3) / F<sub>y</sub>A<sub>g</sub> (D2); '
-                 'D and 0.5L from the model\'s gravity state as in the default check; S = roof snow tributary to the column line (%s). Applied moments are neglected in this axial check as '
-                 'AISC 341-22 D1.4a(b) permits; the column\'s flexural hinging is accepted as a deformation-controlled action (16.4.2.2, table above). AISC 342 C3-10 is kept. '
+                 'D and 0.5L from the model\'s gravity state as in the default check; S = roof snow tributary to the column line (%s). Exception 2 relaxes the axial demand only: '
+                 'the Eq. (16.4-3) compression is combined with the analysed concurrent moments (per record the largest concurrent moment pair in compression and the most utilised '
+                 'concurrent instant; 16.4 suite statistic over the records) over M<sub>CE</sub> by AISC 342-22 C3-9 with m<sub>x</sub> = m<sub>y</sub> = 1, as C3.4a.2b requires of a column '
+                 'deformation-controlled for flexure in compression; C3-10 and C3-11 are kept; in net tension (16.4-4) the moment is judged by the hinge rotation (16.4.2.2). '
                  'Columns that do not meet (1) and (2) keep the default check (reason in the table).%s</p>'
                  % (x2.get("snow_basis") or "S = 0", (" " + x2["note"]) if x2.get("note") else ""))
     H.append('<p class="note">Q<sub>ns</sub> is the gravity state of the nonlinear model itself (16.3.2 loads), split into D and 0.5L by the level totals. '

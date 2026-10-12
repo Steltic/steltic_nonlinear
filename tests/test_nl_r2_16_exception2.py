@@ -108,7 +108,8 @@ def test_column_common_to_two_frames_takes_both_mechanisms():
 def test_exception_2_equations_hand_calc():
     """(16.4-3): (1.2 + 0.12 SMS) D + 0.5 L + 0.2 S + Emc;  (16.4-4): (0.9 - 0.12 SMS) D - Emc (net tension), factor 1.0."""
     cap = dict(phiPn=1000.0, phiTn=1200.0, Pye=1450.0)
-    x = AC._exc2_column_check(400.0, 300.0, dict(P=200.0), cap, 0.8, 1.5, S_kip=10.0)
+    x = AC._exc2_column_check(400.0, 300.0, dict(P=200.0), cap, 0.8, 1.5, S_kip=10.0)          # no moments given
+    assert x["DC_C3_9"] is None and not x["moments_recorded"]
     assert x["Pr_16_4_3"] == pytest.approx(1.38 * 160.0 + 40.0 + 2.0 + 400.0)
     assert x["Tr_16_4_4"] == pytest.approx(300.0 - 0.72 * 160.0)
     assert x["DC_16_4_3"] == pytest.approx(x["Pr_16_4_3"] / 1000.0) and x["DC_16_4_4"] == pytest.approx(x["Tr_16_4_4"] / 1200.0)
@@ -141,25 +142,70 @@ def _evaluate(results, ch16=None, meta=None, specs=None, pkg=None):
 
 
 def test_verdict_uses_exception_2_and_reports_the_default_check():
-    """The finding: every hinging moment-frame column fails C3-9 / H1-1 with the analysed moment at M_CE, while the
-    axial-only check passes. With Exception 2 the axial force (mechanism-limited) is checked by 16.4-3 / 16.4-4."""
-    acc = _evaluate(_recs())
+    """Exception 2 relaxes the AXIAL demand (E_mc, factor 1.0, instead of 1.3 Ie (Qu - Qns)); the concurrent moments stay
+    in the check by AISC 342-22 C3-9 with m = 1 (C3.4a.2b, NL-R2-16 round 4). Analysed Pc 600 kip (Qu - Qns = 400 kip
+    -> 1.3 x 400 = 520 kip in 16.4-1) vs E_mc = 400 kip: the default fails, Exception 2 passes."""
+    acc = _evaluate(_recs(Pc=600.0, M=3000.0))
     v = acc["verdict"]
     base = next(r for r in acc["force_controlled_columns"] if r["z_in"] == 0.0)
     e = base["exception_2"]
     assert e["qualifies"] and base["fc_basis"].startswith("16.4.2.1 Exception 2")
     assert base["DC_default"] > 1.0 and base["DC"] < 1.0 and base["DC"] == pytest.approx(e["DC"])
-    # Emc = mechanism statics (2 beams) -- above the analysed suite max (300 - 200 = 100 kip)
-    assert e["Emc_mech_c"] == pytest.approx(2 * 2.2 * 10000.0 / 360.0) and e["Emc_c"] == pytest.approx(e["Emc_mech_c"]) and e["analysed_max_c"] == pytest.approx(100.0)
+    # Emc: mechanism statics (2 beams) below the analysed suite max 400 kip -> 400 kip
+    assert e["Emc_mech_c"] == pytest.approx(2 * 2.2 * 10000.0 / 360.0) and e["Emc_c"] == pytest.approx(400.0) and e["analysed_max_c"] == pytest.approx(400.0)
+    # C3-9 by hand: Pr = (1.2 + 0.12 x 1.5) 160 + 40 + 400; Pr / phiPn + 8/9 (Mx / MCEx + My / MCEy), m = 1
+    cap = AC._column_caps(_frame()[0], 101, PRM, 0.9, 1.0)[5]
+    Pr = 1.38 * 160.0 + 40.0 + 400.0
+    assert e["Pr_16_4_3"] == pytest.approx(Pr)
+    assert e["DC_C3_9"] == pytest.approx(Pr / cap["phiPn"] + 8.0 / 9.0 * (3000.0 / cap["MCEx"] + 100.0 / cap["MCEy"]))
+    assert e["DC"] == pytest.approx(e["DC_C3_9"]) and "C3-9" in e["governing"] and e["DC_C3_9"] > e["DC_16_4_3"]
+    assert e["Mu_maj_C3_9"] == pytest.approx(3000.0) and e["Mu_min_C3_9"] == pytest.approx(100.0)
     assert v["force_controlled_ok"] is True and v["worst_FC_DC_default"] > 1.0
     x2 = v["FC_exception_2"]
     assert x2["used"] and x2["n_columns"] == 2 and "W14X90 @ z 0 in" in x2["members"]
     # switched off -> every column by the default check, identical numbers
     ch = _ch16(); ch["force_controlled"]["exception_2"]["apply"] = False
-    acc0 = _evaluate(_recs(), ch16=ch)
+    acc0 = _evaluate(_recs(Pc=600.0, M=3000.0), ch16=ch)
     base0 = next(r for r in acc0["force_controlled_columns"] if r["z_in"] == 0.0)
     assert base0["DC"] == pytest.approx(base["DC_default"]) and "exception_2" not in base0
     assert acc0["verdict"]["force_controlled_ok"] is False and not acc0["verdict"]["FC_exception_2"]["used"]
+
+
+def test_exception_2_keeps_the_moments():
+    """NL-R2-16 (round 4, user decision): a hinging column (moment at M_CE) is NOT accepted by dropping its moment --
+    the Exception 2 compression is combined with the analysed concurrent moments (C3-9, m = 1)."""
+    acc = _evaluate(_recs(M=9000.0))                                   # M > MCEx of the W14X90 (8308 k-in)
+    for r in acc["force_controlled_columns"]:
+        e = r["exception_2"]
+        assert e["qualifies"] and e["DC_16_4_3"] < 0.5 and e["DC_C3_9"] > 1.0 and r["DC"] > 1.0
+    assert acc["verdict"]["force_controlled_ok"] is False
+    # the record's largest concurrent moment pair in compression (conc_m) governs over the most utilised instant
+    recs = _recs(Pc=600.0, M=3000.0)
+    for r in recs:
+        for ev in r["col_env"].values():
+            ev["conc_m"] = (250.0, 5000.0, 100.0)
+    e = next(r for r in _evaluate(recs)["force_controlled_columns"] if r["z_in"] == 0.0)["exception_2"]
+    assert e["Mu_maj_C3_9"] == pytest.approx(5000.0) and e["DC_C3_9"] > 1.0
+    # tension (16.4-4): axial only, as in the default check (C3.4a.2b: compression only)
+    cap = dict(phiPn=1000.0, phiTn=1200.0, Pye=1450.0, MCEx=8000.0, MCEy=4000.0)
+    x = AC._exc2_column_check(100.0, 900.0, dict(P=200.0), cap, 0.8, 1.5, moments=[[(-500.0, 7000.0, 0.0)]], stat=lambda a: a.mean())
+    assert x["DC_16_4_4"] == pytest.approx((900.0 - 0.72 * 160.0) / 1200.0)
+    assert x["DC_C3_9"] == pytest.approx(x["Pr_16_4_3"] / 1000.0 + 8.0 / 9.0 * 7000.0 / 8000.0)
+
+
+def test_exception_2_not_used_without_recorded_moments():
+    """An older run without concurrent column moments: Exception 2 cannot be evaluated with C3-9 -> not used, and the
+    verdict is INCOMPLETE (moments not recorded), never an axial-only pass."""
+    recs = _recs(Pc=600.0, M=3000.0)
+    for r in recs:
+        for ev in r["col_env"].values():
+            ev["conc_c"] = None; ev["conc_t"] = None; ev["Mmaj"] = None; ev["Mmin"] = None
+    acc = _evaluate(recs)
+    for r in acc["force_controlled_columns"]:
+        e = r["exception_2"]
+        assert e["qualifies"] and e["DC_C3_9"] is None and not e["used"] and not e["moments_recorded"]
+    assert acc["verdict"]["force_controlled_ok"] is not True and acc["verdict"]["status"] != "ACCEPTABLE"
+    assert any("moments not recorded" in w for w in acc["verdict"]["not_evaluated"])
 
 
 def test_emc_never_below_the_analysed_maximum_and_force_controlled_flexure_keeps_default():
