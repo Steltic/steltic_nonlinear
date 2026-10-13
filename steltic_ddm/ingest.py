@@ -63,6 +63,30 @@ def decode_tag(t):
     return r // 100, r % 100, t // 100000
 
 
+def _member_dirn(nodes, n1, n2, tol=1e-6):
+    """Z (vertical), X / Y (horizontal along a global axis) or D (any other direction) from the node COORDINATES.
+    Gold-run fix (Ex28): the direction used to come from the node tags (decode_tag), which is only meaningful for
+    grid nodes ntag(i, j, k); an off-grid node (a truss panel point, k*100000 + 80000 + ...) decodes to a wrong
+    (i, j), so an X-running beam was taken as a Y beam, its pins released its torsion at both ends and the GMNIA
+    rebuild of the STMF was singular."""
+    p, q = nodes.get(n1), nodes.get(n2)
+    if p is None or q is None:
+        i1, j1, k1 = decode_tag(n1); i2, j2, k2 = decode_tag(n2)
+        if k1 != k2 and (i1, j1) == (i2, j2):
+            return "Z"
+        return "X" if j1 == j2 else "Y"
+    dx, dy, dz = (abs(q[0] - p[0]), abs(q[1] - p[1]), abs(q[2] - p[2]))
+    L = max(dx, dy, dz, tol)
+    if dx <= 1e-3 * L and dy <= 1e-3 * L:
+        return "Z"
+    h = max(dx, dy)                                  # the plan projection decides (a sloped rafter in X-Z stays "X")
+    if dy <= 1e-3 * h:
+        return "X"
+    if dx <= 1e-3 * h:
+        return "Y"
+    return "D"
+
+
 _CALL = re.compile(r"^ops\.(\w+)\((.*)\)\s*$")
 
 
@@ -149,13 +173,7 @@ def load_package(job_dir, steltic_engine_dir=None):
             A, tr = float(a[4]), int(a[10])
             relz, rely = _release_codes(a)
             kind, sec = secmap.get(tag, ("col" if tr in (1, 2) else "beam", "?"))
-            i1, j1, k1 = decode_tag(n1); i2, j2, k2 = decode_tag(n2)
-            if k1 != k2 and (i1, j1) == (i2, j2):
-                dirn = "Z"
-            elif j1 == j2:
-                dirn = "X"
-            else:
-                dirn = "Y"
+            dirn = _member_dirn(nodes, n1, n2)
             nm.members.append(Member(tag, kind, sec, n1, n2, tr, relz, rely, A, dirn=dirn))
         elif et in ("Truss", "corotTruss"):
             A = float(a[4])
