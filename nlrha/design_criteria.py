@@ -59,8 +59,9 @@ def gather(job, params_path=None, risk_category=None):
     analyses = CV.get(cfg, "analyses") or []
     from pushover import existing as EX                           # NL-R2-04 (warning only)
     existing = EX.existing_structure(cfg=cfg)
+    from pushover import user_designed as UD                      # user-designed building (HR build-only)
     return dict(job=job, pkg=pkg, name=pkg.name, ch16=ch16, prm=prm, prm_path=prm_path, rc=rc, cfg_text=cfg_text, relief=relief,
-                existing=existing,
+                existing=existing, user_designed=UD.info(job),
                 calc=pkg.calc or {}, hazard=_json(os.path.join(job, "nlrha", "site_hazard.json")),
                 gm=(_json(os.path.join(job, "nlrha", "gm_scaling.json")) or {}).get("gm"),
                 nl=_json(os.path.join(job, "nlrha", "nlrha_package.json")), po=_json(os.path.join(job, "pushover", "pushover_package.json")),
@@ -241,6 +242,9 @@ def content(g, project=None, engineer=None, reviewer=None):
     if g.get("existing"):                                          # NL-R2-04 (warning only): first thing in the document
         from pushover import existing as EX
         s.n(EX.warning_text(g["existing"], "this design-criteria document and the analyses it describes"))
+    if g.get("user_designed"):                                     # user-designed building (HR build-only)
+        from pushover import user_designed as UD
+        s.n(UD.warning_text(g["user_designed"], "this design-criteria document and the analyses it describes"))
     s.p("This document states the design criteria for the nonlinear response history analysis of %s under ASCE/SEI 7-22 Chapter 16, as Section 16.1.4 requires before the analysis is performed. It records the seismic hazard and ground motions, the analytical model, the acceptance criteria, the linear analysis the design rests on, and the scope of the independent design review of Section 16.5. It is a DRAFT generated from the design package by the Nonlinear module for the engineer of record to complete and the reviewer to accept; bracketed items and the open-items list mark what the engineer must supply."
         % pkg.name)
     s.t([["Item", "Value", "Source"],
@@ -506,6 +510,8 @@ def write(job, out=None, project=None, engineer=None, reviewer=None, params_path
     sub = "%s · Risk Category %s · DRAFT generated %s by Steltic_nonlinear for the engineer of record and the §16.5 reviewer" % (g["name"], g["rc"].replace("_", "/"), datetime.date.today().isoformat())
     if g.get("existing"):                                          # NL-R2-04: in the subtitle of both the docx and the html
         sub += " · EXISTING STRUCTURE: assessed with NEW-building criteria, NOT an ASCE 41 evaluation (see section 1)"
+    if g.get("user_designed"):
+        sub += " · USER-DESIGNED BUILDING: design basis supplied by the user, not checked by Steltic HR (see section 1)"
     d = DW.Doc(title=title, subtitle=sub, footer="%s -- design criteria §16.1.4 (draft)" % g["name"])
     for s in S:
         d.heading(s.title, s.level)
@@ -525,6 +531,7 @@ def write(job, out=None, project=None, engineer=None, reviewer=None, params_path
     from . import report as RP
     parts = ["<style>%s</style><title>%s -- design criteria 16.1.4</title>" % (RP.CSS, H.escape(g["name"])), "<h1>%s</h1><div class='sub'>%s</div>" % (H.escape(title), H.escape(sub)),
              EX.banner_html(g.get("existing"), "this design-criteria document and the analyses it describes"),
+             __import__("pushover.user_designed", fromlist=["x"]).banner_html(g.get("user_designed"), "this design-criteria document and the analyses it describes"),
              "<div class='note'><b>Draft.</b> Generated from the package files; bracketed items are for the engineer of record. Not for construction; the design must be sealed by a licensed professional engineer after the 16.5 review.</div>"]
     for s in S:
         parts.append("<h%d>%s</h%d>" % (min(3, s.level + 1), H.escape(s.title), min(3, s.level + 1)))

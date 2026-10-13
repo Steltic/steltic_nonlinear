@@ -205,6 +205,9 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
     from . import existing as _EX                                 # NL-R2-04 (warning only)
     _exist = _EX.existing_structure(getattr(pkg, "root", None))
     H.append(_EX.banner_html(_exist, "the pushover (ASCE 41-23 NSP)"))
+    from . import user_designed as _UD                            # user-designed building (HR build-only)
+    _ud = _UD.info(getattr(pkg, "root", None))
+    H.append(_UD.banner_html(_ud, "the pushover (ASCE 41-23 NSP)"))
     if not prm.get("verified"):
         _which = _PS.unverified_text(prm)
         H.append('<div class="banner">UNVERIFIED MODELLING PARAMETERS — %s Values not supplied and verified by the user: %s. '
@@ -428,6 +431,8 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
               complete=not pending, directions_pending=pending, elapsed_s=round(elapsed_s, 1))
     if _exist:                                                       # NL-R2-04: only for a declared existing structure
         pk["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "the pushover (ASCE 41-23 NSP)"))
+    if _ud:
+        pk["user_designed"] = dict(confirmed=_ud["confirmed"], statement=_UD.warning_text(_ud, "the pushover (ASCE 41-23 NSP)"))
     for d, run in runs.items():
         R = results[d]
         pk["directions"][d] = dict(T1=run["pattern"]["T1"], mode=run["pattern"]["mode"], meff_frac=run["pattern"]["meff_frac"],

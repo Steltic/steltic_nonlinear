@@ -104,7 +104,17 @@ python -m snl run <package.zip | folder> [--out DIR] [--steltic-engine DIR] [--p
 python -m snl report  <job folder>        # four_analyses.html + snl_summary.json + the viewer hub from what exists
 python -m snl inspect <package.zip | folder>
 python -m snl review  <job folder> [--focus "..."] [--no-standards] [--max-searches 8]   # the model's review (below)
+python -m snl confirm <job folder> [--check] [--json] [--by NAME] [--note TEXT]          # user-designed building (below)
 ```
+
+**User-designed building.** A package HR Steel built in build-only mode (a building the user designed, modelled as
+given: `provenance.json` beside `cfg.py`) must be confirmed before the long runs: `snl confirm` checks that nothing is
+open, the systems are version 1 systems, `cfg.py` is the generated one and the model's elements and masses match the
+description, and compares the user's own T1 / V / W (warning only -- the run proceeds and the difference is printed).
+It writes `nl_basis.json`; `snl run` refuses (exit 3) a build-only package without it, or whose `cfg.py` changed since.
+Every report, the four-analyses sheet, `snl_summary.json` and the 16.1.4 document then carry *User-designed building:
+design basis supplied by the user, not checked by Steltic HR*, with the accepted defaults (`pushover/user_designed.py`,
+`tests/test_user_designed.py`).
 
 `run` unpacks the zip next to itself (or into `--out`), then runs the three engines **in sequence, each in its own
 process** (openseespy is a process singleton), logging to `<job>/snl_run.log` and `<job>/snl_run.json`. A failing step does

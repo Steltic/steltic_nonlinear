@@ -5,6 +5,9 @@
                                             [--only pushover nlrha ddm] [--skip ...] [--parallel 2] [--dt 0.01] ...
     python -m snl report <job folder>            # rebuild four_analyses.html + snl_summary.json from existing outputs
     python -m snl inspect <package.zip | folder> # read the design basis (the Pushover Analyst's reader)
+    python -m snl confirm <job folder> [--check] [--json] [--by NAME] [--note TEXT]
+                                                 # user-designed building (HR build-only): check the model and confirm it
+                                                 # before the long runs; `run` refuses a build-only package until then
     python -m snl review <job folder> [--focus "..."] [--no-standards] [--max-searches N]
                                                  # the model's engineer's review of the run, grounded in the standards (snl/review.py)
 
@@ -80,6 +83,14 @@ def _run(cmd, log, env=None, cwd=None):
 
 def cmd_run(a):
     job = _unpack(a.package, a.out)
+    from pushover import user_designed as UD                      # user-designed building (HR build-only mode)
+    _ud = UD.info(job)
+    if _ud and not _ud["confirmed"]:
+        why = ("its cfg.py changed after the confirmation" if _ud.get("stale") else "it has not been confirmed")
+        print("!! user-designed building: %s. Review the model and the checks, then run `snl confirm %s` "
+              "(nothing was run)." % (why, job), flush=True)
+        return 3
+    UD.print_warning(_ud, "every SNL analysis (pushover, NLRHA, DDM)")
     py = sys.executable
     env = dict(os.environ)
     if a.steltic_engine:
@@ -94,6 +105,8 @@ def cmd_run(a):
     EX.print_warning(_exist, "every SNL analysis (pushover, NLRHA, DDM)")
     if _exist:
         status["existing_structure"] = dict(_exist, statement=EX.warning_text(_exist, "every SNL analysis (pushover, NLRHA, DDM)"))
+    if _ud:
+        status["user_designed"] = dict(confirmed=True, statement=UD.warning_text(_ud, "every SNL analysis (pushover, NLRHA, DDM)"))
     # The component parameters: the file `snl collect` read out of the standards for THIS project when
     # it exists, else what --params names, else the repository placeholder (and the UNVERIFIED banner
     # that goes with it). Collect first is the point: the analyses then run on cited values and the
@@ -191,6 +204,27 @@ def cmd_collect(a):
     return 0 if r["ok"] else 2
 
 
+def cmd_confirm(a):
+    from pushover import user_designed as UD
+    job = os.path.abspath(a.job)
+    if not UD.is_user_designed(job):
+        print("not a user-designed (build-only) package: no provenance.json in %s -- nothing to confirm" % job)
+        return 2
+    r = UD.checks(job) if a.check else UD.confirm(job, by=a.by, note=a.note)
+    if a.json:
+        print(json.dumps(r, indent=1))
+    else:
+        for c in r["checks"]:
+            print("  [%s] %-20s %s" % (c["status"].upper(), c["label"], c["detail"]))
+        if r.get("accepted_defaults"):
+            print("  accepted defaults: " + "; ".join("%s = %s" % (x["item"], x["value"]) for x in r["accepted_defaults"]))
+        if a.check:
+            print(">> checks %s" % ("pass: ready to confirm" if r["ok"] else "FAIL: cannot be confirmed"))
+        else:
+            print(">> %s" % ("confirmed: nl_basis.json written; `snl run` may start" if r.get("confirmed") else "NOT confirmed: a hard check fails"))
+    return 0 if r["ok"] else 1
+
+
 def cmd_inspect(a):
     job = _unpack(a.package, a.out)
     subprocess.run([sys.executable, "-m", "pushover", "inspect", job])
@@ -253,6 +287,11 @@ def main(argv=None):
                                         "the analyses then run on cited values. Do this BEFORE `run`.")
     co.add_argument("job"); co.add_argument("--out", default="hinge_params_collected.json", help="file name written into the job folder")
     i = sub.add_parser("inspect"); i.add_argument("package"); i.add_argument("--out")
+    cf = sub.add_parser("confirm", help="user-designed building (HR build-only): run the confirmation checks and, unless --check, "
+                                        "write nl_basis.json so `run` may start (warnings on your own T1 / V / W do not block)")
+    cf.add_argument("job"); cf.add_argument("--check", action="store_true", help="only run the checks; do not confirm")
+    cf.add_argument("--json", action="store_true"); cf.add_argument("--by", help="who confirms (recorded and printed in the reports)")
+    cf.add_argument("--note", help="a note recorded with the confirmation and printed in every report")
     rv = sub.add_parser("review", help="the model reads what the run measured, looks the governing clauses up in the standards (RAG_API_URL) and writes review.md / review.html")
     rv.add_argument("job"); rv.add_argument("--focus", default="", help="what the engineer wants the review to concentrate on")
     rv.add_argument("--no-standards", action="store_true", help="do not query the standards server; clauses come from the model's memory, marked UNVERIFIED")
@@ -265,7 +304,7 @@ def main(argv=None):
         from .review import cmd_review
         return cmd_review(a)
     return {"run": cmd_run, "report": cmd_report, "revise": cmd_revise, "collect": cmd_collect,
-            "inspect": cmd_inspect, "feedback": cmd_feedback}[a.cmd](a)
+            "inspect": cmd_inspect, "feedback": cmd_feedback, "confirm": cmd_confirm}[a.cmd](a)
 
 
 def cmd_feedback(a):

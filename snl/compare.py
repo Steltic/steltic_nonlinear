@@ -464,6 +464,14 @@ def build(job, out_name="four_analyses.html", title=None, not_evaluated=None):
     exist_banner = _EX.banner_html(_exist, "every nonlinear check on this sheet (pushover, NLRHA, DDM)")
     if _exist:
         summary["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "every nonlinear check on this sheet (pushover, NLRHA, DDM)"))
+    from pushover import user_designed as _UD                     # user-designed building (HR build-only)
+    _ud = _UD.info(job)
+    exist_banner += _UD.banner_html(_ud, "every nonlinear check on this sheet (pushover, NLRHA, DDM)")
+    if _ud:
+        summary["user_designed"] = dict(confirmed=_ud["confirmed"], accepted_defaults=_ud["accepted_defaults"],
+                                        warnings=_ud["warnings"], source=_ud["source"],
+                                        statement=_UD.warning_text(_ud, "every nonlinear check on this sheet (pushover, NLRHA, DDM)"))
+        disc.insert(0, "USER-DESIGNED building (HR build-only): design basis supplied by the user, not checked by Steltic HR (banner at the top).")
         disc.insert(0, "EXISTING STRUCTURE declared by the package: assessed with NEW-building criteria, not an ASCE 41 evaluation (banner at the top).")
     # NL-R2-L2 follow-up: an engine that refused the package up front (system not supported) is NOT EVALUATED, said so
     ne_banner = ""

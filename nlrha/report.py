@@ -181,6 +181,9 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     from pushover import existing as _EX                          # NL-R2-04 (warning only)
     _exist = _EX.existing_structure(getattr(pkg, "root", None))
     H.append(_EX.banner_html(_exist, "the NLRHA (ASCE 7-22 Chapter 16)"))
+    from pushover import user_designed as _UD                     # user-designed building (HR build-only)
+    _ud = _UD.info(getattr(pkg, "root", None))
+    H.append(_UD.banner_html(_ud, "the NLRHA (ASCE 7-22 Chapter 16)"))
     if not prm.get("verified"):
         H.append('<div class="banner">UNVERIFIED COMPONENT PARAMETERS — the hinge and brace backbones come from steltic_pushover/hinge_params.json (verified=false, ASCE 41 / AISC 342 placeholders). '
                  '%s The Chapter 16 procedure itself (spectrum, period range, scaling, gravity, damping, acceptance rules) was read against the converted ASCE 7-22 text (pdf pp. 248–251).</div>'
@@ -463,6 +466,8 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
                         "window": r.get("window"), "budget": r.get("budget")} for r in results])
     if _exist:                                                       # NL-R2-04: only for a declared existing structure
         pk["existing_structure"] = dict(_exist, statement=_EX.warning_text(_exist, "the NLRHA (ASCE 7-22 Chapter 16)"))
+    if _ud:
+        pk["user_designed"] = dict(confirmed=_ud["confirmed"], statement=_UD.warning_text(_ud, "the NLRHA (ASCE 7-22 Chapter 16)"))
     with open(os.path.join(outdir, "nlrha_package.json"), "w", encoding="utf-8") as f:
         json.dump(pk, f, indent=1, default=str)
     return os.path.join(outdir, "nlrha_report.html")
