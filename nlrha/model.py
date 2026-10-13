@@ -171,29 +171,97 @@ def modal(pkg, nmodes=12):
     and the level mass may sit on a centre-of-mass node, so a master-only sum is no longer consistent with the
     eigenvectors (it reported 118 % cumulative mass on Ex30). Mtot is the model's total translational mass per direction."""
     md = _mass_dofs()
+    n_max = max(1, sum(1 for n, m in md for v in m if v > 0.0) - 1)   # ARPACK needs fewer modes than mass DOFs
+    # Gold-run fix (Ex21): ARPACK can stop at its iteration limit for one mode count and converge in seconds for a larger
+    # one (a larger Krylov subspace; Ex21 failed at 12 modes and converged at 24 and 48), so a failed count moves on to the
+    # next one; the dense solver is the last resort, only when no count gave a usable solution.
+    res, tried, failed = None, [], []
     for nm_try in (nmodes, 2 * nmodes, 4 * nmodes, 8 * nmodes):       # brace-local modes can crowd the first 12
-        res = _modal_n(md, nm_try)
+        nm_try = min(nm_try, n_max)
+        if nm_try in tried:
+            break
+        tried.append(nm_try)
+        r = _modal_n(md, nm_try, dense=False)
+        if r is None:
+            failed.append(nm_try)
+            print("   note: ARPACK eigen solution not usable for %d modes -- trying more modes" % nm_try, flush=True)
+            continue
+        res = r; res["n_modes"] = nm_try
         if res["T90"] is not None:
             break
-    res["n_modes"] = nm_try
+    if res is None:
+        res = _modal_n(md, failed[0], dense=True)
+        res["n_modes"] = failed[0]
     return res
 
 
-def _modal_n(md, nmodes):
+DENSE_EIGEN_MAX_GB = 2.0          # the dense fallback below: K, M and work ~ 3 n^2 doubles
+
+
+def _participation(md, w2):
+    """[(T, fx, fy)] for the solved modes, or None when the eigen solution is not usable: a non-finite or non-positive
+    eigenvalue, a non-finite eigenvector, a non-positive modal mass, or a participation that overflows / exceeds the
+    total mass. Gold-run fix (Ex21 on the PC run, Python 3.14): ARPACK stopped at its iteration limit ("Maximum number
+    of iteration reached") without raising and returned eigenvectors of ~1e160, so L**2 overflowed and the whole
+    NLRHA step crashed."""
+    Mtot = {"X": sum(m[0] for n, m in md), "Y": sum(m[1] for n, m in md)}
+    out = []
+    try:
+        for i, w in enumerate(w2):
+            if not (math.isfinite(w) and w > 0.0):
+                return None
+            T = 2 * math.pi / math.sqrt(w)
+            Mn = 0.0; L = {"X": 0.0, "Y": 0.0}
+            for n, m in md:
+                phi = ops.nodeEigenvector(n, i + 1)
+                Mn += sum(m[d] * phi[d] * phi[d] for d in range(min(6, len(phi))))
+                L["X"] += m[0] * phi[0]; L["Y"] += m[1] * phi[1]
+            if not (math.isfinite(Mn) and Mn > 0.0 and all(math.isfinite(v) for v in L.values())):
+                return None
+            fr = {d: (L[d] ** 2 / Mn / Mtot[d]) if Mtot[d] > 0 else 0.0 for d in L}
+            if any(not math.isfinite(v) or v > 1.0 + 1e-6 for v in fr.values()):
+                return None
+            out.append((T, fr["X"], fr["Y"]))
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return None
+    if sum(o[1] for o in out) > 1.0 + 1e-3 or sum(o[2] for o in out) > 1.0 + 1e-3:
+        return None
+    return out
+
+
+def _modal_n(md, nmodes, dense=True):
+    """Modal results for `nmodes` modes (ARPACK). An unusable ARPACK solution -> None when dense=False, otherwise the
+    dense -fullGenLapack solver where its memory (DENSE_EIGEN_MAX_GB) allows (it is slow: minutes for ~4000 DOF)."""
     ops.wipeAnalysis()
     ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
-    w2 = ops.eigen("-genBandArpack", nmodes)
-    Mtot = {"X": sum(m[0] for n, m in md), "Y": sum(m[1] for n, m in md)}
+    try:
+        w2 = ops.eigen("-genBandArpack", nmodes)
+    except Exception:                                               # noqa: BLE001
+        w2 = []
+    part = _participation(md, w2) if w2 and len(w2) == nmodes else None
+    if part is None and not dense:
+        return None
+    if part is None:
+        # the dense solver when ARPACK did not converge -- only where the memory it needs is reasonable
+        try:
+            ndof = int(ops.systemSize())
+        except Exception:                                           # noqa: BLE001
+            ndof = 6 * len(ops.getNodeTags())
+        gb = 3.0 * 8.0 * float(ndof) ** 2 / 1e9
+        if gb > DENSE_EIGEN_MAX_GB:
+            raise RuntimeError("modal analysis: ARPACK did not return a usable solution for %d modes and the dense "
+                               "fallback would need ~%.1f GB for %d DOF" % (nmodes, gb, ndof))
+        print("   note: ARPACK eigen solution not usable (%d modes) -- dense -fullGenLapack fallback, %d DOF (~%.2f GB)"
+              % (nmodes, ndof, gb), flush=True)
+        ops.wipeAnalysis()
+        ops.constraints("Transformation"); ops.numberer("RCM"); ops.system("UmfPack")
+        w2 = ops.eigen("-fullGenLapack", nmodes)
+        part = _participation(md, w2)
+        if part is None:
+            raise RuntimeError("modal analysis: no usable eigen solution (ARPACK and the dense solver) for %d modes" % nmodes)
     modes = []
-    for i, w in enumerate(w2):
-        T = 2 * math.pi / math.sqrt(max(w, 1e-12))
-        Mn = 0.0; L = {"X": 0.0, "Y": 0.0}
-        for n, m in md:
-            phi = ops.nodeEigenvector(n, i + 1)
-            Mn += sum(m[d] * phi[d] * phi[d] for d in range(min(6, len(phi))))
-            L["X"] += m[0] * phi[0]; L["Y"] += m[1] * phi[1]
-        fr = {d: (L[d] ** 2 / Mn / Mtot[d]) if (Mn > 0 and Mtot[d] > 0) else 0.0 for d in L}
-        modes.append(dict(mode=i + 1, T=T, fx=fr["X"], fy=fr["Y"]))
+    for i, (T, fx, fy) in enumerate(part):
+        modes.append(dict(mode=i + 1, T=T, fx=fx, fy=fy))
     T1x = max(modes, key=lambda m: m["fx"])["T"]; T1y = max(modes, key=lambda m: m["fy"])["T"]
     cx = cy = 0.0; T90 = None
     for m in modes:                                 # cumulative mass, both directions -> the period at which both reach 90%

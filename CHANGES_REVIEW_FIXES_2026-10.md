@@ -170,6 +170,34 @@ Test result: `PYTHONPATH=$PWD pytest tests -q` → 196 passed (176 existing + 20
   - αPΔ uses the first-storey approximation.
 - The pushover report repeats the per-label BRB template warning once per BRB label (cosmetic).
 
+## Gold run on the PC (13 Oct 2026): three code fixes
+
+The 18 HR test buildings were run end to end on the PC (Python 3.14, openseespy 3.8.0.0). Three failures were code
+defects; the rest of the verdicts stand.
+
+- **Ex21, NLRHA crashed (modal analysis).** ARPACK stopped at its iteration limit for 12 modes without raising and
+  returned eigenvectors of ~1e160; the participation overflowed and the whole record suite stopped. `nlrha/model.py`
+  now checks every eigen solution (finite positive eigenvalues, finite vectors, positive modal mass, participation
+  <= the total mass) and, when one is unusable, moves on to the next mode count (12 -> 24 -> 48; Ex21 converges at 24
+  in ~5 s). The dense `-fullGenLapack` solver is the last resort (2 GB limit; slow, minutes for ~4000 DOF). The mode
+  count is capped below the number of mass DOFs.
+- **Ex28, DDM failed (singular GMNIA rebuild).** The member direction came from the node tags, which are only meaningful
+  on grid nodes. Off-grid truss panel points decoded to the wrong (i, j), so X beams were taken as Y beams and their end
+  pins released their own torsion at both ends. The direction now comes from the coordinates (`ingest._member_dirn`:
+  X / Y / Z / D, plan projection for sloped members) and beam pins are oriented on the member (local 5 = major,
+  6 = minor, torsion always kept). Identical to before for on-grid X / Y beams. The transfer gate now passes
+  (T1 2.688 / 2.701 s, ELF roof displacement ratio 1.009). Members whose direction changes: Ex12 18 (plan-diagonal
+  chamfer beams, now D), Ex13 24, Ex20 34, Ex8 70, Ex33 16, Ex28 1168. The Ex8 gravity sweeps are unchanged.
+- **Ex32, DDM FAIL 0.73 (spurious lateral-torsional buckling).** The HR record gives the roof / floor girders'
+  Lb per member group (`Lb_in_by_group`: X girders 100 in, braced by the infill; Y moment-frame girders 360 in; Y gravity
+  girders 0, deck) with `Lb_in` = the largest. The GMNIA used only `Lb_in` = L, so it braced no X girder and the roof
+  girders twisted through a full turn at mid-span at lambda 0.91 (1.2D+1.0S+0.5L). The matching group's Lb is now used
+  when exactly one distinct value matches (direction word X / Y, "moment" = moment-connected, "gravity" = pinned);
+  otherwise the largest, as before. 1.2D+1.0S+0.5L: lambda_u 0.913 -> 3.14 (phi_s lambda_u 2.51, PASS);
+  1.2D+1.6Lr+0.5L 1.553 -> 3.10.
+
+Tests: `tests/test_gold_run_fixes.py` (10).
+
 ## Independent verification
 
 #### NL-01 — fibre NSP beam/column monitors: CORRECTED here (aggregation); the monitor itself is correct

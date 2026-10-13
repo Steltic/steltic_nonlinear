@@ -101,6 +101,7 @@ class GMNIAModel:
         self.gravity_notes = []
         self.beam_bracing = True     # NL-R2-27: brace diaphragm-level beams where the HR design relies on deck / infill bracing
         self.braced = {}             # member tag -> (mode, brace positions in in from n1, Lb_in)
+        self._lb_group_used = {}     # gold-run fix (Ex32): (role/section, dirn, moment-connected) -> Lb from Lb_in_by_group
         self.uplift_note = None      # NL-R2-L3: roof-uplift disclosure of the last apply_gravity
         self.column_bracing = True   # NL-R2-33: brace GMNIA columns where the HR design braces them
         self.col_braced = {}         # member tag -> plan dict (weak / strong / twist positions in in from n1, Lc, source)
@@ -177,6 +178,7 @@ class GMNIAModel:
                                            residual=self.residual, elastic=self.elastic, mat_tag0=1000)
         self.nonbuckling, self.special_log, self._spring_mat = set(), [], SPRING_MAT0
         self.braced, self._nbrace, self._brace_slaves = {}, 0, {}
+        self._lb_group_used = {}
         self.col_braced, self._ncolbr, self._sb_transf = {}, 0, False
         self._col_brace_skips, self._node_mem = [], None
         self._prepare_special()
@@ -194,6 +196,10 @@ class GMNIAModel:
                 "the HR design's brace spacing Lb (infill / joist points); lateral-torsional buckling BETWEEN brace points "
                 "is not represented and stays a Chapter F check of the HR design (AISC 360-22 App. 1, 1.3.1)"
                 % (len(self.braced), nc, BRACE_CONTINUOUS_N, len(self.braced) - nc))
+        if getattr(self, "_lb_group_used", None):
+            self.special_log.append("beam bracing: HR Lb per member group (calc_package Lb_in_by_group) used: %s" % "; ".join(
+                "%s %s %s-beams%s Lb %g in" % (r, sct, d, " (moment-connected)" if rg else "", v)
+                for ((r, sct), d, rg), v in sorted(self._lb_group_used.items(), key=str)[:12]))
         if getattr(self, "_lb_conflicts", None):
             self.special_log.append("beam bracing: HR groups with different Lb for the same role/section -> the LARGEST Lb "
                                     "used: %s" % "; ".join("%s %s %s" % (r, sct, v) for (r, sct), v in sorted(self._lb_conflicts.items())[:6]))
@@ -356,7 +362,7 @@ class GMNIAModel:
         """(role, SECTION) -> unbraced length Lb (in) the HR member design used (calc_package members[].inputs.Lb_in).
         When groups of the same role and section disagree the LARGEST Lb is kept (least bracing, conservative)."""
         if getattr(self, "_lb_map", None) is None:
-            out, conflicts = {}, {}
+            out, conflicts, groups = {}, {}, {}
             for m in (self.nm.calc_package or {}).get("members", []) or []:
                 inp = m.get("inputs") or {}
                 lb, sec, role = inp.get("Lb_in"), inp.get("section"), inp.get("role")
@@ -371,8 +377,53 @@ class GMNIAModel:
                     conflicts.setdefault(key, sorted({out[key]}))
                     conflicts[key] = sorted(set(conflicts[key]) | {lb})
                 out[key] = max(out.get(key, 0.0), lb)
-            self._lb_map, self._lb_conflicts = out, conflicts
+                grp = inp.get("Lb_in_by_group")
+                if isinstance(grp, dict):
+                    lst = groups.setdefault(key, [])
+                    for name, v in grp.items():
+                        try:
+                            lst.append((str(name), float(v)))
+                        except (TypeError, ValueError):
+                            continue
+            self._lb_map, self._lb_conflicts, self._lb_groups = out, conflicts, groups
         return self._lb_map
+
+    @staticmethod
+    def _lb_group_match(name, m):
+        """Does the HR Lb group `name` (free text, e.g. "X girders (infill-braced)", "Y moment-frame girders",
+        "Y gravity girders") describe beam m? A direction word X / Y must equal the beam's plan direction; "moment"
+        must go with a moment-connected beam (no end release) and "gravity" with a pinned one. A group naming neither
+        side of a criterion is not constrained by it."""
+        import re as _re
+        t = name.lower()
+        dirs = set(_re.findall(r"(?<![a-z0-9])([xy])(?![a-z0-9])", t))
+        if dirs and str(m.dirn).lower() not in dirs:
+            return False
+        rigid = (m.relz == 0)
+        if "moment" in t and not rigid:
+            return False
+        if "gravity" in t and rigid:
+            return False
+        return True
+
+    def _member_lb(self, m):
+        """Gold-run fix (Ex32): the HR Lb of beam m. A record may give its Lb per member group (inputs.Lb_in_by_group,
+        e.g. X girders braced by the infill at 100 in, Y moment-frame girders 360 in, Y gravity girders 0 = deck) with
+        Lb_in = the largest; that largest value used to brace NO X girder of Ex32 (n = L / Lb = 1), so the GMNIA buckled
+        the infill-braced roof girders laterally-torsionally over the full 30 ft at lambda 0.91 although the design
+        braces them every 100 in. The group that matches the member is used when exactly one distinct Lb matches;
+        otherwise (no group data, no match, or matching groups that disagree) the largest Lb, as before."""
+        key = (str(m.role), str(m.section).upper().replace(" ", ""))
+        lb = self._hr_lb().get(key)
+        grp = (getattr(self, "_lb_groups", None) or {}).get(key)
+        if lb is None or not grp:
+            return lb
+        hits = {v for name, v in grp if self._lb_group_match(name, m)}
+        if len(hits) == 1:
+            v = hits.pop()
+            self._lb_group_used[(key, m.dirn, m.relz == 0)] = v
+            return v
+        return lb
 
     def _diaphragm_of(self, node):
         if getattr(self, "_slave_master", None) is None:
@@ -390,7 +441,7 @@ class GMNIAModel:
         mst = self._diaphragm_of(m.n1)
         if mst is None or self._diaphragm_of(m.n2) != mst:
             return None
-        lb = self._hr_lb().get((str(m.role), str(m.section).upper().replace(" ", "")))
+        lb = self._member_lb(m)
         if lb is None:
             return None
         if lb <= L / BRACE_CONTINUOUS_N:
@@ -745,13 +796,18 @@ class GMNIAModel:
         # end nodes (with pins if released)
         end1, end2 = m.n1, m.n2
         rel1, rel2 = set(), set()
+        axis = None
         if m.kind == "beam":
-            major = 5 if m.dirn == "X" else 4
-            if m.relz in (1, 3): rel1.add(major)
-            if m.relz in (2, 3): rel2.add(major)
+            # Gold-run fix (Ex28): the pins are oriented on the member (local x = member axis, local y horizontal), so a
+            # released end frees the beam's own major (local 5) / minor (local 6) bending whatever its direction -- the
+            # same global DOFs as before for a beam along X or Y, and never its torsion (an off-grid or plan-diagonal
+            # beam used to lose its torsional restraint at both ends -> singular stiffness).
+            if m.relz in (1, 3): rel1.add(5)
+            if m.relz in (2, 3): rel2.add(5)
             if m.rely in (1, 3): rel1.add(6)
             if m.rely in (2, 3): rel2.add(6)
-        axis = None
+            if rel1 or rel2:
+                axis = tuple((p2[q] - p1[q]) / L for q in range(3))
         if m.kind == "brace" and self.brace_pins:
             rel1, rel2 = {5, 6}, {5, 6}                 # local: release bending, keep torsion (dir 4)
             axis = tuple((p2[q] - p1[q]) / L for q in range(3))
