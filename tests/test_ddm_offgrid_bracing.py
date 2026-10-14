@@ -73,3 +73,47 @@ def test_absurd_lambda_or_tangent_is_not_evaluated():
         assert phi_s.check(0.85, lam, c["cls"]) == (None, "NOT EVALUATED")
     for lam, kt in ((1.553, 1.2458), (2.179, 1.97), (1.471, 6.67)):               # real limits keep their verdict
         assert solver.classify(_res(lam, kt), model)["cls"] != "numerical", (lam, kt)
+
+
+# --------------------------------------------------------- framing points of a girder split by the fillers (Ex28 roof)
+def test_girder_split_at_filler_framing_points_is_braced_there():
+    """Ex28: the 60 ft roof W44X262 girder is five members split at the W33X118 filler connections (HR Lb 192 in, braced
+    by the fillers). Each off-grid framing point gets a deck brace (lateral normal to the girder + twist); grid ends,
+    collinear-only joints and members longer than Lb do not."""
+    import openseespy.opensees as ops
+    from steltic_ddm.ingest import NeutralModel, Member
+    from steltic_ddm.model_gmnia import GMNIAModel
+    nm = NeutralModel(job_dir=".", name="roof")
+    z = 1368.0
+    grid = {800100: (720.0, 0.0, z), 800101: (720.0, 720.0, z), 800000: (0.0, 0.0, z), 800001: (0.0, 720.0, z)}
+    nm.nodes.update(grid); nm.nodes[899999] = (360.0, 360.0, z); nm.diaphragms = {899999: list(grid)}
+    ys = [0.0, 132.0, 264.0, 456.0, 588.0, 720.0]
+    tags = [800100, 820101, 820102, 820103, 820104, 800101]
+    for t, y in zip(tags, ys):
+        nm.nodes.setdefault(t, (720.0, y, z))
+    nm.nodes[812002] = (0.0, 132.0, z)                                   # filler's far end (off-grid too)
+    girder = [Member(3325 + i, "beam", "W44X262", tags[i], tags[i + 1], transf=3, relz=0, dirn="Y") for i in range(5)]
+    filler = Member(3345, "beam", "W33X118", 812002, 820101, transf=3, relz=3, rely=3, dirn="X")
+    for m in girder + [filler]:
+        m.role = "roof"; nm.members.append(m)
+    nm.calc_package = dict(members=[dict(id="roof-girder-W44X262", inputs=dict(role="roof", section="W44X262"),
+                                         checks=[dict(limit_state="F2", Lb_in=192.0)])])
+    ops.wipe(); ops.model("basic", "-ndm", 3, "-ndf", 6)
+    for t, c in nm.nodes.items():
+        ops.node(t, *c)
+    ops.uniaxialMaterial("Elastic", 1, 1e6); ops.uniaxialMaterial("Elastic", 2, 1e9)
+    g = GMNIAModel(nm, {"Fy": 50.0}, nsub=(2, 2, 2), residual="none")
+    g._nbrace, g._brace_slaves = 0, {}
+    g._brace_framing_points()
+    assert set(g.framing_braced) == {820101}                      # only the joint where the filler frames in
+    assert g.framing_braced[820101][1] == (3345,)
+    assert list(g._brace_slaves) == [899999] and len(g._brace_slaves[899999]) == 1
+    # a girder member longer than Lb is _brace_plan's business, not this pass
+    nm.calc_package["members"][0]["checks"][0]["Lb_in"] = 100.0
+    g._lb_map = None; g._nbrace, g._brace_slaves = 0, {}
+    ops.wipe(); ops.model("basic", "-ndm", 3, "-ndf", 6)
+    for t, c in nm.nodes.items():
+        ops.node(t, *c)
+    ops.uniaxialMaterial("Elastic", 1, 1e6); ops.uniaxialMaterial("Elastic", 2, 1e9)
+    g._brace_framing_points()
+    assert not g.framing_braced

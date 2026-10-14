@@ -218,6 +218,20 @@ left Ex8 / Ex12 / Ex13 / Ex20 / Ex33 within 0.01). Ex28 (STMF) now ran, and gave
 Tests: `tests/test_ddm_offgrid_bracing.py` (3); `test_ddm_nl_r2_27.py` now also clears the level lookup when it
 simulates "no diaphragm". Suite: 485 pass.
 
+## Gold-run reruns, second round (14 Oct 2026): Ex28 framing points
+
+With #10, Ex28's DDM ran cleanly (the absurd sweeps are NOT EVALUATED, Ex18's one too) but failed 0.953 on
+1.2D+1.6L+0.5Lr: the roof W44X262 girders snapped at lambda 1.19 (tangent 122 % of elastic just before). HR models the
+W33X118 fillers as elements, so each 60 ft girder is five members split at the filler connections, each no longer
+than HR's Lb (192 in, "braced by the filler beams"); `_brace_plan` had no interior point to brace, and the framing
+points themselves were never braced (the fillers are pinned and the deck braces them only normal to their own axis).
+`_brace_framing_points` now braces each off-grid end of such a member where a non-collinear beam frames in, by the
+deck at that level (lateral normal to the member + twist), like an interior brace point. Ex28: 240 joints (W44X335 /
+W44X262 girders, W10X100 truss chords); transfer gate unchanged (T1 2.688 / 2.701 s); 1.2D+1.6L+0.5Lr lambda_u 1.19 ->
+>= 1.62.
+
+Tests: `tests/test_ddm_offgrid_bracing.py` (4). Suite: 486 pass.
+
 ## Independent verification
 
 #### NL-01 — fibre NSP beam/column monitors: CORRECTED here (aggregation); the monitor itself is correct
