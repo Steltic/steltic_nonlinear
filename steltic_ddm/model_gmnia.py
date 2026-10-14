@@ -180,6 +180,7 @@ class GMNIAModel:
         self.braced, self._nbrace, self._brace_slaves = {}, 0, {}
         self._lb_group_used = {}
         self._deck_levels = None
+        self.framing_braced = {}
         self.col_braced, self._ncolbr, self._sb_transf = {}, 0, False
         self._col_brace_skips, self._node_mem = [], None
         self._prepare_special()
@@ -189,6 +190,11 @@ class GMNIAModel:
         self._x_tie_plan()                                         # NL-R2-28 (DDM), before the chains are built
         for m in nm.members:
             self._add_member(m)
+        self._brace_framing_points()                               # gold-run rerun 2 (Ex28): beams split at framing points
+        if self.framing_braced:
+            self.special_log.append(
+                "beam bracing at framing points: %d off-grid joints where a beam is split by the beams framing into it "
+                "(HR Lb <= the segment length) braced against lateral displacement and twist by the deck" % len(self.framing_braced))
         if self.braced:
             nc = sum(1 for v in self.braced.values() if v[0] == "continuous")
             self.special_log.append(
@@ -529,6 +535,60 @@ class GMNIAModel:
                         "-orient", *ax, *yp)
             self._brace_slaves.setdefault(mst, []).append(dn)
         self.braced[m.tag] = (plan[0], tuple(round(x, 1) for x in plan[1]), plan[2])
+
+    def _brace_framing_points(self):
+        """Gold-run rerun 2 (Ex28): when HR models the beams that frame into a girder as elements, the girder is split
+        into members at those framing points and each member is one brace spacing long (HR Lb <= its length), so
+        _brace_plan has no interior point to brace -- and the framing points themselves were never braced: the fillers
+        are pinned (no twist restraint) and the deck braces them only normal to their own axis, so the 60 ft roof W44X262
+        girders (HR: braced by the fillers, Lb 192 in, D/C 0.72) were laterally unbraced over the full span and snapped
+        at lambda 1.19. Each off-grid end of such a member where another, non-collinear beam frames in is braced by the
+        deck like an interior brace point: lateral displacement normal to the member and twist about its axis."""
+        self.framing_braced = {}
+        if not self.beam_bracing:
+            return
+        beams = [m for m in self.nm.members if m.kind == "beam" and m.tag not in self.links and not self._is_secondary(m)]
+        at = {}
+        for m in beams:
+            at.setdefault(m.n1, []).append(m); at.setdefault(m.n2, []).append(m)
+
+        def plan_axis(m):
+            (x1, y1, _z1), (x2, y2, _z2) = self._coord(m.n1), self._coord(m.n2)
+            h = math.hypot(x2 - x1, y2 - y1)
+            return None if h < 1e-9 else ((x2 - x1) / h, (y2 - y1) / h)
+
+        for m in beams:
+            lb = self._member_lb(m)
+            ax = plan_axis(m)
+            if lb is None or lb <= 0.0 or ax is None:
+                continue
+            p1, p2 = self._coord(m.n1), self._coord(m.n2)
+            L = math.dist(p1, p2)
+            if L > 1.02 * lb + 1.0:
+                continue                                    # longer than Lb: its interior brace points are _brace_plan's
+            for n in (m.n1, m.n2):
+                if n in self.framing_braced or self._diaphragm_of(n) is not None:
+                    continue                                # a diaphragm slave is held in plan already
+                framing = []
+                for o in at.get(n, []):
+                    if o is m:
+                        continue
+                    oa = plan_axis(o)
+                    if oa is not None and abs(oa[0] * ax[1] - oa[1] * ax[0]) > 0.5:   # crosses at > 30 degrees
+                        framing.append(o.tag)
+                if not framing:
+                    continue
+                mst = self._deck_master(n)
+                if mst is None:
+                    continue
+                self._nbrace += 1
+                dn = BRACE_NODE0 + self._nbrace
+                ops.node(dn, *ops.nodeCoord(n))
+                ops.fix(dn, 0, 0, 1, 1, 1, 0)
+                axv = (ax[0], ax[1], 0.0); yp = (-ax[1], ax[0], 0.0)
+                ops.element("zeroLength", BRACE_ELE0 + self._nbrace, dn, n, "-mat", 1, 2, "-dir", 2, 4, "-orient", *axv, *yp)
+                self._brace_slaves.setdefault(mst, []).append(dn)
+                self.framing_braced[n] = (m.tag, tuple(framing), lb)
 
     # ------------------------------------------------------------------ NL-R2-33 column bracing (girts / flange braces)
     def _col_brace_plan(self, m, L):
