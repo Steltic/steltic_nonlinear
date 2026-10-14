@@ -198,6 +198,26 @@ defects; the rest of the verdicts stand.
 
 Tests: `tests/test_gold_run_fixes.py` (10).
 
+## Gold-run reruns (14 Oct 2026): Ex28 DDM, two more fixes
+
+The PC reruns confirmed the three gold-run fixes (Ex21 NLRHA ACCEPTABLE 0/11; Ex32 DDM PASS 1.67; the direction change
+left Ex8 / Ex12 / Ex13 / Ex20 / Ex33 within 0.01). Ex28 (STMF) now ran, and gave DDM FAIL 0.28. That was two defects:
+
+- **Off-grid beams were never braced by the deck.** HR slaves only the 12 grid nodes of each Ex28 floor to the rigid
+  diaphragm, so beams framing into truss panel points had no diaphragm at their ends and the GMNIA left them
+  unbraced; the 60 ft W33X118 fillers (HR: deck-braced, Lb 0, D/C 0.62) buckled laterally-torsionally at lambda 0.33.
+  A beam end that is not a diaphragm slave now takes the diaphragm at its elevation (exactly one, node within its plan
+  extent). The Ex28 records give Lb only in the flexure checks (`checks[].Lb_in`); that value is now read when
+  `inputs.Lb_in` is missing (the largest, as before). Ex28 1.2D+1.6L+0.5Lr: lambda_u 0.35 -> >= 1.07 (still rising when
+  the 40 min sweep budget ran out on this machine); 216 fillers braced.
+- **Sweeps that left the equilibrium path counted as results.** Seven Ex28 sweeps reported lambda_u of 170 to 1e6 with
+  an end tangent of 1e3 to 1e8 x the elastic stiffness, and four of them counted as PASS (Ex18 had one too: lambda_u
+  7970, PASS). `solver.classify` now calls a sweep with lambda_u > 20 or an end tangent > 10 x elastic NUMERICAL, so the
+  combination is NOT EVALUATED, never a PASS or a FAIL.
+
+Tests: `tests/test_ddm_offgrid_bracing.py` (3); `test_ddm_nl_r2_27.py` now also clears the level lookup when it
+simulates "no diaphragm". Suite: 485 pass.
+
 ## Independent verification
 
 #### NL-01 — fibre NSP beam/column monitors: CORRECTED here (aggregation); the monitor itself is correct

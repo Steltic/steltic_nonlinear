@@ -204,6 +204,10 @@ def _bridge(dlam, cnode=None, cdof=None, slope=None, sgn=1):
     return None, None
 
 
+LAMBDA_U_SANE = 20.0      # gold-run rerun (Ex28): above this the sweep is a solver artefact (NOT EVALUATED)
+TANGENT_SANE = 10.0       # end tangent / elastic stiffness above this: the same
+
+
 def _tangent_ratio(hist, slope, n=3):
     """Secant stiffness of the last n converged steps relative to the elastic (probe) stiffness, or None."""
     if len(hist) < n + 1 or not slope:
@@ -489,6 +493,18 @@ def classify(res, model):
         # NL-R2-02: lambda never rose above the elastic probe -> a solver/control stop, not a structural limit point
         mech = ("NUMERICAL: the load factor never rose above the elastic probe (lambda = %.3f) -- solver/control stop, "
                 "not a structural peak; the combination is NOT EVALUATED" % res["lambda_u"])
+        return dict(mechanism=mech, cls="numerical", hinge_members=hinge_members, yielded_members=yielded_members,
+                    hinges_by_role=by_kind, buckled_braces=buckled, ductile_post_peak=False)
+    # Gold-run rerun (Ex28): sweeps that left the equilibrium path reported lambda_u of 170 to 1e6 with an end tangent of
+    # 1e5 to 1e8 % of the elastic one, and three of them counted as PASS. A load factor or an end tangent no real
+    # frame reaches is a solver artefact: the combination is NOT EVALUATED, never a PASS or a FAIL.
+    term = res.get("termination") or {}
+    kt = term.get("tangent")
+    if res["lambda_u"] > LAMBDA_U_SANE or (kt is not None and kt > TANGENT_SANE):
+        why = ("lambda_u = %.4g > %g" % (res["lambda_u"], LAMBDA_U_SANE)) if res["lambda_u"] > LAMBDA_U_SANE else (
+            "end tangent %.4g x the elastic stiffness > %g" % (kt, TANGENT_SANE))
+        mech = ("NUMERICAL: the sweep left the equilibrium path (%s) -- a solver artefact, not a structural peak; "
+                "the combination is NOT EVALUATED" % why)
         return dict(mechanism=mech, cls="numerical", hinge_members=hinge_members, yielded_members=yielded_members,
                     hinges_by_role=by_kind, buckled_braces=buckled, ductile_post_peak=False)
     nbeam_h = by_kind.get("floor", 0) + by_kind.get("roof", 0)

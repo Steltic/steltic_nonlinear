@@ -199,6 +199,7 @@ def test_brace_plan_rules():
     assert g._brace_plan(beam, 300.0, 12.0) is None
     g.beam_bracing = True; g._lb_map = None; nm.calc_package = _cp(0.0)
     g._slave_master = {}                                           # no diaphragm -> no deck
+    g._deck_levels = []                                            # (none at the beam's elevation either: gold-run Ex28 rule)
     assert g._brace_plan(beam, 300.0, 12.0) is None
 
 
