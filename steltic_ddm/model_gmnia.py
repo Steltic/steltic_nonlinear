@@ -179,6 +179,7 @@ class GMNIAModel:
         self.nonbuckling, self.special_log, self._spring_mat = set(), [], SPRING_MAT0
         self.braced, self._nbrace, self._brace_slaves = {}, 0, {}
         self._lb_group_used = {}
+        self._deck_levels = None
         self.col_braced, self._ncolbr, self._sb_transf = {}, 0, False
         self._col_brace_skips, self._node_mem = [], None
         self._prepare_special()
@@ -366,6 +367,16 @@ class GMNIAModel:
             for m in (self.nm.calc_package or {}).get("members", []) or []:
                 inp = m.get("inputs") or {}
                 lb, sec, role = inp.get("Lb_in"), inp.get("section"), inp.get("role")
+                if lb is None:
+                    # Ex28 (gold-run rerun): a record may give Lb only in its flexure checks (checks[].Lb_in, e.g. 0 for a
+                    # deck-braced filler, 192 in for a girder braced by the fillers); the largest is used (conservative)
+                    vals = []
+                    for c in m.get("checks") or []:
+                        try:
+                            vals.append(float(c.get("Lb_in")))
+                        except (TypeError, ValueError, AttributeError):
+                            pass
+                    lb = max(vals) if vals else None
                 try:
                     lb = float(lb)
                 except (TypeError, ValueError):
@@ -430,6 +441,37 @@ class GMNIAModel:
             self._slave_master = {t: mst for mst, sl in self.nm.diaphragms.items() for t in sl}
         return self._slave_master.get(node)
 
+    def _deck_master(self, node):
+        """The rigid diaphragm (master tag) whose deck braces a beam end at `node`: the node's own diaphragm, or --
+        Ex28 (gold-run rerun) -- for an off-grid node that HR did not slave (the STMF export slaves only the 12 grid
+        nodes of each floor, so no filler or girder framing into a truss panel point was braced and the 60 ft W33X118
+        fillers buckled laterally-torsionally at lambda 0.33) the diaphragm at the node's elevation, when exactly one
+        diaphragm is there and the node lies within its plan extent. None otherwise."""
+        mst = self._diaphragm_of(node)
+        if mst is not None:
+            return mst
+        if getattr(self, "_deck_levels", None) is None:
+            lv = []
+            for m_, sl in self.nm.diaphragms.items():
+                pts = [self.nm.nodes[t] for t in sl if t in self.nm.nodes]
+                if m_ in self.nm.nodes:
+                    pts.append(self.nm.nodes[m_])
+                if not pts:
+                    continue
+                zs = [p[2] for p in pts]
+                if max(zs) - min(zs) > 1.0:
+                    continue                                # not a single floor level
+                lv.append((m_, sum(zs) / len(zs), min(p[0] for p in pts), max(p[0] for p in pts),
+                           min(p[1] for p in pts), max(p[1] for p in pts)))
+            self._deck_levels = lv
+        c = self.nm.nodes.get(node)
+        if c is None:
+            return None
+        tol = 1.0
+        hits = [m_ for (m_, z, x0, x1, y0, y1) in self._deck_levels
+                if abs(c[2] - z) <= tol and x0 - tol <= c[0] <= x1 + tol and y0 - tol <= c[1] <= y1 + tol]
+        return hits[0] if len(hits) == 1 else None
+
     def _brace_plan(self, m, L, off):
         """NL-R2-27: how the deck braces beam m -- None (unbraced: no diaphragm at both ends, no HR Lb, or Lb ~ L),
         ("continuous", (), Lb) or ("discrete", positions_in, Lb) with brace points every Lb from n1 (Lb from the HR
@@ -438,8 +480,8 @@ class GMNIAModel:
         not invent lateral-torsional buckling over a length the design (and the building) braces."""
         if not self.beam_bracing or self._is_secondary(m) or m.tag in self.links:
             return None
-        mst = self._diaphragm_of(m.n1)
-        if mst is None or self._diaphragm_of(m.n2) != mst:
+        mst = self._deck_master(m.n1)
+        if mst is None or self._deck_master(m.n2) != mst:
             return None
         lb = self._member_lb(m)
         if lb is None:
@@ -469,7 +511,7 @@ class GMNIAModel:
         rigid diaphragm (fixed out of plane), joined to the beam node by a zeroLength that is stiff ONLY in the
         horizontal direction normal to the beam (local 2) and in twist about the beam axis (local 4); the vertical,
         axial and bending DOFs stay free, so gravity and frame action are unchanged."""
-        mst = self._diaphragm_of(m.n1)
+        mst = self._deck_master(m.n1)
         if mst is None or not nodes:
             return
         (x1, y1, _z1), (x2, y2, _z2) = self._coord(m.n1), self._coord(m.n2)
