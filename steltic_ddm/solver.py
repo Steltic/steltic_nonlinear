@@ -206,6 +206,8 @@ def _bridge(dlam, cnode=None, cdof=None, slope=None, sgn=1):
 
 LAMBDA_U_SANE = 20.0      # gold-run rerun (Ex28): above this the sweep is a solver artefact (NOT EVALUATED)
 TANGENT_SANE = 10.0       # end tangent / elastic stiffness above this: the same
+RUNAWAY_DLAM = 10.0       # a converged step that raises lambda by more than this x dlam AND by more than TANGENT_SANE x the
+                          # elastic stiffness x the control-DOF move is rejected (gold-run rerun 3, Ex28)
 
 
 def _tangent_ratio(hist, slope, n=3):
@@ -397,6 +399,18 @@ def sweep(model, combo, pres, dlam=0.02, max_steps=600, post_peak=0.85, disp_cap
             du = min(abs(du) * 1.5, abs(du0)) * (1 if du0 > 0 else -1)
             ops.integrator("DisplacementControl", cnode, cdof, du)
         lam = ops.getLoadFactor(1); d = ops.nodeDisp(cnode, cdof)
+        # Gold-run rerun 3 (Ex28, 1.2D+1.0WX++0.5L+0.5Lr): after five halvings a displacement-controlled step "converged"
+        # with lambda 2.197 -> 2264.8 for a control-DOF move of 0.001 in -- a load-factor jump no stiffness of the frame can
+        # give (> TANGENT_SANE x elastic). Such a state is never committed to the curve: the sweep stops at the last
+        # physical state as a NUMERICAL end, so lambda_u there is a lower bound (a pass stands, a shortfall is NOT EVALUATED).
+        lam_prev, d_prev = hist[-1]
+        if lam - lam_prev > max(RUNAWAY_DLAM * dlam, TANGENT_SANE * abs(d - d_prev) / max(abs(slope), 1e-12)):
+            log.append("step %d: non-physical step rejected (lambda %.4g -> %.4g for a control-DOF move of %.3g) -- stopping "
+                       "at lambda %.3f (numerical, lambda_u is a lower bound)" % (step, lam_prev, lam, d - d_prev, lam_prev))
+            termination = dict(kind="numerical", lam=lam_prev, tangent=_tangent_ratio(hist, slope),
+                                detail="non-physical step rejected: lambda %.4g -> %.4g for a control-DOF move of %.3g"
+                                       % (lam_prev, lam, d - d_prev))
+            break
         hist.append((lam, d))
         hi = len(hist) - 1                        # index of this converged step in hist (failed steps are not counted)
         disp_hist[hi] = {t: ops.nodeDisp(t) for t in _track_nodes(model)}
