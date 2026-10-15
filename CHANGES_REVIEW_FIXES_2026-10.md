@@ -232,6 +232,18 @@ W44X262 girders, W10X100 truss chords); transfer gate unchanged (T1 2.688 / 2.70
 
 Tests: `tests/test_ddm_offgrid_bracing.py` (4). Suite: 486 pass.
 
+## Gold-run reruns, third round (15 Oct 2026): Ex28 with #11
+
+With the framing points braced (#11) Ex28's DDM passes every evaluated combination: governing 1.2D+1.6L+0.5Lr
+phi_s lambda_u 1.30 (was 0.953), 14/14 strength checks PASS. One wind case (1.2D+1.0WX++0.5L+0.5Lr +X) was NOT
+EVALUATED (verdict INCOMPLETE): after five halvings a displacement-controlled step "converged" at lambda 2265 from
+2.197 for a control-DOF move of 0.001 in, the end tangent tripped the #10 guard and the whole sweep was discarded.
+`solver.sweep` now rejects such a step before it is committed (lambda rises by more than 10 x dlam AND more than
+10 x the elastic stiffness x the control-DOF move): the sweep stops at the last physical state as a NUMERICAL end, so
+lambda_u there is a lower bound (here 2.197 -> phi_s lambda_u 1.87, a pass that stands). Its mirror case (-X) gave 2.24.
+
+Tests: `tests/test_ddm_offgrid_bracing.py` (5). Suite: 487 pass.
+
 ## Independent verification
 
 #### NL-01 — fibre NSP beam/column monitors: CORRECTED here (aggregation); the monitor itself is correct

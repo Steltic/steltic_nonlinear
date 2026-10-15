@@ -117,3 +117,40 @@ def test_girder_split_at_filler_framing_points_is_braced_there():
     ops.uniaxialMaterial("Elastic", 1, 1e6); ops.uniaxialMaterial("Elastic", 2, 1e9)
     g._brace_framing_points()
     assert not g.framing_braced
+
+
+# ------------------------------------------------------------- a converged but non-physical step is never committed
+def test_runaway_step_is_rejected_and_ends_the_sweep_as_numerical(monkeypatch):
+    """Ex28 rerun 3: after five halvings a displacement-controlled step 'converged' at lambda 2265 (from 2.197) for a
+    control-DOF move of 0.001 in. Such a step is rejected: the sweep ends at the last physical state, NUMERICAL."""
+    import sys as _s
+    _s.path.insert(0, HERE)
+    import openseespy.opensees as real
+    from test_ddm_r6 import _frame
+    from steltic_ddm.model_gmnia import GMNIAModel
+    from steltic_ddm import solver
+    nm, cfg = _frame()
+    g = GMNIAModel(nm, cfg, nsub=(2, 2, 2))
+    combo = ("0.9D+1.0WY-", 0.9, 0.0, 0.0, {1: (0.0, -20.0, 0.0)}, False)
+    pres = {1: {(1, 1), (1, 2), (2, 1), (2, 2)}}
+
+    class Proxy:
+        def __init__(self):
+            self.n = 0
+
+        def __getattr__(self, k):
+            return getattr(real, k)
+
+        def analyze(self, *a):
+            self.n += 1
+            return real.analyze(*a)
+
+        def getLoadFactor(self, p):
+            v = real.getLoadFactor(p)
+            return v + 2262.0 if self.n >= 8 else v           # the 8th analysis step onwards "converges" at lambda ~ 2265
+
+    monkeypatch.setattr(solver, "ops", Proxy())
+    r = solver.sweep(g, combo, pres, dlam=0.05, max_steps=20, verbose=False)
+    assert r["termination"]["kind"] == "numerical"
+    assert "non-physical step rejected" in r["termination"]["detail"]
+    assert r["lambda_u"] < 20 and all(l < 20 for l, _ in r["hist"])
