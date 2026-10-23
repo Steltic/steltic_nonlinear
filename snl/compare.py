@@ -449,7 +449,13 @@ def build(job, out_name="four_analyses.html", title=None, not_evaluated=None):
         if pcr and pcr > 0.2: disc.append(f"Pushover / NLRHA hinge backbones: post-capping descent spread over {pcr:.2f}a (tail-protocol rung 3, default 0.15a).")
         for k, v in tails.items():
             if v and v not in ("captured", "component_limit"): disc.append(f"Push {k}: descending branch {v} — δ<sub>u</sub> and μ<sub>T</sub> are lower bounds.")
-        if not po.get("params_verified"): disc.append("Pushover / NLRHA component parameters are UNVERIFIED placeholders (red banner in both reports).")
+        if not po.get("params_verified"):
+            disc.append("Pushover / NLRHA component parameters are UNVERIFIED placeholders (red banner in both reports).")
+            from pushover import params_schema as _PSn
+            _nc = _PSn.not_collected_note(job)
+            if _nc:
+                disc.append(html.escape(_nc))
+                summary["spec_values"] = {"collected": False, "opted_out": True, "statement": _nc}
     if nl:
         d_ = nl["ch16"].get("damping", {})
         disc.append(f"Chapter 16 integration: {d_.get('integrator', 'newmark').upper()}, dt {d_.get('dt_s', 0.02)} s, ξ {100*d_.get('xi_used', 0.025):.1f}%; cyclic deterioration Λ = 0 (16.3.1 open item).")

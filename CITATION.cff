@@ -3,8 +3,8 @@ message: "If you use this software, please cite it as below."
 title: "Steltic Non Linear: pushover, NLRHA and DDM checks of Steltic steel designs"
 authors:
   - name: "Steltic"
-version: "0.3.1"
-date-released: "2026-10-12"
+version: "0.3.2"
+date-released: "2026-10-23"
 license: MIT
 repository-code: "https://github.com/Steltic/steltic_nonlinear"
 url: "https://stelticai.com"

@@ -112,10 +112,27 @@ def cmd_run(a):
     # that goes with it). Collect first is the point: the analyses then run on cited values and the
     # reports need no re-issue.
     from . import collect as _C
+    from pushover import params_schema as _PS
     collected = os.path.join(job, _C.OUT_NAME)
     params_path = os.path.abspath(a.params) if a.params else (collected if os.path.exists(collected) else None)
+    # --no-collect: the user chose to run WITHOUT collecting the specification values (no standards corpus on
+    # this PC, or they prefer not to add one). The run is the same; the reports say why every check that uses
+    # the component parameters is UNVERIFIED (the marker file below is what their banners read).
+    opted_out = bool(getattr(a, "no_collect", False))
+    marker = os.path.join(job, _PS.NOT_COLLECTED_NAME)
+    if params_path or not opted_out:
+        if os.path.exists(marker):
+            os.remove(marker)                                     # a run on cited values: the note no longer applies
     if params_path:
         print(">> component parameters: %s%s" % (params_path, " (collected from the corpus)" if params_path == collected else ""))
+        if opted_out and params_path == collected:
+            print("   (--no-collect has no effect: the specification values were already collected for this project and are used)")
+    elif opted_out:
+        print(">> component parameters: repository placeholder -- specification values NOT collected (%s): every specification "
+              "check that uses them comes back marked UNVERIFIED in the reports" % _PS.NOT_COLLECTED_WHY)
+        json.dump({"opted_out": True, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "statement": _PS.NOT_COLLECTED_STATEMENT},
+                  open(marker, "w", encoding="utf-8"), indent=1)
+        status["spec_values"] = {"collected": False, "opted_out": True, "statement": _PS.NOT_COLLECTED_STATEMENT}
     else:
         print(">> component parameters: repository placeholder -- run `snl collect` first to read them from the standards")
     params = ["--params", params_path] if params_path else []
@@ -236,6 +253,10 @@ def main(argv=None):
     r = sub.add_parser("run"); r.add_argument("package"); r.add_argument("--out", help="folder to unpack a .zip into (default: next to the zip)")
     r.add_argument("--steltic-engine", help="path to steltic/steel_engine (or set STELTIC_ENGINE_DIR); required by the DDM step")
     r.add_argument("--params", help="job copy of hinge_params.json filled from AISC 342 / ASCE 41 (default: the repository placeholder -> UNVERIFIED banner)")
+    r.add_argument("--no-collect", action="store_true",
+                   help="run without collected specification values on purpose (no standards corpus, or you prefer not to add one): "
+                        "the repository placeholders are used and every report says the specification checks are UNVERIFIED "
+                        "because the values were not collected. No effect when `snl collect` has already written them.")
     r.add_argument("--only", nargs="*", choices=STEPS); r.add_argument("--skip", nargs="*", choices=STEPS)
     r.add_argument("--parallel", type=int, default=2); r.add_argument("--dt", type=float, default=0.01); r.add_argument("--integrator", default="hht", choices=["hht", "newmark"])
     r.add_argument("--n-records", type=int, default=11); r.add_argument("--site-class", default="D"); r.add_argument("--risk-category", choices=["I", "II", "III", "IV"])

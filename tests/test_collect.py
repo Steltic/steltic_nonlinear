@@ -506,3 +506,62 @@ def test_a_model_that_deliberates_instead_of_answering_is_stopped(tmp_path):
     finally:
         _done(R, L, old)
 
+
+# ---------------------------------------------------------------- running without Collect, on purpose
+def _run_args(job, **kw):
+    import types
+    d = dict(package=job, out=None, steltic_engine=None, only=["pushover"], skip=[], params=None,
+             site_class="D", tail=None, post_cap_ratio=None, parallel=1, dt=0.01, integrator="hht",
+             n_records=11, target=None, records_set=None, pulse_fraction=None, sf_bounds=None,
+             plasticity=None, member_nseg=None, no_block=True, no_criteria=True, risk_category=None,
+             project=None, engineer=None, reviewer=None)
+    d.update(kw)
+    return types.SimpleNamespace(**d)
+
+
+def test_no_collect_runs_on_the_placeholders_and_every_report_says_why(tmp_path, monkeypatch, capsys):
+    """The hub's tick box "Do not collect specification values now": no corpus on this PC (or the user
+    prefers not to add one). The run goes ahead on the placeholders and the banners say the values were
+    not collected -- the reports stay UNVERIFIED, but not unexplained."""
+    from snl import cli
+    from pushover import params_schema as PS
+    job = _job(tmp_path)
+    seen = {}
+    monkeypatch.setattr(cli, "_run", lambda cmd, log, env=None, cwd=None: (seen.setdefault("cmds", []).append(cmd), dict(returncode=0, seconds=0, log=log))[1])
+    monkeypatch.setattr(cli, "_unpack", lambda p, out: job)
+    try:
+        cli.cmd_run(_run_args(job, no_collect=True))
+    except Exception:
+        pass
+    out = capsys.readouterr().out
+    assert "specification values NOT collected" in out and "Do not collect specification values now" in out
+    assert "--params" not in (seen.get("cmds") or [[]])[0], "the placeholders: no params file is passed"
+    assert "were not collected" in PS.not_collected_note(job)
+    # the pushover banner carries the sentence
+    from pushover import package_reader as PR
+    pkg = PR.load(job)
+    assert PS.not_collected_note(getattr(pkg, "root", None)), "the reports find the marker through the package root"
+    # collected later: the next run is on cited values and the marker goes
+    open(os.path.join(job, collect.OUT_NAME), "w").write(json.dumps(GOOD))
+    try:
+        cli.cmd_run(_run_args(job, no_collect=True))
+    except Exception:
+        pass
+    out = capsys.readouterr().out
+    assert "(collected from the corpus)" in out and "--no-collect has no effect" in out
+    assert PS.not_collected_note(job) == "" and not os.path.exists(os.path.join(job, PS.NOT_COLLECTED_NAME))
+
+
+def test_without_the_tick_box_a_run_on_placeholders_carries_no_opt_out_note(tmp_path, monkeypatch, capsys):
+    from snl import cli
+    from pushover import params_schema as PS
+    job = _job(tmp_path)
+    open(os.path.join(job, PS.NOT_COLLECTED_NAME), "w").write(json.dumps({"opted_out": True}))      # left by an earlier run
+    monkeypatch.setattr(cli, "_run", lambda cmd, log, env=None, cwd=None: dict(returncode=0, seconds=0, log=log))
+    monkeypatch.setattr(cli, "_unpack", lambda p, out: job)
+    try:
+        cli.cmd_run(_run_args(job))
+    except Exception:
+        pass
+    assert "run `snl collect` first" in capsys.readouterr().out
+    assert PS.not_collected_note(job) == ""
