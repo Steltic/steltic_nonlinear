@@ -208,6 +208,7 @@ class TableRAG(BaseHTTPRequestHandler):
     """The Query file manager answering exact-table lookups with the cells exactly as its converter left them."""
     queries = []
     docs = ["ASCE7", "ASCE_41_23", "AISC_342_22", "AISC_341_22"]
+    texts = {}                         # per-test passage overrides {table id: text}
 
     def log_message(self, *a):
         pass
@@ -223,7 +224,7 @@ class TableRAG(BaseHTTPRequestHandler):
         hits = []
         for tid, doc, sec, page in (("C5.5", "AISC_342_22", "C5.4b", "110"), ("C3.6", "AISC_342_22", "C3.4a", "78"), ("A3.2", "AISC_341_22", "A3.2", "60")):
             if (body.get("type") == "exact_table" and q == tid) or (body.get("clause") == tid):
-                hits.append({"text": FX[tid], "doc": doc, "section_id": sec, "title": "Table " + tid, "printed_label": page, "score": 20, "authoritative": True})
+                hits.append({"text": TableRAG.texts.get(tid, FX[tid]), "doc": doc, "section_id": sec, "title": "Table " + tid, "printed_label": page, "score": 20, "authoritative": True})
         out = json.dumps({"results": hits, "collection": body.get("collection", ""), "count": len(hits), "matched": "exact_table" if hits else ""}).encode("utf-8")
         self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
 
@@ -242,6 +243,14 @@ class ScriptedLLM(BaseHTTPRequestHandler):
         ans = ScriptedLLM.script.pop(0) if ScriptedLLM.script else {}
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
         w = self.wfile
+        if isinstance(ans, dict) and "__reason__" in ans:      # a model that deliberates before (if ever) answering
+            n, ans = ans["__reason__"], ans.get("__content__", {})
+            chunk = "Let me parse print order with symbols: a P P L r h t b t G ye ... Known from AISC 41-17? "
+            try:
+                for _ in range(n // len(chunk) + 1):
+                    _sse(w, {"choices": [{"delta": {"reasoning": chunk}}]})
+            except (BrokenPipeError, ConnectionResetError):
+                return                                          # the client stopped listening: that is the point
         _sse(w, {"choices": [{"delta": {"reasoning": "copying the cells"}}]})
         _sse(w, {"choices": [{"delta": {"content": json.dumps(ans)}}]})
         _sse(w, {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 500, "completion_tokens": 80}})
@@ -265,8 +274,17 @@ GOOD_COLUMN = {"rows.highly_ductile." + k: v for k, v in {
                "IO_frac_of_a": _q(0.5, "0.5 a"), "LS_frac_of_b": _q(0.75, "0.75 b"), "CP_frac_of_b": _q(1.0, "b")}.items()}
 
 
-def _live(tmp_path, script):
+_DECODERS = dict(collect.DECODERS)
+
+
+def _live(tmp_path, script, decode=True, texts=None):
+    """decode=False: the program does not read Table C3.6 itself, so the model transcribes every group
+    (the path a corpus the program cannot read takes)."""
     job = _job(tmp_path)
+    collect.DECODERS.clear()
+    if decode:
+        collect.DECODERS.update(_DECODERS)
+    TableRAG.texts = dict(texts or {})
     TableRAG.queries.clear(); ScriptedLLM.calls.clear(); ScriptedLLM.script = list(script)
     R = _Server(TableRAG); L = _Server(ScriptedLLM)
     old = dict(os.environ)
@@ -276,12 +294,14 @@ def _live(tmp_path, script):
 
 def _done(R, L, old):
     R.close(); L.close(); os.environ.clear(); os.environ.update(old); rag._status_cache = None
+    collect.DECODERS.clear(); collect.DECODERS.update(_DECODERS); TableRAG.texts = {}
 
 
 def test_the_model_only_transcribes_and_every_value_is_backed_by_a_cell(tmp_path):
     """The real converted cells of Table C5.5 (RBS row + footnote [e]), Table C3.6 and Table A3.2, and a
-    model that copies them: a verified file, no searching by the model, reasoning low."""
-    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, GOOD_COLUMN])
+    model that copies them: a verified file, no searching by the model, reasoning low. (The program's own
+    reading of Table C3.6 is switched off here: this is the path a corpus it cannot read takes.)"""
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, GOOD_COLUMN], decode=False)
     try:
         buf = io.StringIO()
         r = collect.run(job, emit=collect.Emitter(buf))
@@ -320,11 +340,11 @@ def test_a_remembered_number_is_rejected_and_the_retry_names_it(tmp_path):
     placeholder) and hands it in against the row. No cell holds it, so it is rejected, and the retry
     tells the model exactly which field and why."""
     bad_beam = dict(GOOD_BEAM, a_max=_q(0.025, RBS_ROW))                     # quoted the real row, typed a memory
-    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, bad_beam, GOOD_BEAM, GOOD_COLUMN])
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, bad_beam, GOOD_BEAM])
     try:
         r = collect.run(job, emit=collect.Emitter(io.StringIO()))
         assert r["ok"] and r["verified"]
-        assert len(ScriptedLLM.calls) == 4, "material, beam (rejected), beam again, column"
+        assert len(ScriptedLLM.calls) == 3, "material, beam (rejected), beam again -- the column table is read by the program"
         retry = ScriptedLLM.calls[2]["messages"][-1]["content"]
         assert "NOT ACCEPTED" in retry and "a_max: the number 0025 is not in the quote" in retry
         d = json.load(open(r["path"], encoding="utf-8"))
@@ -335,7 +355,7 @@ def test_a_remembered_number_is_rejected_and_the_retry_names_it(tmp_path):
 
 def test_a_quote_that_is_not_in_the_passage_is_rejected(tmp_path):
     invented = dict(GOOD_COLUMN, **{"rows.highly_ductile.a_expr": _q("0.8*(h/tw)**-0.6*(L/ry)**-0.8*(1-PG/Pye)**2.2", "a = 0.8 (h/tw)^-0.6 (L/ry)^-0.8 (1-PG/Pye)^2.2")})
-    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, invented, invented, invented])
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, invented, invented, invented], decode=False)
     try:
         r = collect.run(job, emit=collect.Emitter(io.StringIO()))
         assert not r["ok"] and r["missing"] == ["column_flexure"]
@@ -353,11 +373,11 @@ def test_a_row_the_model_reports_absent_is_asked_for_once_more_and_then_let_go(t
     time spending 15,000 characters of reasoning to say it again. Absent is asked once more (the row of
     a continued table sits far down the passage), then believed."""
     absent = {f: {"value": None, "quote": None, "why": "the RBS row is not in the passage"} for f in GOOD_BEAM}
-    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, absent, absent, GOOD_COLUMN])
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, absent, absent])
     try:
         r = collect.run(job, emit=collect.Emitter(io.StringIO()))
         assert not r["ok"] and r["missing"] == ["beam_flexure"]
-        assert len(ScriptedLLM.calls) == 4, "material, beam absent, beam once more, column -- not a third beam call"
+        assert len(ScriptedLLM.calls) == 3, "material, beam absent, beam once more -- not a third beam call (the column is read by the program)"
         second = ScriptedLLM.calls[2]["messages"][-1]["content"]
         assert "read to the end before answering that a cell is absent" in second
         ev = json.load(open(os.path.join(job, collect.EVIDENCE_NAME), encoding="utf-8"))
@@ -387,3 +407,161 @@ def test_rows_are_decided_from_the_building_not_by_the_model():
     assert "exception of the RBS" in collect.row_for("beam_flexure", f2)[1]
     f3 = dict(f, moment_frame=False, rbs=False)
     assert collect.row_for("beam_flexure", f3)[0] == "beam_flexure:member"
+
+
+# ---------------------------------------------------------------- Table C3.6: read by the program, line 2 never blocks
+C36_FULL = FX["C3.6"] + "\n" + FX["C3.6_line2_row"]
+LINE2_A = "1.2*(1-PG/Pye)**1.2*(1.4*L/ry+0.1*h/tw+0.9*bf/(2*tf))**-1-0.0023"     # AISC 342-22 p. 46, read off the PDF
+LINE2_B = "2.5*(1-PG/Pye)**1.8*(0.1*L/ry+0.2*h/tw+2.7*bf/(2*tf))**-1-0.0097"
+
+
+def test_the_program_reads_table_c36_and_the_model_is_not_asked(tmp_path):
+    """The live failure: transcribing column_flexure, a reasoning model spent pages on the flattened line 2
+    cell ("Let me parse print order with symbols ...") and the run was cancelled. The program now reads the
+    cells itself -- both lines -- and the model only transcribes material and the beam table."""
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM], texts={"C3.6": C36_FULL})
+    try:
+        buf = io.StringIO()
+        r = collect.run(job, emit=collect.Emitter(buf))
+        assert r["ok"] and r["verified"], r
+        assert len(ScriptedLLM.calls) == 2, "material and beam only: the column table never goes to the model"
+        assert not any("column_flexure" in c["messages"][-1]["content"] for c in ScriptedLLM.calls)
+        d = json.load(open(r["path"], encoding="utf-8"))
+        rows = d["column_flexure"]["rows"]
+        assert rows["highly_ductile"]["a_expr"] == "5.5*(h/tw)**-0.95*(L/ry)**-0.5*(1-PG/Pye)**2.4"
+        assert rows["highly_ductile"]["b_expr"] == "20*(h/tw)**-0.9*(L/ry)**-0.5*(1-PG/Pye)**3.4"
+        assert rows["highly_ductile"]["a_max"] == rows["highly_ductile"]["b_max"] == 0.07
+        assert rows["non_moderately_ductile"]["a_expr"] == LINE2_A and rows["non_moderately_ductile"]["b_expr"] == LINE2_B
+        assert rows["non_moderately_ductile"]["c_expr"] == "0.5-0.5*PG/Pye"
+        assert rows["non_moderately_ductile"]["a_min"] == rows["non_moderately_ductile"]["b_min"] == 0.0
+        q = d["column_flexure"]["quotes"]
+        assert q["rows.non_moderately_ductile.a_expr"].startswith("a P P L r h t b t") and "0 0023" in q["rows.non_moderately_ductile.a_expr"]
+        assert not any(k.startswith("rows.") for k in d["column_flexure"].get("unverified", [])), "every table cell is cited"
+        assert "Read by the program" in d["column_flexure"]["basis"]
+        ev = _events(buf)
+        assert any(e.get("type") == "milestone" and "column_flexure read by the program" in (e.get("text") or "") for e in ev)
+        tr = [json.loads(l) for l in open(os.path.join(job, collect.TRANSCRIPT_NAME), encoding="utf-8")]
+        assert any(t["type"] == "group" and t["group"] == "column_flexure" and t["read_by"] == "program" for t in tr)
+        # the engines interpolate with line 2 for a section that is not highly ductile -- no flat x0.5 fallback
+        from pushover import hinge_models as HM
+        prm = HM.load_params(r["path"])
+        c = HM.column_hinge("W8X10", 144.0, 5.0, prm)
+        assert 0 < c.IO < c.LS < c.CP
+        assert not any("flat x" in f for f in c.flags), c.flags
+    finally:
+        _done(R, L, old)
+
+
+def test_when_the_program_cannot_read_the_table_the_model_is_asked(tmp_path, monkeypatch):
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, GOOD_COLUMN])
+    monkeypatch.setitem(collect.DECODERS, "column_flexure", lambda p: ({}, {"highly_ductile": "a converter this reader does not know"}))
+    try:
+        buf = io.StringIO()
+        r = collect.run(job, emit=collect.Emitter(buf))
+        assert r["ok"] and r["verified"]
+        assert len(ScriptedLLM.calls) == 3
+        assert "could not read the table cells (highly_ductile: a converter this reader does not know) -- asking the model" in buf.getvalue()
+    finally:
+        _done(R, L, old)
+
+
+def test_a_line_2_that_does_not_validate_is_dropped_and_does_not_close_run(tmp_path):
+    """The 22 Oct run: the model's 'reading' of line 2 summed every symbol (evaluates to -98 rad), validation
+    refused it, and with it the whole column group -- Run analyses stayed closed over an OPTIONAL line."""
+    nonsense = dict(GOOD_COLUMN, **{
+        "rows.non_moderately_ductile.a_expr": _q("1.2-1.1*PG/Pye-0.4*(L/ry)-1.0*(h/tw)-9.2*(bf/(2*tf))+0.0023*(L/ry)*(h/tw)*(bf/(2*tf))",
+                                                   FX["C3.6_line2_row"]),
+        "rows.non_moderately_ductile.b_expr": _q("2.5-1.0*PG/Pye-1.0*(L/ry)-2.2*(h/tw)-7.2*(bf/(2*tf))+0.0097*(L/ry)*(h/tw)*(bf/(2*tf))",
+                                                   FX["C3.6_line2_row"]),
+        "rows.non_moderately_ductile.c_expr": _q("0.5-0.5*PG/Pye", FX["C3.6_line2_row"]),
+        "rows.non_moderately_ductile.IO_frac_of_a": _q(0.5, "0.5 a"), "rows.non_moderately_ductile.LS_frac_of_b": _q(0.75, "0.75 b"),
+        "rows.non_moderately_ductile.CP_frac_of_b": _q(1.0, "b")})
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, nonsense], decode=False, texts={"C3.6": C36_FULL})
+    try:
+        buf = io.StringIO()
+        r = collect.run(job, emit=collect.Emitter(buf))
+        assert r["ok"] and r["verified"] and r["missing"] == [], r
+        assert len(ScriptedLLM.calls) == 3, "line 2 is optional: no retry is spent on it"
+        d = json.load(open(r["path"], encoding="utf-8"))
+        g = d["column_flexure"]
+        assert "non_moderately_ductile" not in g["rows"] and "did not pass validation" in g["line2_note"]
+        assert not any(k.startswith("rows.non_moderately_ductile") for k in g["quotes"])
+        assert "line 2 (non-moderately ductile) as read did not pass validation" in buf.getvalue()
+    finally:
+        _done(R, L, old)
+
+
+def test_a_model_that_deliberates_instead_of_answering_is_stopped(tmp_path):
+    job, R, L, old = _live(tmp_path, [GOOD_MATERIAL, GOOD_BEAM, {"__reason__": collect.REASONING_CAP * 3, "__content__": GOOD_COLUMN}],
+                           decode=False)
+    try:
+        buf = io.StringIO()
+        r = collect.run(job, emit=collect.Emitter(buf))
+        assert not r["ok"] and r["missing"] == ["column_flexure"]
+        assert len(ScriptedLLM.calls) == 3, "stopped once -- not asked again to deliberate again"
+        ev = json.load(open(os.path.join(job, collect.EVIDENCE_NAME), encoding="utf-8"))
+        assert any("reasoned for more than" in p for p in ev["problems"]["column_flexure"])
+        tr = [json.loads(l) for l in open(os.path.join(job, collect.TRANSCRIPT_NAME), encoding="utf-8")]
+        assert any(t["type"] == "answer" and t.get("stopped") == "deliberating" and "Let me parse" in t["reasoning"] for t in tr)
+    finally:
+        _done(R, L, old)
+
+
+# ---------------------------------------------------------------- running without Collect, on purpose
+def _run_args(job, **kw):
+    import types
+    d = dict(package=job, out=None, steltic_engine=None, only=["pushover"], skip=[], params=None,
+             site_class="D", tail=None, post_cap_ratio=None, parallel=1, dt=0.01, integrator="hht",
+             n_records=11, target=None, records_set=None, pulse_fraction=None, sf_bounds=None,
+             plasticity=None, member_nseg=None, no_block=True, no_criteria=True, risk_category=None,
+             project=None, engineer=None, reviewer=None)
+    d.update(kw)
+    return types.SimpleNamespace(**d)
+
+
+def test_no_collect_runs_on_the_placeholders_and_every_report_says_why(tmp_path, monkeypatch, capsys):
+    """The hub's tick box "Do not collect specification values now": no corpus on this PC (or the user
+    prefers not to add one). The run goes ahead on the placeholders and the banners say the values were
+    not collected -- the reports stay UNVERIFIED, but not unexplained."""
+    from snl import cli
+    from pushover import params_schema as PS
+    job = _job(tmp_path)
+    seen = {}
+    monkeypatch.setattr(cli, "_run", lambda cmd, log, env=None, cwd=None: (seen.setdefault("cmds", []).append(cmd), dict(returncode=0, seconds=0, log=log))[1])
+    monkeypatch.setattr(cli, "_unpack", lambda p, out: job)
+    try:
+        cli.cmd_run(_run_args(job, no_collect=True))
+    except Exception:
+        pass
+    out = capsys.readouterr().out
+    assert "specification values NOT collected" in out and "Do not collect specification values now" in out
+    assert "--params" not in (seen.get("cmds") or [[]])[0], "the placeholders: no params file is passed"
+    assert "were not collected" in PS.not_collected_note(job)
+    # the pushover banner carries the sentence
+    from pushover import package_reader as PR
+    pkg = PR.load(job)
+    assert PS.not_collected_note(getattr(pkg, "root", None)), "the reports find the marker through the package root"
+    # collected later: the next run is on cited values and the marker goes
+    open(os.path.join(job, collect.OUT_NAME), "w").write(json.dumps(GOOD))
+    try:
+        cli.cmd_run(_run_args(job, no_collect=True))
+    except Exception:
+        pass
+    out = capsys.readouterr().out
+    assert "(collected from the corpus)" in out and "--no-collect has no effect" in out
+    assert PS.not_collected_note(job) == "" and not os.path.exists(os.path.join(job, PS.NOT_COLLECTED_NAME))
+
+
+def test_without_the_tick_box_a_run_on_placeholders_carries_no_opt_out_note(tmp_path, monkeypatch, capsys):
+    from snl import cli
+    from pushover import params_schema as PS
+    job = _job(tmp_path)
+    open(os.path.join(job, PS.NOT_COLLECTED_NAME), "w").write(json.dumps({"opted_out": True}))      # left by an earlier run
+    monkeypatch.setattr(cli, "_run", lambda cmd, log, env=None, cwd=None: dict(returncode=0, seconds=0, log=log))
+    monkeypatch.setattr(cli, "_unpack", lambda p, out: job)
+    try:
+        cli.cmd_run(_run_args(job))
+    except Exception:
+        pass
+    assert "run `snl collect` first" in capsys.readouterr().out
+    assert PS.not_collected_note(job) == ""

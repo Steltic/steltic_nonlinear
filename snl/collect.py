@@ -18,8 +18,16 @@ That is this step, and the division of labour is the whole point:
     number the model remembers, with no cell to quote, is rejected. Up to two retries naming exactly
     what was rejected; then the group is missing. No tools, no searching, no loop.
   * THE SOURCE IS BUILT BY THE PROGRAM from the passages' own document / section / page.
+  * A TABLE THE PROGRAM CAN READ, IT READS (DECODERS, snl/flattened.py). Table C3.6's equation cells come out
+    of the converter as symbols, signs and digits in print order; the program regroups the digits by the
+    cell's known form and accepts the reading only when exactly one grouping fits. The model is asked only
+    when that fails. Line 2 (non-moderately ductile) is optional and taken whole: a line 2 that is partly
+    read or does not validate is dropped with a note, and never closes Run analyses.
+  * A TRANSCRIPTION CALL THAT REASONS PAST REASONING_CAP WITHOUT ANSWERING IS STOPPED.
 The first two live runs are why: given the passages and a free hand, a reasoning model spent its time
-weighing the converted text against its memory (68 identical searches; then pages of deliberation).
+weighing the converted text against its memory (68 identical searches; then pages of deliberation). A later
+run on the Table C3.6 line 2 cell did the same ("Let me parse print order with symbols ...") until it was
+cancelled, and another handed back a line 2 that evaluated to -98 rad and closed Run analyses.
 
 Every group is then validated (shape, ranges, ordering, expressions that evaluate, a source naming a
 table and a page) and `hinge_params_collected.json` is written only when every needed group passed;
@@ -38,7 +46,7 @@ import re
 import sys
 import time
 
-from . import llm, rag
+from . import flattened, llm, rag
 from .review import Emitter, _tool_title
 
 OUT_NAME = "hinge_params_collected.json"
@@ -216,7 +224,9 @@ FIELDS = {
         ("rows.non_moderately_ductile.LS_frac_of_a", "line 2: LS as a fraction of a ('0.75 a' -> 0.75)", "fraction"),
         ("rows.non_moderately_ductile.CP_frac_of_a", "line 2: CP as a fraction of a ('a' -> 1.0)", "fraction"),
     ],
-    # AISC 342-22 Table C3.6, columns in compression: lines 1 and 2 (line 2 optional, as above)
+    # AISC 342-22 Table C3.6, columns in compression: lines 1 and 2 (line 2 optional, as above). The program
+    # reads this table itself when the cells have the converter's usual form (snl/flattened.py, DECODERS);
+    # these descriptions are for the model, which is asked only when that reading fails.
     "column_flexure": [
         ("rows.highly_ductile.a_expr", "line '1. Highly ductile': the `a` cell, as Python in h, tw, L, ry, PG, Pye -- the pattern is C*(h/tw)**p1*(L/ry)**p2*(1-PG/Pye)**p3 with C and the p's read from the flattened digits in print order", "expr"),
         ("rows.highly_ductile.a_max", "line 1: the cap on `a` in the same cell (the '<= 0.07')", "number"),
@@ -226,8 +236,12 @@ FIELDS = {
         ("rows.highly_ductile.IO_frac_of_a", "line 1: IO as a fraction of a", "fraction"),
         ("rows.highly_ductile.LS_frac_of_b", "line 1: LS as a fraction of b", "fraction"),
         ("rows.highly_ductile.CP_frac_of_b", "line 1: CP as a fraction of b", "fraction"),
-        ("rows.non_moderately_ductile.a_expr", "line '2. Non-moderately ductile': the `a` cell as Python in PG, Pye, L, ry, h, tw, bf, tf", "expr"),
-        ("rows.non_moderately_ductile.b_expr", "line 2: the `b` cell, same symbols", "expr"),
+        ("rows.non_moderately_ductile.a_expr", "line '2. Non-moderately ductile': the `a` cell as Python in PG, Pye, L, ry, h, tw, bf, tf -- the pattern is "
+                                               "C*(1-PG/Pye)**e*(k1*L/ry+k2*h/tw+k3*bf/(2*tf))**-1-k0; the flattened digits print C, the 1, k1, k2, k3, the 2 of 2tf, k0, "
+                                               "then the exponents e and 1 (a decimal prints as two digit groups, the dots come last). Not legible? answer null -- this line is optional", "expr"),
+        ("rows.non_moderately_ductile.a_min", "line 2: the floor on `a` (the '>= 0' after its digits)", "number"),
+        ("rows.non_moderately_ductile.b_expr", "line 2: the `b` cell, same symbols and pattern as line 2's `a`", "expr"),
+        ("rows.non_moderately_ductile.b_min", "line 2: the floor on `b` (the '>= 0' after its digits)", "number"),
         ("rows.non_moderately_ductile.c_expr", "line 2: the `c` cell as Python in PG, Pye", "expr"),
         ("rows.non_moderately_ductile.IO_frac_of_a", "line 2: IO as a fraction of a", "fraction"),
         ("rows.non_moderately_ductile.LS_frac_of_b", "line 2: LS as a fraction of b", "fraction"),
@@ -251,8 +265,19 @@ FIELDS = {
 
 # Fields a table may legitimately not yield in the converted corpus (line 2 of Tables C2.2 / C3.6 is
 # damaged there); their absence does not hold the group back -- the engine reports the fallback it uses.
+# Line 2 is taken whole or not at all: a line 2 that is partly read, or read and then failing validation,
+# is dropped with a note instead of closing Run analyses (see _line2_only / _guard_line2).
+LINE2 = "rows.non_moderately_ductile."
 OPTIONAL_FIELDS = {f for v in ("beam_flexure:member", "column_flexure") for f, _w, _k in FIELDS[v]
-                   if f.startswith("rows.non_moderately_ductile.")}
+                   if f.startswith(LINE2)}
+
+# Tables the PROGRAM reads, without a model, when the converted cells have the form it knows (per variant).
+# A table it cannot read (another converter, a damaged cell, digits that read two ways) goes to the model.
+DECODERS = {"column_flexure": flattened.read_c36}
+
+# Transcription is copying. A model that has reasoned this long without answering is deriving, not copying
+# (the live symptom: "Let me parse print order with symbols ... Known from AISC 41-17 ..."): stop the call.
+REASONING_CAP = 16000                 # characters of reasoning in one transcription call
 
 
 def row_for(gid: str, facts: dict) -> tuple[str, str]:
@@ -366,13 +391,74 @@ def check_field(kind: str, value, quote: str, passages_norm: str) -> str:
     return ""
 
 
+class _Deliberating(Exception):
+    """Raised from the stream when a transcription call has reasoned past REASONING_CAP without answering."""
+
+
+def _line2_only(probs: dict, got: dict, em, gid: str) -> dict:
+    """Line 2 is optional and taken whole: when any of its fields has a problem, every line-2 field read in
+    this group is dropped (the engine then flags its fallback for sections that are not highly ductile) and
+    the problems of line 2 stop counting against the group. -> the problems that still count."""
+    bad = {f: w for f, w in probs.items() if f in OPTIONAL_FIELDS}
+    if bad:
+        for f in [f for f in got if f.startswith(LINE2)]:
+            got.pop(f, None)
+            (got.get("_quotes") or {}).pop(f, None)
+        real = {f: w for f, w in bad.items() if not w.startswith("not read")}
+        if real:
+            em.log("   %-15s line 2 (non-moderately ductile) NOT USED: %s -- sections that are not highly ductile get the "
+                   "engine's flagged fallback" % (gid, "; ".join("%s (%s)" % (f[len(LINE2):], w) for f, w in real.items())))
+    return {f: w for f, w in probs.items() if f not in OPTIONAL_FIELDS}
+
+
+def decode(gid: str, facts: dict, passages: list, em, trace) -> tuple[dict, dict] | None:
+    """The group read by the PROGRAM from the flattened cells (DECODERS), every value held to the same
+    quote checks as a model's. -> (fields, problems) like transcribe(), or None: the model is asked instead."""
+    variant, row = row_for(gid, facts)
+    fn = DECODERS.get(variant)
+    if not fn or not passages:
+        return None
+    try:
+        read, why = fn(passages)
+    except Exception as e:                                        # noqa: BLE001 -- a reader bug must not end Collect
+        read, why = {}, {"*": "%s: %s" % (type(e).__name__, e)}
+    passages_norm = _norm("\n".join(p["text"] for p in passages))
+    got: dict = {}
+    probs: dict = {}
+    for f, _w, kind in FIELDS[variant]:
+        a = read.get(f)
+        if a is None:
+            if f not in OPTIONAL_FIELDS:
+                probs[f] = "not read by the program"
+            continue
+        bad = check_field(kind, a.get("value"), a.get("quote"), passages_norm)
+        if bad:
+            probs[f] = bad
+        else:
+            got[f] = a["value"]
+            got.setdefault("_quotes", {})[f] = a["quote"]
+    trace({"type": "decoded", "group": gid, "fields": {k: v for k, v in got.items() if k != "_quotes"},
+           "problems": dict(probs, **{"line:" + k: v for k, v in why.items()})})
+    if any(f not in OPTIONAL_FIELDS for f in probs):
+        em.log("   %-15s the program could not read the table cells (%s) -- asking the model" % (
+            gid, "; ".join("%s: %s" % kv for kv in why.items()) or "; ".join("%s (%s)" % kv for kv in probs.items())))
+        return None
+    lines = sorted({f.split(".")[1] for f in got if f.startswith("rows.")})
+    em.event(type="milestone", text="%s read by the program from the table cells (no model call): %s" % (
+        gid, ", ".join({"highly_ductile": "line 1", "non_moderately_ductile": "line 2"}.get(x, x) for x in lines) or "all fields"))
+    for line, w in why.items():
+        if line == "non_moderately_ductile":
+            em.log("   %-15s line 2 (non-moderately ductile) not read: %s -- the engine flags its fallback" % (gid, w))
+    return got, _line2_only(probs, got, em, gid)
+
+
 def transcribe(gid: str, facts: dict, passages: list, conn: dict, em, trace) -> tuple[dict, dict]:
     """One group. -> (fields {name: value}, problems {name: why}). At most 3 model calls, no tools."""
     variant, row = row_for(gid, facts)
     fields = FIELDS[variant]
     if not passages:
         return {}, {f: "no passage was returned for this table (%s)" % ", ".join("%s %s" % (d, q) for d, h, q, n in PLAN.get(gid, []))
-                    for f, _w, _k in fields}
+                    for f, _w, _k in fields if f not in OPTIONAL_FIELDS}
     passages_norm = _norm("\n".join(p["text"] for p in passages))
     got: dict = {}
     probs: dict = {}
@@ -384,11 +470,27 @@ def transcribe(gid: str, facts: dict, passages: list, conn: dict, em, trace) -> 
         trace({"type": "prompt", "group": gid, "attempt": attempt + 1, "chars": len(msg)})
         messages = [{"role": "system", "content": TRANSCRIBE}, {"role": "user", "content": msg}]
         pieces: list = []
+        reasoned = [0]
 
         def on_piece(kind, text):
             pieces.append((kind, text))
             em.event(type=kind, text=text)
-        out = llm.chat_with_retry(tconn, messages, None, on_piece)
+            if kind == "reasoning":
+                reasoned[0] += len(text)
+                if reasoned[0] > REASONING_CAP and not any(k == "token" and t.strip() for k, t in pieces):
+                    raise _Deliberating()
+        try:
+            out = llm.chat_with_retry(tconn, messages, None, on_piece)
+        except _Deliberating:
+            trace({"type": "answer", "group": gid, "attempt": attempt + 1, "stopped": "deliberating",
+                   "reasoning": "".join(t for k, t in pieces if k == "reasoning")[:20000], "content": ""})
+            why = ("not read -- the model reasoned for more than %d characters without answering and was stopped "
+                   "(transcription is copying the cells, not working them out)" % REASONING_CAP)
+            em.log("   %-15s the model reasoned for more than %d characters without answering -- stopped" % (gid, REASONING_CAP))
+            for f, _w, _k in fields:
+                if f not in got:
+                    probs[f] = why
+            break
         if out.get("usage"):
             em.usage(out["usage"])
         trace({"type": "answer", "group": gid, "attempt": attempt + 1, "reasoning": out.get("reasoning", "")[:20000],
@@ -396,6 +498,8 @@ def transcribe(gid: str, facts: dict, passages: list, conn: dict, em, trace) -> 
         ans = _parse_json(out.get("content") or "")
         if not isinstance(ans, dict):
             retry_note = "your reply was not a JSON object"
+            probs = {f: "not read -- the reply was not a JSON object" for f, _w, _k in fields
+                     if f not in got and f not in OPTIONAL_FIELDS}
             continue
         probs = {}
         rejected = {}                       # the model quoted something and the check refused it
@@ -412,12 +516,12 @@ def transcribe(gid: str, facts: dict, passages: list, conn: dict, em, trace) -> 
                 continue                    # line 2 absent from the corpus: the engine reports its fallback
             if why:
                 probs[f] = why + ((" -- " + str(a.get("why"))) if a.get("why") else "")
-                if why != "not read":
-                    rejected[f] = probs[f]
+                if why != "not read" and f not in OPTIONAL_FIELDS:
+                    rejected[f] = probs[f]  # line 2 is never asked for again: it is optional, and taken whole
             else:
                 got[f] = a["value"]
                 got.setdefault("_quotes", {})[f] = a.get("quote")
-        if not probs:
+        if not any(f not in OPTIONAL_FIELDS for f in probs):
             break
         if not rejected and attempt >= 1:
             break                           # asked twice, both times "not in the passages": it is not
@@ -427,9 +531,9 @@ def transcribe(gid: str, facts: dict, passages: list, conn: dict, em, trace) -> 
         else:
             # every remaining field was reported absent: one more look, with the size of what was
             # handed over, in case the row sits further down the table than the first reading went
-            retry_note = "\n".join("  %s: %s" % (f, w) for f, w in probs.items()) + \
+            retry_note = "\n".join("  %s: %s" % (f, w) for f, w in probs.items() if f not in OPTIONAL_FIELDS) + \
                 "\n(the passages above run %d characters; the rows of a continued table and the FOOTNOTE EQUATIONS block come AFTER its first page -- read to the end before answering that a cell is absent)" % sum(len(p["text"]) for p in passages)
-    return got, probs
+    return got, _line2_only(probs, got, em, gid)
 
 
 def _set(d: dict, dotted: str, v):
@@ -450,6 +554,9 @@ def assemble(gid: str, facts: dict, template: dict, got: dict, passages: list) -
     for f, v in got.items():
         _set(g, f, v)
         _drop_printed(g, f)
+    l2 = (g.get("rows") or {}).get("non_moderately_ductile") if isinstance(g.get("rows"), dict) else None
+    if isinstance(l2, dict) and any(f.startswith(LINE2) for f in got):
+        l2.pop("note", None)                       # the template's "line 2 could not be read" note no longer applies
     pages = sorted({str(p["page"]) for p in passages if p.get("page")}, key=lambda x: (len(x), x))
     docs = sorted({p["source"] for p in passages if p.get("source")})
     g["source"] = "%s, pdf p. %s" % (row.split(",")[0] if gid != "material" else "AISC 341-22 Table A3.2",
@@ -504,6 +611,32 @@ def _drop_printed(g: dict, dotted: str) -> None:
             return
     if isinstance(cur, dict) and m.group(1) in cur:
         cur.pop(m.group(1))
+
+
+def _guard_line2(gid: str, g: dict, em=None) -> list:
+    """A line 2 that was read but does not validate (the live failure: a model's 'reading' of the Table C3.6
+    line 2 cell that evaluates to -98 rad) is dropped -- with its quotes -- instead of closing Run analyses:
+    line 2 is optional, and without it the engine flags its fallback. -> the problems found (empty: kept)."""
+    rows = g.get("rows")
+    if not isinstance(rows, dict) or not isinstance(rows.get("non_moderately_ductile"), dict):
+        return []
+    bad = [p for p in _validate_rows(g, gid) if p.startswith("rows.non_moderately_ductile")]
+    if not bad:
+        return []
+    rows.pop("non_moderately_ductile", None)
+    for f in [f for f in (g.get("quotes") or {}) if f.startswith(LINE2)]:
+        g["quotes"].pop(f)
+    from pushover import params_schema as _PS
+    unv = [f for f in _PS.value_fields(g) if f not in (g.get("quotes") or {})]
+    if unv:
+        g["unverified"] = unv
+    else:
+        g.pop("unverified", None)
+    g["line2_note"] = ("line 2 (non-moderately ductile) as read did not pass validation (%s) and is not used; sections "
+                       "that are not highly ductile get the engine's flagged fallback" % "; ".join(bad))
+    if em is not None:
+        em.log("   %-15s %s" % (gid, g["line2_note"]))
+    return bad
 
 
 def _drop_unread_line2(g: dict, got: dict) -> None:
@@ -831,18 +964,24 @@ def run(job: str, out_name: str = OUT_NAME, emit: Emitter | None = None, conn: d
         em.event(type="status", text="asking %s to transcribe each group from its table (reasoning low, no searching)" % conn["model"])
         for gid in facts["needed"]:
             em.event(type="milestone", text="transcribing %s -- %s" % (gid, row_for(gid, facts)[1]))
+            # the tables the program can read itself never go to the model (snl/flattened.py)
+            dec = decode(gid, facts, fetched.get(gid) or [], em, trace)
             try:
-                got, probs = transcribe(gid, facts, fetched.get(gid) or [], conn, em, trace)
+                got, probs = dec if dec is not None else transcribe(gid, facts, fetched.get(gid) or [], conn, em, trace)
             except llm.LLMError as e:
                 em.event(type="error", text=str(e))
                 tf.close()
                 return {"ok": False, "verified": False, "path": "", "missing": facts["needed"], "searches": searches, "usage": usage}
-            trace({"type": "group", "group": gid, "fields": {k: v for k, v in got.items() if k != "_quotes"}, "problems": probs})
+            trace({"type": "group", "group": gid, "fields": {k: v for k, v in got.items() if k != "_quotes"}, "problems": probs,
+                   "read_by": "program" if dec is not None else "model"})
             if probs:
                 tprobs[gid] = probs
                 em.log("   %-15s NOT READ: %s" % (gid, "; ".join("%s (%s)" % (f, w) for f, w in probs.items())))
             if got:
                 filled[gid] = assemble(gid, facts, template, got, fetched.get(gid) or [])
+                if dec is not None:
+                    filled[gid]["basis"] += " Read by the program from the flattened table cells (snl/flattened.py), not by the model."
+                _guard_line2(gid, filled[gid], em)
     tf.close()
 
     params = _merge(template, filled, facts["needed"])

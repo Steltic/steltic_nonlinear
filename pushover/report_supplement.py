@@ -210,11 +210,14 @@ def write(outdir, pkg, prm, runs, results, gravity_table, hinge_stats, elapsed_s
     H.append(_UD.banner_html(_ud, "the pushover (ASCE 41-23 NSP)"))
     if not prm.get("verified"):
         _which = _PS.unverified_text(prm)
-        H.append('<div class="banner">UNVERIFIED MODELLING PARAMETERS — %s Values not supplied and verified by the user: %s. '
+        import html as _html
+        _nc = _PS.not_collected_note(getattr(pkg, "root", None))
+        H.append('<div class="banner">UNVERIFIED MODELLING PARAMETERS — %s%s Values not supplied and verified by the user: %s. '
                  'Do not rely on any acceptance ratio below until every value the model uses has been checked against the printed '
                  'ASCE 41-23 / AISC 342-22 tables. Source note: %s</div>'
                  % ("the parameter file claims verified=true, but some values the model used are not user-verified."
                     if prm.get("_verified_claimed") else "the parameter file has verified=false.",
+                    (" " + _html.escape(_nc)) if _nc else "",
                     _which or "the whole file (no per-field record)", prm.get("source", "")))
     if pending:
         H.append('<div class="banner">PARTIAL RESULTS — direction%s %s still running; finished: %s. This report is rewritten when '

@@ -185,9 +185,13 @@ def write(outdir, pkg, ch16, prm, gm, results, acc, grav_table, grav_split, moda
     _ud = _UD.info(getattr(pkg, "root", None))
     H.append(_UD.banner_html(_ud, "the NLRHA (ASCE 7-22 Chapter 16)"))
     if not prm.get("verified"):
+        import html as _html
+        from pushover import params_schema as _PSn
+        _nc = _PSn.not_collected_note(getattr(pkg, "root", None))
         H.append('<div class="banner">UNVERIFIED COMPONENT PARAMETERS — the hinge and brace backbones come from steltic_pushover/hinge_params.json (verified=false, ASCE 41 / AISC 342 placeholders). '
-                 '%s The Chapter 16 procedure itself (spectrum, period range, scaling, gravity, damping, acceptance rules) was read against the converted ASCE 7-22 text (pdf pp. 248–251).</div>'
-                 % ("16.3.1 degradation: %s." % ("modelled for every component family" if deg["demonstrated"] else "NOT demonstrated — see section 1") if deg else
+                 '%s%s The Chapter 16 procedure itself (spectrum, period range, scaling, gravity, damping, acceptance rules) was read against the converted ASCE 7-22 text (pdf pp. 248–251).</div>'
+                 % ((_html.escape(_nc) + " ") if _nc else "",
+                    "16.3.1 degradation: %s." % ("modelled for every component family" if deg["demonstrated"] else "NOT demonstrated — see section 1") if deg else
                     "Cyclic deterioration status unknown (results predate the 16.3.1 statement)."))
     H.append('<div class="note"><b>Not for construction.</b> Prototype output produced by an AI-driven tool. Chapter 16 also requires the Chapter 12 linear analysis (16.1.2 — the Steltic package) and independent design review (16.5). Every result must be independently checked and sealed by a licensed professional engineer.</div>')
 

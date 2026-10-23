@@ -57,6 +57,30 @@ _SUPERSEDED_MPCE = re.compile(r"1\.18\s*\*?\s*\(\s*1\s*-\s*\(?\s*PG\s*/\s*Pye")
 # form equals the minimum of the two (the lower, i.e. conservative, reading for kappa < 1 as well).
 MPCE_AISC342 = "min(1 - PG/(2*Pye), 9/8*(1 - PG/Pye))"
 
+# The user ran the analyses WITHOUT collecting the specification values on purpose (`snl run --no-collect`,
+# the hub's "Do not collect specification values now" tick box): the run writes this marker into the job
+# folder, and every UNVERIFIED banner says why the values are placeholders.
+NOT_COLLECTED_NAME = "spec_values_not_collected.json"
+NOT_COLLECTED_WHY = "Run analyses was started with “Do not collect specification values now”"
+NOT_COLLECTED_STATEMENT = ("Specification values were not collected for this run: %s, so the component parameters are the "
+                           "repository placeholders and every specification check that uses them is UNVERIFIED. Collect "
+                           "specification values and run again to have them read from the standards and cited."
+                           % NOT_COLLECTED_WHY)
+
+
+def not_collected_note(root) -> str:
+    """The sentence for the UNVERIFIED banners when this job's run opted out of Collect, else ''."""
+    import json
+    import os
+    if not root:
+        return ""
+    try:
+        with open(os.path.join(str(root), NOT_COLLECTED_NAME), encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    return str(d.get("statement") or NOT_COLLECTED_STATEMENT) if d.get("opted_out") else ""
+
 
 # ---------------------------------------------------------------- provenance (NL-19)
 def value_fields(blk: dict, prefix: str = "") -> list:
