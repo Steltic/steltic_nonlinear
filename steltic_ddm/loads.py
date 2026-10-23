@@ -28,6 +28,38 @@ def steltic_combos(cfg, nm=None):
     return DP.combos(cfg)
 
 
+def wind_gust_factors(cfg):
+    """The MWFRS gust-effect factor per direction that the HR member design puts on the roof suction of the
+    "(roof uplift)" cases: static_model.demand_envelope resolves cfg['_wind_G'] = {d: engine3d.wind_detail(cfg, d)['G']}
+    (the flexible-building Gf of ASCE 7-22 26.11.5, else G) once per run, before any analysis, because wind_detail can
+    run a modal solve. The DDM does the same before its sweeps and hands the value to every worker, so the GMNIA roof
+    suction is the member design's. None when the package has no wind or the factor cannot be resolved (the HR
+    static model then uses cfg['wind']['G'], as before)."""
+    if not cfg.get("wind"):
+        return None
+    if cfg.get("_wind_G"):
+        return dict(cfg["_wind_G"])
+    try:
+        import engine3d as E
+        if not hasattr(E, "wind_detail"):
+            return None
+        return {d: float(E.wind_detail(cfg, d)["G"]) for d in ("X", "Y")}
+    except Exception:                                                 # noqa: BLE001 -- as demand_envelope: keep G
+        return None
+
+
+def stand_in_members(calc):
+    """Member records whose section is an analysis stand-in for something the model does not represent, e.g. the
+    current HR STMF design 'STMF truss X, 6 ft deep (analysis stand-in W44X230)': the elastic analysis model carries a
+    W44 for each truss and the chords / diagonals are designed by hand from its forces. -> [(id, section)]."""
+    out = []
+    for m in (calc or {}).get("members") or []:
+        sec = str(((m or {}).get("inputs") or {}).get("section") or "")
+        if re.search(r"stand[\s-]?in", sec, re.I):
+            out.append((m.get("id"), sec))
+    return out
+
+
 def prune(cases, policy="default", torsion="plus", include_om0=False):
     if policy == "all":
         return list(cases)
@@ -134,12 +166,19 @@ def roof_uplift_pressures(cfg, model, uplift):
     """NL-R2-L3 (disclosure): the MWFRS roof pressure (psf, negative = upward) the HR engine adds to each roof bay of
     a "(roof uplift)" case -- p = qh (G Cp - GCpi), ASCE 7-22 Eq. 27.3-1 with the roof Cp of Fig. 27.3-1 at the bay
     centre's distance from the windward edge -- computed with the HR functions (static_model._wind_qh / _roof_cp) the
-    same way static_model._case_pieces does. -> (qh_psf, {(k, i, j): p_psf})."""
+    same way static_model._case_pieces does. -> (qh_psf, {(k, i, j): p_psf}).
+    uplift = (dirn, sgn[, scale]): the current HR engine adds the ASCE 7-22 Fig. 27.3-8 wind load Cases 2-4, whose
+    roof suction is scaled by 0.75 / 0.563 (the returned qh carries that scale), and takes G from cfg['_wind_G'] (the
+    flexible-building Gf of 26.11.5 per direction, resolved by static_model.demand_envelope) where present."""
     import static_model as SM
     qh, h = SM._wind_qh(cfg)
-    dirn, sgn = uplift
+    dirn, sgn = uplift[0], uplift[1]
+    qh *= float(uplift[2]) if len(uplift) > 2 else 1.0
     w = cfg.get("wind") or {}
-    GCpi, G = float(w.get("GCpi", 0.18)), float(w.get("G", 0.85))
+    GCpi = float(w.get("GCpi", 0.18))
+    G = (cfg.get("_wind_G") or {}).get(dirn)
+    if G is None:
+        G = float(w.get("G", 0.85))
     pts = [c for t, c in model["coord"].items() if t < SM._SUB0]
     q = 0 if dirn == "X" else 1
     lo, hi = min(c[q] for c in pts), max(c[q] for c in pts)

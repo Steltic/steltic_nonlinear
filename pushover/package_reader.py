@@ -255,6 +255,64 @@ def _basis_from_report(report_html: Path, b: DesignBasis):
     grab("W_kip", r"Seismic weight W\s*=\s*" + _NUM)
     grab("V_design_kip", r"Base shear ΣF\s*=\s*" + _NUM)
     grab("T_design_s", r"design period T\s*=\s*min\([^)]*\)\s*=\s*" + _NUM)
+    # the current HR template (October 2026), numbers with thousands separators: "Effective seismic weight W = 22,981
+    # kip (§12.7.2: ...)" and, when both directions have the same V, "Design base shear V = C s W = 0.044 × 21,000 =
+    # 924 kip in each direction (Eq. 12.8-1)". A per-direction V ("V X = ... ; V Y = ...") and the period used come
+    # from the package's structured per-direction design (_basis_from_calc).
+    _C = lambda v: float(v.replace(",", ""))
+    _NUMC = r"([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)"
+    grab("W_kip", r"Effective seismic weight W\s*=\s*" + _NUMC + r"\s*kip", _C)
+    grab("V_design_kip", r"Design base shear V\s*=\s*C\s*s\s*W\s*=\s*[0-9.]+\s*×\s*[0-9,.]+\s*=\s*" + _NUMC + r"\s*kip", _C)
+
+
+def _seismic_by_direction(calc: dict) -> dict:
+    """The HR engine's per-direction seismic design, in the key names this reader uses: the top-level
+    `seismic_by_direction` of older packages, else `framework_screen.seismic_by_direction` (what the current HR engine
+    writes: V, Cs, T, Tu, R, Cd, Om0, rho, system) with V -> V_kip, Tu -> Tu_s, Om0 -> Omega0 and W_kip = V / Cs."""
+    sbd = calc.get("seismic_by_direction") if isinstance(calc, dict) else None
+    if isinstance(sbd, dict) and sbd:
+        return sbd
+    fs = (calc.get("framework_screen") or {}) if isinstance(calc, dict) else {}
+    raw = fs.get("seismic_by_direction") if isinstance(fs, dict) else None
+    out = {}
+    for d, c in (raw or {}).items():
+        if not isinstance(c, dict):
+            continue
+        v = dict(c)
+        num = lambda k: c.get(k) if isinstance(c.get(k), (int, float)) else None
+        if num("V") is not None and "V_kip" not in v:
+            v["V_kip"] = c["V"]
+        if num("Tu") is not None and "Tu_s" not in v:
+            v["Tu_s"] = c["Tu"]
+        if num("T") is not None and "T_s" not in v:
+            v["T_s"] = c["T"]
+        if c.get("Om0") is not None and "Omega0" not in v:
+            v["Omega0"] = c["Om0"]
+        if num("V") is not None and num("Cs") and "W_kip" not in v:
+            v["W_kip"] = c["V"] / c["Cs"]
+        out[d] = v
+    return out
+
+
+def _basis_from_calc(calc: dict, b: DesignBasis):
+    """W, V and T from the package's per-direction seismic design when cfg.py and report.html did not give them (the
+    current HR report states them in a form the older regexes do not read): W = V / Cs (the same in both directions),
+    V = the larger direction's design base shear, T = the larger direction's period used (min(T, CuTa))."""
+    sbd = _seismic_by_direction(calc)
+    dirs = [c for c in sbd.values() if isinstance(c, dict)]
+    if not dirs:
+        return
+    src = "calc_package.json seismic_by_direction" if calc.get("seismic_by_direction") else \
+          "calc_package.json framework_screen.seismic_by_direction"
+    ws = [c["W_kip"] for c in dirs if isinstance(c.get("W_kip"), (int, float))]
+    vs = [c["V_kip"] for c in dirs if isinstance(c.get("V_kip"), (int, float))]
+    ts = [c["Tu_s"] for c in dirs if isinstance(c.get("Tu_s"), (int, float))]
+    if b.W_kip is None and ws:
+        b.W_kip = sum(ws) / len(ws); b.sources["W_kip"] = src + " (V / Cs)"
+    if b.V_design_kip is None and vs:
+        b.V_design_kip = max(vs); b.sources["V_design_kip"] = src + " (larger direction)"
+    if b.T_design_s is None and ts:
+        b.T_design_s = max(ts); b.sources["T_design_s"] = src + " (larger direction, period used)"
 
 
 def _cfg_dir_dicts(cfg) -> dict:
@@ -279,7 +337,7 @@ def _by_direction(root: Path, calc: dict, b: DesignBasis) -> dict:
     per-direction design: system, R, Cd, Omega0, V, period used), else cfg.py seis_X / seis_Y / system_X / system_Y,
     else the building's single set for that item. Kept only when R, Cd or Omega0 really differ between X and Y
     (mixed systems, ASCE 7-22 12.2.2): a single-system building keeps the single set, so its results do not change."""
-    sbd = calc.get("seismic_by_direction") or {}
+    sbd = _seismic_by_direction(calc)
     from . import cfg_values as CV
     cfgd = _cfg_dir_dicts(CV.executed_cfg(root)[0])
     rep = {}
@@ -299,7 +357,8 @@ def _by_direction(root: Path, calc: dict, b: DesignBasis) -> dict:
                                   ("V_design_kip", "V_kip", "V_report", "V_design_kip"), ("T_design_s", "Tu_s", None, "T_design_s"), ("W_kip", "W_kip", None, "W_kip"),
                                   ("Cs", "Cs", None, None), ("rho", "rho", "rho", None), ("drift_limit", "drift_limit", "drift_limit", None)):
             if c.get(ck) is not None:
-                v[key] = c[ck]; src[key] = "calc_package.json seismic_by_direction.%s" % d
+                v[key] = c[ck]; src[key] = "calc_package.json %sseismic_by_direction.%s" % (
+                    "" if calc.get("seismic_by_direction") else "framework_screen.", d)
             elif fk and f.get(fk) is not None:
                 v[key] = f[fk]; src[key] = ("report.html V_%s" % d) if fk == "V_report" else "cfg.py seis_%s / system_%s" % (d, d)
             elif attr and getattr(b, attr, None) is not None:
@@ -331,6 +390,7 @@ def read_basis(root: Path, calc: dict, model: Optional[ElasticModel] = None) -> 
         b.sources["heights_in"] = src
     if (root / "report.html").exists():
         _basis_from_report(root / "report.html", b)
+    _basis_from_calc(calc, b)
     dr = root / "design" / "design_report.md"
     if b.system is None and dr.exists():
         mo = re.search(r";\s*system\s+([A-Za-z0-9 +/-]+?)\s*;", dr.read_text(errors="replace"))
@@ -381,8 +441,11 @@ def _geo_from_text(text) -> Optional[dict]:
 
 
 def _length_in(text) -> Optional[float]:
-    """First 'Lb <n> ft|in' / '<n> in spacing' / 'at <n> ft' bracing length in a capacity-design string (inches)."""
-    t = str(text or "")
+    """First 'Lb <n> ft|in' / '<n> in spacing' / 'at <n> ft' bracing length in a capacity-design string (inches).
+    Clauses about studs, welds, bolts or plug welds are skipped: the current HR text says "the slab is connected ...
+    with 3/4 in headed studs at 12 in o.c. ..." in the same sentence as the beam bracing, and 12 in is not a bracing
+    spacing."""
+    t = " , ".join(p for p in re.split(r"[;,]", str(text or "")) if not re.search(r"\bstuds?\b|\bweld|\bbolt", p, re.I))
     for pat in (r"\bLb\w*\s*(?:=|of|:)?\s*" + _NUMV + r"\s*(ft|in)\b",
                 r"\bat\s+" + _NUMV + r"\s*(ft|in)\.?\s+(?:spacing|o\.?c\.?|centres|centers)",
                 r"\bspacing\s+(?:of\s+)?" + _NUMV + r"\s*(ft|in)\b"):

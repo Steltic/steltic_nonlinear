@@ -64,6 +64,8 @@ def _sweep_one(args):
         sys.exit("DDM NOT EVALUATED -- " + why)
     cases = loads.steltic_combos(cfg, nm=nm)
     combo = [c for c in cases if c[0] == combo_label][0]
+    if opts.get("wind_G") and not cfg.get("_wind_G"):             # the member design's roof-suction G (26.11.5),
+        cfg["_wind_G"] = dict(opts["wind_G"])                     # resolved once in run() before any model is built
     from . import portal_adapter as PA
     if PA.is_portal(cfg):
         lab = combo[0]
@@ -130,6 +132,11 @@ def run(args):
     why = HM.unsupported_system(SimpleNamespace(**{k: (cfg or {}).get(k) for k in ("system", "system_X", "system_Y")}), engine="ddm")
     if why:                                                       # NL-R2-L2: refuse up front, never crash in the model build
         sys.exit("DDM NOT EVALUATED -- " + why)
+    stand = loads.stand_in_members(getattr(nm, "calc_package", None))
+    if stand:                                                     # a GMNIA of a stand-in checks the stand-in, not the member
+        sys.exit("DDM NOT EVALUATED -- the HR analysis model represents %s by an analysis stand-in section (%s); a GMNIA "
+                 "of the stand-in does not check the members it replaces (they are designed by hand from its forces)"
+                 % ("/".join(sorted({str(i) for i, _ in stand})), "; ".join(sorted({s for _, s in stand}))))
     print("   ", json.dumps(ingest.summary(nm), default=str)[:400])
     from . import portal_adapter as PA
     portal = PA.is_portal(cfg)
@@ -138,6 +145,10 @@ def run(args):
     if args.only:
         kept = [c for c in kept if any(s in c[0] for s in args.only)]
     print(">> %d combinations from Steltic, %d selected%s" % (len(cases), len(kept), " [portal CFS-P]" if portal else ""))
+    wind_G = None if portal else loads.wind_gust_factors(cfg)     # the member design's roof-suction G, once per run
+    if wind_G:
+        print(">> roof suction of the (roof uplift) cases with the member design's MWFRS gust factor: %s (ASCE 7-22 26.11)"
+              % ", ".join("G_%s = %.3f" % (d, g) for d, g in sorted(wind_G.items())))
 
     # CFS DDM Tier-2 fidelity gate (product rule 2) — portal entry hard-fail <2 unless --force
     if portal:
@@ -172,7 +183,7 @@ def run(args):
 
     opts = dict(nsub=list(args.nsub), residual=args.residual, Fy=args.fy, hardening=args.hardening, fast=args.fast, nip=args.nip,
                 bow=args.bow, psi=args.psi, dlam=args.dlam, max_steps=args.max_steps, time_limit=args.time_limit,
-                rigid_end_offset=rigid_off)
+                rigid_end_offset=rigid_off, wind_G=wind_G)
     # task list: (combo, imperfection case)
     tasks = []
     for c in kept:

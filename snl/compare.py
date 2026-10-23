@@ -89,10 +89,18 @@ def steltic_facts(job):
     out = dict(drift_limit_pct=None, drift_limit_X_pct=None, drift_limit_Y_pct=None, drift_X=None, drift_Y=None, drift_exempt=[],
                V_kip=None, W_kip=None, Cs=None, wind_X=None, wind_Y=None)
     _drift_table(t, out)
-    m = re.search(r"Design base shear V = C s W = ([\d.]+) × ([\d,]+) = ([\d,]+) kip", t)
+    m = re.search(r"Design base shear V = C s W = ([\d.]+) × ([\d,]+(?:\.\d+)?) = ([\d,]+(?:\.\d+)?) kip", t)
     if m:
         out["Cs"] = float(m.group(1)); out["W_kip"] = float(m.group(2).replace(",", "")); out["V_kip"] = float(m.group(3).replace(",", ""))
-    m = re.search(r"Wind base shear(?: \(frame\))?: X = ([\d,]+) kip, Y = ([\d,]+) kip", t)       # NL-R2-08: "(frame)" in current HR
+    else:   # Oct 2026 HR, a different V in each direction: "Design base shear (Eq. 12.8-1): V X = 0.044 × 16,187 = 712.2 kip ;
+        #     V Y = 0.08865 × 16,187 = 1,435 kip" -> the larger direction (as the pushover's design basis takes it)
+        n = r"([\d,]+(?:\.\d+)?)"
+        m = re.search(r"Design base shear \(Eq\. 12\.8-1\): V X = ([\d.]+) × %s = %s kip ; V Y = ([\d.]+) × %s = %s kip" % (n, n, n, n), t)
+        if m:
+            f = lambda i: float(m.group(i).replace(",", ""))
+            cs, w, v = max(((f(1), f(2), f(3)), (f(4), f(5), f(6))), key=lambda x: x[2])
+            out["Cs"], out["W_kip"], out["V_kip"] = cs, w, v
+    m = re.search(r"Wind base shear(?: \(frames?\))?: X = ([\d,]+(?:\.\d+)?) kip, Y = ([\d,]+(?:\.\d+)?) kip", t)   # NL-R2-08; "(frames)" in the Oct 2026 HR
     if m:
         out["wind_X"] = float(m.group(1).replace(",", "")); out["wind_Y"] = float(m.group(2).replace(",", ""))
     cp = _load_json(os.path.join(job, "design", "calc_package.json"), {})
