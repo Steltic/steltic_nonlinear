@@ -1085,11 +1085,16 @@ class GMNIAModel:
         if uplift:
             from .loads import roof_uplift_pressures
             qh, pb = roof_uplift_pressures(self.cfg, geo["model"], uplift)
-            self.uplift_note = ("roof uplift W%s%s (NL-R2-L3): MWFRS roof pressure p = qh (G Cp - GCpi), qh = %.1f psf "
-                                "(ASCE 7-22 Eq. 27.3-1, roof Cp Fig. 27.3-1 -- HR static_model), %.1f to %.1f psf on %d roof "
+            usc = float(uplift[2]) if len(uplift) > 2 else 1.0          # Fig. 27.3-8 Cases 2-4: 0.75 / 0.563
+            G = (self.cfg.get("_wind_G") or {}).get(uplift[0])
+            self.uplift_note = ("roof uplift W%s%s%s (NL-R2-L3): MWFRS roof pressure p = qh (G Cp - GCpi), qh = %.1f psf%s "
+                                "(ASCE 7-22 Eq. 27.3-1, roof Cp Fig. 27.3-1 -- HR static_model%s), %.1f to %.1f psf on %d roof "
                                 "bays, added to %.2fD on the roof and scaled with lambda"
-                                % (uplift[0], "+" if uplift[1] > 0 else "-", qh, min(pb.values(), default=0.0),
-                                   max(pb.values(), default=0.0), len(pb), fD))
+                                % (uplift[0], "+" if uplift[1] > 0 else "-",
+                                   (" x %.3g (Fig. 27.3-8 Cases 2-4)" % usc) if usc != 1.0 else "",
+                                   qh, " (scaled)" if usc != 1.0 else "",
+                                   ("; G = %.3f, the member design's (26.11.5)" % G) if G is not None else "",
+                                   min(pb.values(), default=0.0), max(pb.values(), default=0.0), len(pb), fD))
         total = 0.0; by_mem = {}; on_span = {}; notes = []
         for e in self.elems:
             if e["kind"] != "beam":
