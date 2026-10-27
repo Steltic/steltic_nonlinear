@@ -135,14 +135,15 @@ def parse_model_script(path: Path) -> ElasticModel:
         elif cmd == "equalDOF":
             m.equal_dofs.append(a)
         elif cmd in ("wipe",):
-            # R2 patch (NL-R2-01): keep ONLY the last build. The export holds the probe build then the real
-            # build; probe-only nodes (e.g. a centre-of-mass node cmtag(k) the real build does not create)
-            # and probe masses must not survive. geomTransf / materials are recorded once -> keep them.
+            # R2 patch (NL-R2-01): keep ONLY the last build. Older exports hold the probe build then the real
+            # build (current ones, steltic#68, the final build only); probe-only nodes (e.g. a centre-of-mass
+            # node cmtag(k) the real build does not create) and probe masses must not survive. geomTransf /
+            # materials are recorded once in the older exports -> keep them.
             m.nodes.clear(); m.fixes.clear(); m.masses.clear(); m.elements.clear()
             m.diaphragms.clear(); m.equal_dofs.clear()
         else:
             m.other.append((cmd, a))
-    # Steltic's export records the engine's PROBE build followed by the real build (nodes/elements/masses/
+    # Older Steltic exports record the engine's PROBE build followed by the real build (nodes/elements/masses/
     # diaphragms appear twice with the same tags; geomTransf only once). Keep the LAST definition of each tag.
     last = {}
     for e in m.elements:
