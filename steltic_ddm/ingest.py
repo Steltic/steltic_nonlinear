@@ -117,8 +117,9 @@ def parse_replay(path, equal_dofs=None):
             except Exception:
                 continue
             if cmd == "wipe":
-                # Steltic's export records the probe build AND the real build -> keep the LAST build,
-                # but remember geomTransf tags (they are only registered once, in the first build).
+                # Older Steltic exports record the probe build AND the real build (current ones, steltic#68, only
+                # the final build) -> keep the LAST build, but remember geomTransf tags (the older exports
+                # register them only once, in the first build).
                 nodes, fixes, masses, elems, diaph = {}, {}, {}, [], {}
                 del eq[:]
             elif cmd == "equalDOF":
