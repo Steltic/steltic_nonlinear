@@ -37,7 +37,7 @@ from .nonlinear_model import (
     E_KSI_AL, MAT_BASE, RIGID_T, RIGID_R,
     member_kind, strong_I_slot, strong_rot_dof, _dir_vec, beam_params_for, fr_column_ends,
     element_context, build_brace, link_shear_spring, finish_stats, _pt_mass_balance, _link_mass_balance,
-    STEEL_DENSITY_KIP_IN3, G_IN,
+    STEEL_DENSITY_KIP_IN3, G_IN, _equal_dofs,
 )
 
 SEG_NODE_BASE = 70_000_000
@@ -165,7 +165,10 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
         axis = "y" if kind == "col" else "z"
         lab = str(sec)
         try:
-            if lab.upper().startswith("HSS") and SFB.hss_dims(lab):     # NL-R2-28: fractional labels; HSS Fye (A500)
+            if lab.upper().startswith("BOX") and SDB.parse_hss_label(lab):  # NL-R2-37: built-up box, plates at full t
+                builder.hss_rect(tag, lab, t_design_factor=1.0, n_per_side=max(8, nf_web[0] // 2), n_thick=2,
+                                 residual="none", Fy=Fy_hss)
+            elif lab.upper().startswith("HSS") and SFB.hss_dims(lab):   # NL-R2-28: fractional labels; HSS Fye (A500)
                 builder.hss_rect(tag, lab, n_per_side=max(8, nf_web[0] // 2), n_thick=2, residual=residual, Fy=Fy_hss)
             elif lab.upper().startswith(("HSS", "PIPE")):
                 builder.hss_round(tag, lab, Fy=Fy_hss)
@@ -354,6 +357,7 @@ def build_fibre(pkg, prm, PG, verbose=True, nseg=4, nip=5, nf_flange=(8, 4), nf_
     stats["panel_zone_registry"] = {}
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
+    _equal_dofs(m, stats)                                        # NL-R2-36
     _pt_mass_balance(pkg, ctx, stats)
     _link_mass_balance(pkg, ctx, stats)                          # NL-R2-22 (review): EBF link own mass, fibre path
     finish_stats(stats, ctx, prm, "fibre")

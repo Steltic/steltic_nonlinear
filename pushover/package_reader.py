@@ -632,6 +632,8 @@ def load(path: str | os.PathLike) -> Package:
              "calc": root / "design" / "calc_package.json",
              "cfg": root / "cfg.py", "report": root / "report.html",
              "design_report": root / "design" / "design_report.md"}
+    from . import builtup_box as BB                       # NL-R2-38: built-up I-sections declared by the job
+    BB.register_job_sections(root)
     model = parse_model_script(files["model"])
     schedule = read_schedule(files["schedule"]) if files["schedule"].exists() else {}
     calc = json.load(open(files["calc"])) if files["calc"].exists() else {}

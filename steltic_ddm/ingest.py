@@ -43,6 +43,7 @@ class NeutralModel:
     transf: dict = field(default_factory=dict)       # tag -> (type, vecxz)
     members: list = field(default_factory=list)
     diaphragms: dict = field(default_factory=dict)   # master -> [slaves]
+    equal_dofs: list = field(default_factory=list)   # NL-R2-36: raw equalDOF(master, slave, dofs...) args, last build
     cfg: dict = None
     calc_package: dict = None
     levels: list = field(default_factory=list)       # z of each level incl. base
@@ -96,9 +97,11 @@ def _args(s):
     return list(ast.literal_eval("(" + s + ",)"))
 
 
-def parse_replay(path):
-    """Parse model_opensees.py into dicts. Only the recorded ops.* lines are read."""
+def parse_replay(path, equal_dofs=None):
+    """Parse model_opensees.py into dicts. Only the recorded ops.* lines are read.
+    equal_dofs (NL-R2-36): a list that receives the raw equalDOF argument lists of the last build."""
     nodes, fixes, masses, transf, elems, diaph = {}, {}, {}, {}, [], {}
+    eq = equal_dofs if equal_dofs is not None else []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -117,6 +120,9 @@ def parse_replay(path):
                 # Steltic's export records the probe build AND the real build -> keep the LAST build,
                 # but remember geomTransf tags (they are only registered once, in the first build).
                 nodes, fixes, masses, elems, diaph = {}, {}, {}, [], {}
+                del eq[:]
+            elif cmd == "equalDOF":
+                eq.append(args)
             elif cmd == "node":
                 nodes[args[0]] = tuple(float(v) for v in args[1:4])
             elif cmd == "fix":
@@ -146,6 +152,8 @@ def _release_codes(args):
 def load_package(job_dir, steltic_engine_dir=None):
     """Build the NeutralModel for a Steltic job folder."""
     job_dir = os.path.abspath(job_dir)
+    from pushover import builtup_box as BB                # NL-R2-38: built-up I-sections declared by the job
+    BB.register_job_sections(job_dir)
     name = os.path.basename(job_dir.rstrip("/\\"))
     nm = NeutralModel(job_dir=job_dir, name=name)
 
@@ -153,7 +161,8 @@ def load_package(job_dir, steltic_engine_dir=None):
     if not os.path.exists(replay):
         raise FileNotFoundError("model_opensees.py missing in %s -- ask the HR Steel App to re-run "
                                 "pipeline.design_and_report(name, cfg) WITH cfg passed (the export is skipped otherwise)" % job_dir)
-    nodes, fixes, masses, transf, elems, diaph = parse_replay(replay)
+    nm.equal_dofs = []
+    nodes, fixes, masses, transf, elems, diaph = parse_replay(replay, nm.equal_dofs)
     nm.nodes, nm.fixes, nm.masses, nm.transf, nm.diaphragms = nodes, fixes, masses, transf, diaph
 
     # section labels from member_schedule.csv

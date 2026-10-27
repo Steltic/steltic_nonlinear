@@ -219,6 +219,12 @@ class GMNIAModel:
             ops.rigidDiaphragm(3, master, *slaves)
         for master, deck in self._brace_slaves.items():             # NL-R2-27 deck brace nodes follow the floor
             ops.rigidDiaphragm(3, master, *deck)
+        from pushover import constraints as CN                     # NL-R2-36: the model's own equalDOF ties
+        rd = [t for sl in nm.diaphragms.values() for t in sl] + [t for sl in self._brace_slaves.values() for t in sl]
+        n_eq, eq_skipped = CN.apply(ops, getattr(nm, "equal_dofs", None), rd)
+        if n_eq or eq_skipped:
+            self.builder.log.append((0, "special", "note", 0, "equalDOF ties replayed from model_opensees.py: %d%s" % (
+                n_eq, ("; skipped: " + "; ".join(eq_skipped)) if eq_skipped else "")))
         if with_mass:
             for t, mm in nm.masses.items():
                 ops.mass(t, *mm)

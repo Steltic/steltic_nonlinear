@@ -245,6 +245,25 @@ def _member_row_values(blk: dict, ty: float, p: dict, Fye: float, prm: dict, Ca:
     return v, extra
 
 
+def _hss_row_from_library(cp: dict, tmpl_group: dict):
+    """NL-R2-37: (group, label) built from column_flexure.other_lines.rect_HSS_builtup_box -- the verified library keeps
+    Table C3.6 line 4 there ("library only") -- with the template's other keys (material, note); (template, None) when
+    the parameter file has no such row."""
+    row = ((cp or {}).get("other_lines") or {}).get("rect_HSS_builtup_box")
+    if not isinstance(row, dict) or not row.get("a_expr") or not row.get("b_expr"):
+        return tmpl_group, None
+    g = {k: v for k, v in (tmpl_group or {}).items() if k not in ("unverified", "source")}
+    g.update(a_expr=row["a_expr"], b_expr=row["b_expr"], c_expr=str(row.get("c", row.get("c_expr", g.get("c_expr")))),
+             IO=row.get("IO", g.get("IO")), LS=row.get("LS", g.get("LS")), CP=row.get("CP", g.get("CP")))
+    for k in ("a_max", "b_max", "a_min", "b_min"):
+        if row.get(k) is not None:
+            g[k] = row[k]
+    fac = ((cp or {}).get("other_lines") or {}).get("builtup_box_factor_note_e")
+    if fac is not None:
+        g["built_up_box_factor"] = float(fac)
+    return g, "column_flexure.other_lines.rect_HSS_builtup_box (verified library row)"
+
+
 def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: dict) -> HingeSpec:
     """NL-R2-28: HSS column flexural hinge.
 
@@ -259,8 +278,13 @@ def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: di
     Round HSS / pipe: Table C3.6 has no row -> no hinge, treated as force-controlled for flexure (flagged)."""
     cp = prm["column_flexure"]
     hb, tmpl = param_group(prm, "column_flexure_hss")
+    lib = None
+    if tmpl:                                             # NL-R2-37: the verified library row of the same line, if present
+        hb, lib = _hss_row_from_library(cp, hb)
+        tmpl = lib is None
     flags = ["HSS column: AISC 342-22 Table C3.6 line 4 (rectangular HSS)%s" % (
-        " -- column_flexure_hss not in the parameter file: repository TEMPLATE values" if tmpl else "")]
+        " -- column_flexure_hss not in the parameter file: repository TEMPLATE values" if tmpl else
+        (" -- from the parameter file's %s" % lib) if lib else "")]
     mt = prm["material"]
     if hb.get("Fy_ksi") is not None:                     # HSS material (A500 Gr. C) -- not the W-shape `material`
         Fy, Ry = float(hb["Fy_ksi"]), float(hb.get("Ry_expected", 1.0)); src = "column_flexure_hss"
@@ -269,7 +293,12 @@ def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: di
     else:
         Fy, Ry = float(mt["Fy_ksi"]), float(mt["Ry_expected"]); src = "material (W-shape values)"
     hm = SDB.hss_material(section)
-    if hm and hm["kind"] != "rect":                      # review D3: round HSS / pipe are not the A500 shaped grade
+    if hm and hm.get("built_up"):                        # NL-R2-37: built-up box -- A572 Gr. 50 plates (Ry 1.1)
+        Fy, Ry, src = hm["Fy"], hm["Ry"], hm["spec"]
+        flags[0] = "built-up box column: AISC 342-22 Table C3.6 line 4 (rectangular HSS and built-up box shapes)%s" % (
+            " -- column_flexure_hss not in the parameter file: repository TEMPLATE values" if tmpl else
+            (" -- from the parameter file's %s" % lib) if lib else "")
+    elif hm and hm["kind"] != "rect":                    # review D3: round HSS / pipe are not the A500 shaped grade
         Fy, Ry, src = hm["Fy"], hm["Ry"], hm["spec"] + ", AISC 341-22 Table A3.2"
     Fye = Fy * Ry
     flags.append("HSS Fye = %.1f x %.2f = %.1f ksi (%s)" % (Fy, Ry, Fye, src))
@@ -284,7 +313,9 @@ def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: di
                          "FORCE-CONTROLLED column" % (section, geo.get("kind", "?")))
         else:
             flags.append("PG/Pye=%.2f >= %.2f -> FORCE-CONTROLLED column (no hinge; check P vs PCL)" % (r, fc_lim))
-        PS.mark_used(prm, "column_flexure_hss", from_template=tmpl); PS.mark_used(prm, "column_flexure")
+        if not lib:                                         # NL-R2-37: a library row is part of column_flexure
+            PS.mark_used(prm, "column_flexure_hss", from_template=tmpl)
+        PS.mark_used(prm, "column_flexure")
         return HingeSpec("column", section, L_in, Fye, p["Zx"] * Fye, ty0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
                          True, r, True, tuple(flags))
     ws = SDB.hss_wall_slenderness(section)
@@ -295,7 +326,7 @@ def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: di
         if isinstance(row.get(k), str):
             row[k] = row[k].replace("PG/Pye", "(PG/Pye)")
     v = _row_abs(row, None, env)
-    mult = float(hb.get("built_up_box_factor", 0.75)) if hb.get("built_up_box") else 1.0
+    mult = float(hb.get("built_up_box_factor", 0.75)) if (hb.get("built_up_box") or geo.get("built_up")) else 1.0
     if mult != 1.0:
         flags.append("built-up box column: Table C3.6 note [e] x%.2f" % mult)
         v = {k: (x * mult if k != "c" and x is not None else x) for k, x in v.items()}
@@ -303,7 +334,9 @@ def _hss_column_hinge(section: str, p: dict, L_in: float, PG_kip: float, prm: di
     if missing:
         raise ValueError("HSS column parameters: %s missing (column_flexure_hss, AISC 342-22 Table C3.6 line 4)" % ", ".join(missing))
     flags.append("HSS wall b/t=%.1f (t_des=%.3f in): a=%.4f b=%.4f c=%.2f rad at PG/Pye=%.3f" % (lam, ws["t_des"], v["a"], v["b"], v["c"], r))
-    PS.mark_used(prm, "column_flexure_hss", from_template=tmpl); PS.mark_used(prm, "column_flexure")
+    if not lib:                                             # NL-R2-37: a library row is part of column_flexure
+        PS.mark_used(prm, "column_flexure_hss", from_template=tmpl)
+    PS.mark_used(prm, "column_flexure")
     red = eval(cp["Mpce_axial_reduction"].replace("PG/Pye", "(PG/Pye)"), {}, env)
     Mpe = p["Zx"] * Fye * red
     ty = _theta_y(p["Zx"], Fye, L_in, p["Ix"], red if cp.get("theta_y_uses_Mpce") else 1 - r)

@@ -97,6 +97,10 @@ def parse_hss_label(section) -> dict | None:
       pipe                      'Pipe5STD', 'Pipe8XS', 'Pipe4XXS'                     -> kind 'pipe' (no dims in the label)
     t_des = 0.93 t_nom (AISC 360-22 B4.2: HSS to standards other than A1065 / A1085, e.g. A500). None for other shapes."""
     s = str(section or "").strip().upper().replace(" ", "")
+    from . import builtup_box as BB                       # NL-R2-37: welded built-up box BOX<B>X<t> (plates, t_des = t)
+    box = BB.parse(s)
+    if box:
+        return box
     if s.startswith("PIPE"):
         return dict(kind="pipe", label=s)
     if not s.startswith("HSS"):
@@ -130,6 +134,11 @@ def hss_material(section) -> dict | None:
     g = parse_hss_label(section)
     if not g:
         return None
+    if g.get("built_up"):                                 # NL-R2-37: A572 Gr. 50 plates, not A500
+        from . import builtup_box as BB
+        m = dict(BB.MATERIAL)
+        m.update(kind=g["kind"], built_up=True, Fye=m["Fy"] * m["Ry"])
+        return m
     m = dict(HSS_MATERIALS[g["kind"]])
     m.update(kind=g["kind"], Fye=m["Fy"] * m["Ry"])
     return m
@@ -142,7 +151,8 @@ def hss_wall_slenderness(section) -> dict | None:
     if not g or g["kind"] != "rect":
         return None
     t = g["t_des"]
-    b_t, h_t = (g["B"] - 3.0 * t) / t, (g["H"] - 3.0 * t) / t
+    off = 2.0 if g.get("built_up") else 3.0               # NL-R2-37: built-up box -> clear distance between plates B - 2t
+    b_t, h_t = (g["B"] - off * t) / t, (g["H"] - off * t) / t
     return dict(b_t=b_t, h_t=h_t, lam=max(b_t, h_t), t_des=t, H=g["H"], B=g["B"])
 
 
@@ -168,7 +178,10 @@ def props(section: str) -> dict:
         p["custom_note"] = cust.get("note", "")
         # fall through to compactness ratios below
     elif key not in t:
-        raise KeyError(f"section {section!r} not in aisc_shapes.csv")
+        from . import builtup_box as BB                   # NL-R2-37: built-up box columns (toolkit box_props)
+        p = BB.props(key) or BB.i_section(key)           # NL-R2-38: + built-up I-sections declared in nl_sections.json
+        if p is None:
+            raise KeyError(f"section {section!r} not in aisc_shapes.csv")
     else:
         p = dict(t[key])
     hss = parse_hss_label(key)

@@ -423,6 +423,19 @@ def build_elastic(pkg):
         ops.element("elasticBeamColumn", e["tag"], e["n1"], e["n2"], *args)
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
+    _equal_dofs(m)                                             # NL-R2-36: the model's own equalDOF ties
+
+
+def _equal_dofs(m, stats=None):
+    """NL-R2-36: replay the recorded equalDOF ties (pushover.constraints) after the rigid diaphragms."""
+    from . import constraints as CN
+    rd = [s for _, _, sl in m.diaphragms for s in sl]
+    n, skipped = CN.apply(ops, getattr(m, "equal_dofs", None), rd)
+    if stats is not None:
+        stats["equal_dofs"] = n
+        if skipped:
+            stats.setdefault("model_warnings", []).extend(skipped)
+    return n, skipped
 
 
 def _apply_gravity(loads, nsteps=10):
@@ -1382,6 +1395,7 @@ def build_nonlinear(pkg, prm, PG, verbose=True, member_nseg=None, plasticity=Non
     stats["panel_zone_registry"] = pz_registry
     for perp, master, slaves in m.diaphragms:
         ops.rigidDiaphragm(perp, master, *slaves)
+    _equal_dofs(m, stats)                                        # NL-R2-36
     _pt_mass_balance(pkg, ctx, stats)
     _link_mass_balance(pkg, ctx, stats)                          # NL-R2-22
     # NL-R2-32: how the minor axis of the concentrated-hinge columns is modelled (reports / 16.1.4 text)
