@@ -71,6 +71,9 @@ def _f(v):
 def shape(label):
     r = shapes().get(str(label).upper().strip())
     if r is None:
+        from pushover import builtup_box as BB             # NL-R2-37: built-up box columns (toolkit box_props)
+        r = BB.csv_row(label)
+    if r is None:
         raise KeyError("section %r not in aisc_shapes.csv" % label)
     return r
 
@@ -400,12 +403,16 @@ class FiberSectionBuilder:
         # 35 pipe -- pushover.sections_db.HSS_MATERIALS), never the frame's W-shape Fy
         from pushover.sections_db import hss_material
         hm = hss_material(lab)
+        if lab.startswith("BOX") and hm and hm.get("built_up"):
+            # NL-R2-37: welded built-up box -- four plates at their full thickness, no cold-forming residual pattern
+            return self.hss_rect(secTag, lab, t_design_factor=1.0, residual="none", Fy=hm["Fy"])
         if lab.startswith("HSS") and hss_dims(lab):
             return self.hss_rect(secTag, lab, residual=("none" if self.residual == "none" else "cf_hss_membrane"),
                                  Fy=(hm["Fy"] if hm else None))
         if lab.startswith(("HSS", "PIPE")) and round_hss_dims(lab):
             return self.hss_round(secTag, lab, Fy=(hm["Fy"] if hm else None))
-        if lab.startswith(("W", "HP", "M", "S")) and not lab.startswith("MC"):
+        from pushover import builtup_box as BB
+        if (lab.startswith(("W", "HP", "M", "S")) and not lab.startswith("MC")) or BB.i_section(lab):   # NL-R2-38
             return self.w_shape(secTag, lab, axis=(axis or ("y" if kind == "col" else "z")))
         props = cfs_section_props(label)
         if props:
